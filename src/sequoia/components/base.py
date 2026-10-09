@@ -5,6 +5,8 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict
 
 from sequoia.errors import Issue, UnknownComponentError
+from sequoia.light.detection import DetectorModel, TaggerModel
+from sequoia.light.pairs import PairEmission
 from sequoia.light.state import Beam, LinkLight, SourceLight
 
 CATEGORIES = (
@@ -84,6 +86,16 @@ class Component:
 
     def detect(self, light: dict[str, LinkLight], ctx: Context) -> dict[str, float]:
         return {}
+
+    def emit_pairs(self, lights: dict[str, LinkLight], ctx: Context) -> PairEmission | None:
+        """Called after the classical pass with the light arriving at each input port."""
+        return None
+
+    def detector_model(self) -> DetectorModel | None:
+        return None
+
+    def tagger_model(self) -> TaggerModel | None:
+        return None
 
     def measure(self, light: LinkLight) -> dict:
         return {}
