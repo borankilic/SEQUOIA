@@ -1,0 +1,9 @@
+type: OpticalFiber
+manufacturer: generic
+model: 780 nm single-mode fiber
+params:
+  kind: smf
+  mode_field_diameter: 5 um
+  cutoff_wavelength: 730 nm
+  numerical_aperture: 0.13
+  attenuation_db_per_km: 3.5

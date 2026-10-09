@@ -1,0 +1,6 @@
+type: Lens
+manufacturer: generic
+model: f = 50 mm, 25.4 mm lens
+params:
+  focal_length: 50 mm
+  clear_aperture: 22 mm

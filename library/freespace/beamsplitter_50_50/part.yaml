@@ -1,0 +1,4 @@
+type: BeamSplitter
+manufacturer: generic
+model: ideal 50:50 non-polarizing beam splitter
+params: {}

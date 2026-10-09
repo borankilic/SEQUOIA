@@ -1,0 +1,7 @@
+type: Photodiode
+manufacturer: generic
+model: silicon photodiode, 10 mm active diameter
+params:
+  responsivity: 0.5 A/W
+  active_diameter: 10 mm
+  dark_current: 1 nA

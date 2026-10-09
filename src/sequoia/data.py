@@ -105,6 +105,7 @@ def _require_dimension(dimension: str):
 
 Length = Annotated[Scalar, AfterValidator(_require_dimension("length"))]
 Duration = Annotated[Scalar, AfterValidator(_require_dimension("time"))]
+Power = Annotated[Scalar, AfterValidator(_require_dimension("power"))]
 
 
 def parse_axis(text: str) -> tuple[str, str]:

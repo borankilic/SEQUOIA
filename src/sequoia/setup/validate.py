@@ -1,10 +1,7 @@
-from dataclasses import dataclass
-from typing import Literal
-
 import networkx as nx
 
 from sequoia.components.base import PortDirection, PortKind, PortSpec
-from sequoia.errors import SequoiaError, SetupError
+from sequoia.errors import Issue, SequoiaError, SetupError
 from sequoia.library.store import Library
 from sequoia.setup.model import Setup
 from sequoia.setup.resolve import instantiate
@@ -16,17 +13,6 @@ _PORT_KIND_FOR_LINK = {
     "fiber": PortKind.FIBER,
     "cable": PortKind.ELECTRICAL,
 }
-
-
-@dataclass(frozen=True)
-class Issue:
-    severity: Literal["error", "warning"]
-    code: str
-    subject: str
-    message: str
-
-    def __str__(self) -> str:
-        return f"{self.subject}: {self.message}"
 
 
 class SetupValidationError(SetupError):

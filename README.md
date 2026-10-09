@@ -26,6 +26,14 @@ rm -rf .venv && UV_PROJECT_ENVIRONMENT=venv uv sync --all-extras && ln -s venv .
 uv run sequoia
 ```
 
+Simulate a setup from the command line:
+
+```bash
+uv run sequoia run setups/laser_fiber_coupling.yaml
+```
+
+The parts come from `library/` (override with `--library DIR`).
+
 ## Test
 
 ```bash

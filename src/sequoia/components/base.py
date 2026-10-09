@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from sequoia.errors import UnknownComponentError
+from sequoia.errors import Issue, UnknownComponentError
+from sequoia.light.state import Beam, LinkLight, SourceLight
 
 CATEGORIES = (
     "sources",
@@ -46,6 +47,22 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+@dataclass
+class Context:
+    issues: list[Issue] = field(default_factory=list)
+    subject: str = ""
+    instance_id: str = ""
+
+    def warn(self, code: str, message: str) -> None:
+        self.issues.append(Issue("warning", code, self.subject, message))
+
+
+@dataclass
+class Emission:
+    source: SourceLight
+    beams: list[tuple[str, Beam]]
+
+
 class Component:
     category: ClassVar[str]
     type_name: ClassVar[str]
@@ -58,6 +75,18 @@ class Component:
 
     def ports(self) -> tuple[PortSpec, ...]:
         return ()
+
+    def emit(self, ctx: Context) -> Emission | None:
+        return None
+
+    def propagate(self, port: str, beam: Beam, ctx: Context) -> list[tuple[str, Beam]]:
+        return []
+
+    def detect(self, light: dict[str, LinkLight], ctx: Context) -> dict[str, float]:
+        return {}
+
+    def measure(self, light: LinkLight) -> dict:
+        return {}
 
 
 _REGISTRY: dict[str, type[Component]] = {}

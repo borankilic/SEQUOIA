@@ -1,0 +1,22 @@
+name: laser to fiber coupling
+description: 780 nm laser, 2:1 telescope, two mirrors, fiber launch, 2 m SMF, collimator, photodiode
+instances:
+  - {id: laser, part: sources/laser_780_cw, position: [0, 0]}
+  - {id: tele1, part: freespace/lens_f50mm, position: [2, 0]}
+  - {id: tele2, part: freespace/lens_f100mm, position: [8, 0]}
+  - {id: m1, part: freespace/mirror_ideal, position: [12, 0], rotation: 45}
+  - {id: m2, part: freespace/mirror_ideal, position: [12, 4], rotation: 45}
+  - {id: launch, part: fiber/coupler_f11mm, position: [16, 4]}
+  - {id: recv, part: fiber/coupler_f11mm, position: [24, 4], settings: {mode: to_free}}
+  - {id: pd, part: detectors/photodiode_generic, position: [28, 4]}
+links:
+  - {id: s1, kind: free_space, from: laser.out, to: tele1.in, length: 50 mm}
+  - {id: s2, kind: free_space, from: tele1.out, to: tele2.in, length: 150 mm}
+  - {id: s3, kind: free_space, from: tele2.out, to: m1.in, length: 100 mm}
+  - {id: s4, kind: free_space, from: m1.out, to: m2.in, length: 100 mm}
+  - {id: s5, kind: free_space, from: m2.out, to: launch.in, length: 100 mm}
+  - {id: f1, kind: fiber, from: launch.out, to: recv.in, fiber: fiber/smf_780, length: 2 m}
+  - {id: s6, kind: free_space, from: recv.out, to: pd.in, length: 50 mm}
+probes:
+  - {id: beam_at_launch, part: probes/beam_profiler, link: s5}
+  - {id: fiber_power, part: probes/power_meter, link: f1}

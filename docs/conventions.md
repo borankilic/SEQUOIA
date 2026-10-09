@@ -58,6 +58,28 @@ These hold throughout the code. Each one gets a test when the code that depends 
 - Detectors are threshold detectors; PNR arrives with the Gaussian engine (M8).
 - The rate engine is first order in the pair rate (low gain).
 
+## Classical engine (M2)
+
+- Every source emits a sampled spectrum. A CW laser is one sample with a Lorentzian linewidth; a
+  pulsed laser is 11 samples of a transform-limited Gaussian spectrum. Jones matrices and
+  attenuation are evaluated per sample.
+- The Gaussian mode is tracked at the source's central wavelength. Lens and fiber data are
+  evaluated there, so chromatic focal shift across a broad spectrum is not modelled.
+- Paths from one source add coherently on a link, with the optical-path phase per sample, the
+  coherence factor of the source spectrum, and the Gaussian-mode overlap between the paths.
+  Different sources add incoherently.
+- A link reports the mode of its dominant path.
+- Lenses and objectives are thin elements at their principal plane. Include the principal-plane
+  separation in the link lengths.
+- Fiber links apply the overlap with the fiber mode (divided by M²x·M²y), attenuation, connector
+  loss, the polarization transform and the phase and group delay. Group-delay dispersion and
+  polarization-mode dispersion are not modelled. PM fibers pass polarization unchanged.
+- A multimode fiber uses a crude acceptance estimate (core area times NA acceptance).
+- Wave plate retardance scales as 1/λ from the design wavelength unless a retardance curve is given.
+- Fiber paddles use the bend-birefringence retardance 2π²·a·d²·N/(λ·D) per paddle, with a = 0.133.
+- A link's length can be locked to the canvas: the distance between instance positions times the
+  grid cell.
+
 ## Fiber links
 
 - The SMF polarization transform defaults to the identity, which is the ideal case.

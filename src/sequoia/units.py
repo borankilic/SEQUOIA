@@ -12,6 +12,7 @@ _DIMENSIONS = {
     "dimensionless": ureg.Quantity(1.0, "dimensionless").dimensionality,
     "length": ureg.Quantity(1.0, "m").dimensionality,
     "time": ureg.Quantity(1.0, "s").dimensionality,
+    "power": ureg.Quantity(1.0, "W").dimensionality,
     "frequency": ureg.Quantity(1.0, "Hz").dimensionality,
     "wavenumber": ureg.Quantity(1.0, "1/m").dimensionality,
     "energy": ureg.Quantity(1.0, "J").dimensionality,

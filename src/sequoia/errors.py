@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Literal
+
 from pydantic import ValidationError
 
 
@@ -19,6 +22,17 @@ class SetupError(SequoiaError):
 
 class TableImportError(SequoiaError):
     pass
+
+
+@dataclass(frozen=True)
+class Issue:
+    severity: Literal["error", "warning"]
+    code: str
+    subject: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.subject}: {self.message}"
 
 
 def format_validation_error(exc: ValidationError) -> str:

@@ -1,0 +1,6 @@
+type: FiberCoupler
+manufacturer: generic
+model: f = 11 mm fiber coupler
+params:
+  focal_length: 11 mm
+  clear_aperture: 6 mm

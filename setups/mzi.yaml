@@ -1,0 +1,21 @@
+name: Mach-Zehnder interferometer
+description: equal arms, so all of the light leaves through bs2.out_b
+instances:
+  - {id: laser, part: sources/laser_780_cw, position: [0, 0]}
+  - {id: bs1, part: freespace/beamsplitter_50_50, position: [4, 0]}
+  - {id: m1, part: freespace/mirror_ideal, position: [8, 0]}
+  - {id: m2, part: freespace/mirror_ideal, position: [4, 4]}
+  - {id: bs2, part: freespace/beamsplitter_50_50, position: [8, 4]}
+  - {id: pd1, part: detectors/photodiode_generic, position: [12, 4]}
+  - {id: pd2, part: detectors/photodiode_generic, position: [8, 8]}
+links:
+  - {id: in, kind: free_space, from: laser.out, to: bs1.in_a, length: 100 mm}
+  - {id: a1, kind: free_space, from: bs1.out_a, to: m1.in, length: 100 mm}
+  - {id: a2, kind: free_space, from: m1.out, to: bs2.in_a, length: 100 mm}
+  - {id: b1, kind: free_space, from: bs1.out_b, to: m2.in, length: 100 mm}
+  - {id: b2, kind: free_space, from: m2.out, to: bs2.in_b, length: 100 mm}
+  - {id: o1, kind: free_space, from: bs2.out_a, to: pd1.in, length: 50 mm}
+  - {id: o2, kind: free_space, from: bs2.out_b, to: pd2.in, length: 50 mm}
+probes:
+  - {id: p1, part: probes/power_meter, link: o1}
+  - {id: p2, part: probes/power_meter, link: o2}

@@ -1,0 +1,10 @@
+type: Laser
+manufacturer: generic
+model: 780 nm CW diode laser, collimated
+description: Ideal placeholder part. Replace with the lab's measured values.
+params:
+  wavelength: 780 nm
+  power: 5 mW
+  linewidth: 1 MHz
+  waist_radius: 0.5 mm
+  polarization_extinction_ratio: 1000
