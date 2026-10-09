@@ -11,6 +11,15 @@
 uv sync --all-extras
 ```
 
+On macOS, a `.venv` directory inside a synced folder (such as Desktop) can get its files flagged `hidden`.
+Python then ignores the editable-install `.pth` file and Qt can't find its plugins. This repo therefore
+keeps the environment in `venv/` with `.venv` as a symlink to it. If `uv sync` ever recreates a real
+`.venv`, remove it and rerun:
+
+```bash
+rm -rf .venv && UV_PROJECT_ENVIRONMENT=venv uv sync --all-extras && ln -s venv .venv
+```
+
 ## Run
 
 ```bash

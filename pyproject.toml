@@ -43,6 +43,7 @@ select = ["E", "F", "W", "I", "B", "UP", "NPY"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyside6"
+pythonpath = ["src"]
 
 [dependency-groups]
 dev = [

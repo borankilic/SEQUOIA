@@ -1,0 +1,80 @@
+import re
+from functools import cache
+
+import numpy as np
+import pint
+from scipy import constants
+
+ureg = pint.UnitRegistry()
+_COUNTS_PER_SECOND = re.compile(r"^([kMGm]?)cps$")
+
+_DIMENSIONS = {
+    "dimensionless": ureg.Quantity(1.0, "dimensionless").dimensionality,
+    "length": ureg.Quantity(1.0, "m").dimensionality,
+    "time": ureg.Quantity(1.0, "s").dimensionality,
+    "frequency": ureg.Quantity(1.0, "Hz").dimensionality,
+    "wavenumber": ureg.Quantity(1.0, "1/m").dimensionality,
+    "energy": ureg.Quantity(1.0, "J").dimensionality,
+}
+
+
+def _norm(unit: str) -> str:
+    u = unit.strip()
+    if u in ("", "1"):
+        return "dimensionless"
+    return _COUNTS_PER_SECOND.sub(r"\1Hz", u)
+
+
+def _magnitude(q):
+    mag = q.magnitude
+    return float(mag) if np.ndim(mag) == 0 else np.asarray(mag, dtype=float)
+
+
+def _as_input(value):
+    return float(value) if np.ndim(value) == 0 else np.asarray(value, dtype=float)
+
+
+@cache
+def _unit(unit: str):
+    try:
+        return ureg.Unit(_norm(unit))
+    except Exception as exc:
+        raise ValueError(f"unknown unit {unit!r}") from exc
+
+
+@cache
+def _base_units(unit: str):
+    return ureg.Quantity(1.0, _unit(unit)).to_base_units().units
+
+
+def check_unit(unit: str) -> None:
+    _unit(unit)
+
+
+def to_si(value, unit: str):
+    return _magnitude(ureg.Quantity(_as_input(value), _unit(unit)).to_base_units())
+
+
+def from_si(value, unit: str):
+    return _magnitude(ureg.Quantity(_as_input(value), _base_units(unit)).to(_unit(unit)))
+
+
+def unit_dimension(unit: str) -> str:
+    dim = ureg.Quantity(1.0, _unit(unit)).dimensionality
+    for name, reference in _DIMENSIONS.items():
+        if dim == reference:
+            return name
+    return "other"
+
+
+def to_wavelength(x_si, dimension: str):
+    x = np.asarray(x_si, dtype=float)
+    if dimension == "length":
+        return x
+    if dimension == "frequency":
+        return constants.c / x
+    if dimension == "wavenumber":
+        return 1.0 / x
+    if dimension == "energy":
+        return constants.h * constants.c / x
+    raise ValueError(f"cannot convert a {dimension} axis to wavelength")

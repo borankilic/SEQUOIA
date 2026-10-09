@@ -9,6 +9,24 @@ These hold throughout the code. Each one gets a test when the code that depends 
 - Angles are in degrees in files and the GUI, and in radians internally.
 - Wavelengths are vacuum wavelengths.
 
+## Data files
+
+- Scalars are written as `<number> <unit>` (`405 nm`) or, with provenance, as `{value, unit, provenance}`.
+  A bare number is dimensionless.
+- Curve and surface data are stored in CSV files inside the part folder, in the units named in the
+  header. A curve's `x`/`y` fields hold those file units; `x_si`/`y_si` hold SI values.
+  Curves and surfaces are always called with SI arguments.
+- Axes are written `name (unit)`, for example `wavelength (nm)`. The bracket form `name[unit]` is
+  also read, but it needs quoting inside a YAML flow mapping.
+- Curves must have strictly increasing x in SI. Queries outside the data range follow the curve's
+  `extrapolation` policy: `warn_clamp` (default), `clamp`, `zero` or `error`.
+- Wavelength axes imported from frequency, wavenumber or energy are converted to `nm` and sorted.
+- Provenance sources: `datasheet`, `raw-data`, `measured`, `model`, `ideal-default`.
+- Part references are paths relative to the library root (`detectors/snspd/sq_eos_ch2`).
+- Setup links run from an output port to an input port, written `instance.port`. Link kinds are
+  `free_space`, `fiber` and `cable`, and each must join ports of the matching kind.
+- Fiber links reference a part of type `OpticalFiber`; probes attach to links by id.
+
 ## Fields and phases
 
 - Field phase convention: E ∝ exp[i(kz − ωt)].

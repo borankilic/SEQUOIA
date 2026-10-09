@@ -207,7 +207,7 @@ manufacturer: Single Quantum
 model: Eos
 serial: "…"
 params:
-  efficiency: {curve: sde_vs_wavelength.csv, x: wavelength[nm], y: efficiency[1],
+  efficiency: {curve: sde_vs_wavelength.csv, x: wavelength (nm), y: efficiency (1),
                provenance: {source: measured, date: 2026-03-01, by: Boran, note: "Ib=12 uA"}}
   polarization_extinction: {value: 3.0, unit: "1", provenance: {source: datasheet}}
   dark_count_rate: {value: 50, unit: Hz}
