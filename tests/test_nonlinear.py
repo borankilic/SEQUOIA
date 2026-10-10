@@ -68,11 +68,11 @@ def emit(comp, light=None):
 
 
 def signal_marginal(src):
-    return np.sum(np.abs(src.amplitude) ** 2, axis=(0, 1, 3))
+    return np.sum(np.abs(src.members) ** 2, axis=(0, 1, 2, 4))
 
 
 def sum_marginal(src):
-    return np.sum(np.abs(src.amplitude) ** 2, axis=(0, 1, 2))
+    return np.sum(np.abs(src.members) ** 2, axis=(0, 1, 2, 3))
 
 
 def fwhm_of(x, w):
@@ -82,8 +82,8 @@ def fwhm_of(x, w):
 
 
 def polarization_density(src):
-    a = src.amplitude.reshape(4, -1)
-    return a @ a.conj().T
+    a = src.members.reshape(len(src.members), 4, -1)
+    return sum(m @ m.conj().T for m in a)
 
 
 def test_registration_and_ports():
@@ -199,8 +199,9 @@ def test_werner_copies_keep_spectral_profile():
     members = bell_ensemble("phi+", 0.5)
     assert sum(w for w, _ in members) == pytest.approx(1.0)
     src = gaussian_pair_source(810e-9, bandwidth=100e9, ensemble=members)
-    assert len(src.n_sum) == 4
-    assert np.all(np.diff(src.n_sum) == 1)
+    assert src.is_ensemble and src.members.shape[0] == 4
+    assert len(src.n_sum) == 1
+    assert np.allclose(src.member_weights, [w for w, _ in members])
     assert fwhm_of(src.nu_signal, signal_marginal(src)) == pytest.approx(100e9, rel=0.01)
     with pytest.raises(ValueError):
         bell_ensemble("phi+", 1.2)

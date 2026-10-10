@@ -139,7 +139,7 @@ def gaussian_overlap(q1, q2, wavelength):
 
 def marginals(source):
     """Signal and idler marginal spectra of a PairSource as (wavelength, weight) arrays."""
-    w = np.abs(source.amplitude) ** 2
+    w = np.sum(np.abs(source.members) ** 2, axis=0)
     sig = w.sum(axis=(0, 1, 3))
     lam_s = C / (source.n_signal * source.dnu)
     n_i = source.n_sum[None, :] - source.n_signal[:, None]

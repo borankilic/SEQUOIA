@@ -73,7 +73,7 @@ class _Channel:
 class _Source:
     inst: str
     emission: PairEmission
-    amp: np.ndarray
+    members: np.ndarray
     n_i: np.ndarray
     idx: np.ndarray
     rho: dict[str, np.ndarray]
@@ -216,6 +216,7 @@ class _Engine:
         self._pair_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._dtau_hint: dict[tuple[str, str], float] = {}
         self._seen: set[tuple[str, str, str]] = set()
+        self._moments: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     def issue(self, severity: str, code: str, subject: str, message: str) -> None:
         key = (code, subject, message)
@@ -306,24 +307,24 @@ class _Engine:
 
     def prepare_source(self, inst_id: str, emission: PairEmission) -> _Source:
         ps = emission.source
-        amp = np.array(ps.amplitude, dtype=complex)
+        members = np.array(ps.members, dtype=complex)
         n_s = np.asarray(ps.n_signal, dtype=np.int64)
         n_sum = np.asarray(ps.n_sum, dtype=np.int64)
         n_i_all = n_sum[None, :] - n_s[:, None]
         valid = (n_i_all > 0) & (n_s[:, None] > 0)
-        lost = float(np.sum(np.abs(amp[..., ~valid]) ** 2))
+        lost = float(np.sum(np.abs(members[..., ~valid]) ** 2))
         if lost > 1e-9:
             raise SetupError(
                 f"pair source '{inst_id}': {100 * lost:.3g}% of the pair amplitude lies at "
                 "non-positive frequencies"
             )
-        amp[..., ~valid] = 0.0
+        members[..., ~valid] = 0.0
         if np.any(np.diff(n_s) <= 0):
             raise SetupError(f"pair source '{inst_id}': n_signal must be strictly increasing")
         n_i = np.unique(n_i_all[valid])
         idx = np.searchsorted(n_i, np.where(valid, n_i_all, n_i[0]))
-        rho_s = np.einsum("sijm,tijm->jst", amp, np.conj(amp))
-        r_i = np.einsum("sijm,skjm->jmik", amp, np.conj(amp))
+        rho_s = np.einsum("lsijm,ltijm->jst", members, np.conj(members))
+        r_i = np.einsum("lsijm,lskjm->jmik", members, np.conj(members))
         flat = idx.ravel()
         rho_i = np.zeros((len(n_i), 2, 2), dtype=complex)
         for a in range(2):
@@ -340,7 +341,7 @@ class _Engine:
         src = _Source(
             inst_id,
             emission,
-            amp,
+            members,
             n_i,
             idx,
             {"signal": rho_s, "idler": rho_i},
@@ -348,11 +349,16 @@ class _Engine:
             nu0,
         )
         if emission.signal_port == emission.idler_port:
+            if len(members) > 1:
+                raise SetupError(
+                    f"pair source '{inst_id}': a mixed pair state (ensemble) leaving one port "
+                    "for both photons is not supported; use separate signal and idler ports"
+                )
             self.setup_exchange(src, n_s, n_sum)
         return src
 
     def setup_exchange(self, src: _Source, n_s: np.ndarray, n_sum: np.ndarray) -> None:
-        amp = src.amp
+        amp = src.members[0]
         partner = n_sum[None, :] - n_s[:, None]
         pos = np.clip(np.searchsorted(n_s, partner), 0, len(n_s) - 1)
         found = n_s[pos] == partner
@@ -628,8 +634,15 @@ class _Engine:
         return self.channels[name]
 
     def amplitude_blocks(self, src: _Source, a: str, b: str) -> list[np.ndarray]:
+        blocks: list[np.ndarray] = []
+        for amp in src.members:
+            if np.any(amp):
+                blocks += self.member_blocks(src, amp, a, b)
+        return blocks
+
+    def member_blocks(self, src: _Source, amp: np.ndarray, a: str, b: str) -> list[np.ndarray]:
         ha, hb = src.h[a], src.h[b]
-        amp, idx = src.amp, src.idx
+        idx = src.idx
         ps = src.emission.source
         n_s = np.asarray(ps.n_signal, dtype=np.int64)
         n_sum = np.asarray(ps.n_sum, dtype=np.int64)
@@ -819,16 +832,16 @@ class _Engine:
                     for r in ROLES
                 ]
             for grid, ha, hb, rho in items:
-                c = src.rate * np.einsum("npb,nbc,npc->n", ha, rho, np.conj(hb))
+                c = src.rate * np.einsum("npb,nbc,nqc->npq", ha, rho, np.conj(hb))
                 if not np.any(np.abs(c) > 0):
                     continue
                 pos = grid - grid.min()
-                arr = np.zeros(int(pos.max()) + 1, dtype=complex)
+                arr = np.zeros((int(pos.max()) + 1, 2, 2), dtype=complex)
                 arr[pos] = c
                 period = 1.0 / src.dnu
                 n = self.choose_nfft(len(arr), period, target, subject)
-                g1 = np.fft.fft(arr, n=n)
-                power = np.abs(g1) ** 2
+                g1 = np.fft.fft(arr, n=n, axis=0)
+                power = np.sum(np.abs(g1) ** 2, axis=(1, 2))
                 dtau = period / n
                 weight = float(np.sum(power) * dtau)
                 if weight <= 0:
@@ -1026,10 +1039,10 @@ class _Engine:
             "heralding_b_given_a": true / n["singles_a"] if n["singles_a"] > 0 else 0.0,
         }
 
-    def uncorrelated_probability(self, chan: _Channel, window: float) -> float:
+    def uncorrelated_probability(self, chan: _Channel, window: float) -> tuple[float, float]:
         d = self.det_data[chan.detector]
         surv = d["survival"]
-        probability, covered = 0.0, 0.0
+        probability, covered, per_pulse = 0.0, 0.0, 0.0
         for src in self.sources:
             if not src.pulsed:
                 continue
@@ -1038,8 +1051,9 @@ class _Engine:
                 continue
             pair = surv * d["pair_by_source"][src.inst]
             probability += pair / rep
+            per_pulse += pair / rep
             covered += pair
-        return probability + max(d["singles_hz"] - covered, 0.0) * window
+        return probability + max(d["singles_hz"] - covered, 0.0) * window, per_pulse
 
     def a_heralded(self, name: str, spec: dict[str, Any]) -> dict[str, Any]:
         herald = self.channel_lookup(spec.get("herald"), name)
@@ -1052,9 +1066,14 @@ class _Engine:
         self.window_flag(name + ".a", n_a, window, name)
         self.window_flag(name + ".b", n_b, window, name)
         s_h = self.det_data[herald.detector]["singles_hz"]
-        p_a = self.uncorrelated_probability(a, window)
-        p_b = self.uncorrelated_probability(b, window)
-        triples = n_a["true"] * p_b + n_b["true"] * p_a + s_h * p_a * p_b
+        p_a, q_a = self.uncorrelated_probability(a, window)
+        p_b, q_b = self.uncorrelated_probability(b, window)
+        bunching = self.pulsed_bunching(a, b) if q_a > 0 and q_b > 0 else 0.0
+        triples = (
+            n_a["true"] * (p_b + bunching * q_b)
+            + n_b["true"] * (p_a + bunching * q_a)
+            + s_h * p_a * p_b
+        )
         meas_a = n_a["true"] + n_a["accidental"]
         meas_b = n_b["true"] + n_b["accidental"]
         g2 = triples * s_h / (meas_a * meas_b) if meas_a > 0 and meas_b > 0 else math.nan
@@ -1070,6 +1089,7 @@ class _Engine:
             "true_ha_hz": n_a["true"],
             "true_hb_hz": n_b["true"],
             "triples_hz": triples,
+            "multimode_bunching": bunching,
             "g2_heralded": g2,
         }
 
@@ -1173,29 +1193,81 @@ class _Engine:
         f_rep = src.emission.source.repetition_rate
         mu = src.rate / f_rep
         pa, pb = da["incident_hz"] / f_rep, db["incident_hz"] / f_rep
-        excess = 0.0
-        by_role: dict[str, dict[str, float]] = {}
-        for role in ROLES:
-            x = self.partner_matrix(src, role)
-            ya = np.einsum("fps,fsk->fpk", src.h[a.detector][role], x).reshape(-1, x.shape[2])
-            yb = np.einsum("fps,fsk->fpk", src.h[b.detector][role], x).reshape(-1, x.shape[2])
-            ga, gb = np.conj(ya).T @ ya, np.conj(yb).T @ yb
-            cross = float(np.real(np.sum(ga * gb.T)))
-            tr_a, tr_b = float(np.real(np.trace(ga))), float(np.real(np.trace(gb)))
-            excess += mu**2 * cross
-            by_role[role] = {
-                "trace_a": tr_a,
-                "trace_b": tr_b,
-                "schmidt_a": tr_a**2 / float(np.real(np.sum(ga * ga.T))) if tr_a > 0 else math.nan,
-                "schmidt_b": tr_b**2 / float(np.real(np.sum(gb * gb.T))) if tr_b > 0 else math.nan,
-            }
+        moments = self.pulsed_moments(src, a, b)
+        excess = mu**2 * moments["excess"]
         pair = sum(t.weight for t in self.pair_profile(a, b, None)["terms"] if t.source == src.inst)
         denominator = pa * pb
         g2 = (pair / f_rep + denominator + excess) / denominator if denominator > 0 else math.nan
-        return {"g2_per_pulse": g2, "by_role": by_role, "pulsed_source": src.inst}
+        return {"g2_per_pulse": g2, "by_role": moments["by_role"], "pulsed_source": src.inst}
 
-    def partner_matrix(self, src: _Source, role: str) -> np.ndarray:
-        amp, idx = src.amp, src.idx
+    def pulsed_moments(self, src: _Source, a: _Channel, b: _Channel) -> dict[str, Any]:
+        # Mixture of pair states, each pulse in member k with probability w_k (amplitudes carry
+        # sqrt(w_k)). Per member the unheralded second-order moment is the thermal one built
+        # from the reduced one-photon operators g = Y^dagger Y of the partner space (Y = filtered
+        # amplitude); normalised member operators are g_k / w_k. The per-pulse average gives
+        # sum_k w_k Tr(gh_a,k gh_b,k) plus the covariance over members of the detected
+        # intensities Tr(gh_a,k), Tr(gh_b,k) (zero when all members have the same reduced
+        # state, as for polarization mixing of a common JSA). The Schmidt numbers use the
+        # averaged operators G = sum_k g_k, i.e. the reduced density matrix of the mixture.
+        key = (src.inst, a.detector, b.detector)
+        cached = self._moments.get(key)
+        if cached is not None:
+            return cached
+        weights = np.sum(np.abs(src.members) ** 2, axis=(1, 2, 3, 4))
+        thermal = 0.0
+        t_a = np.zeros(len(weights))
+        t_b = np.zeros(len(weights))
+        by_role: dict[str, dict[str, float]] = {}
+        for role in ROLES:
+            sum_a = sum_b = None
+            for k, amp in enumerate(src.members):
+                w = float(weights[k])
+                if w <= 0.0:
+                    continue
+                x = self.partner_matrix(src, role, amp)
+                ya = np.einsum("fps,fsk->fpk", src.h[a.detector][role], x).reshape(-1, x.shape[2])
+                yb = np.einsum("fps,fsk->fpk", src.h[b.detector][role], x).reshape(-1, x.shape[2])
+                ga, gb = np.conj(ya).T @ ya, np.conj(yb).T @ yb
+                thermal += float(np.real(np.sum(ga * gb.T))) / w
+                t_a[k] += float(np.real(np.trace(ga))) / w
+                t_b[k] += float(np.real(np.trace(gb))) / w
+                sum_a = ga if sum_a is None else sum_a + ga
+                sum_b = gb if sum_b is None else sum_b + gb
+            tr_a = float(np.real(np.trace(sum_a))) if sum_a is not None else 0.0
+            tr_b = float(np.real(np.trace(sum_b))) if sum_b is not None else 0.0
+            by_role[role] = {
+                "trace_a": tr_a,
+                "trace_b": tr_b,
+                "schmidt_a": tr_a**2 / float(np.real(np.sum(sum_a * sum_a.T)))
+                if tr_a > 0
+                else math.nan,
+                "schmidt_b": tr_b**2 / float(np.real(np.sum(sum_b * sum_b.T)))
+                if tr_b > 0
+                else math.nan,
+            }
+        covariance = float(
+            np.sum(weights * t_a * t_b) - np.sum(weights * t_a) * np.sum(weights * t_b)
+        )
+        mean_a, mean_b = float(np.sum(weights * t_a)), float(np.sum(weights * t_b))
+        result = {
+            "excess": thermal + covariance,
+            "by_role": by_role,
+            "mean_a": mean_a,
+            "mean_b": mean_b,
+        }
+        self._moments[key] = result
+        return result
+
+    def pulsed_bunching(self, a: _Channel, b: _Channel) -> float:
+        pulsed = [s for s in self.sources if s.pulsed]
+        if not pulsed:
+            return 0.0
+        m = self.pulsed_moments(pulsed[0], a, b)
+        product = m["mean_a"] * m["mean_b"]
+        return m["excess"] / product if product > 0 else 0.0
+
+    def partner_matrix(self, src: _Source, role: str, amp: np.ndarray) -> np.ndarray:
+        idx = src.idx
         ns = amp.shape[2]
         ni = len(src.n_i)
         jg = np.broadcast_to(np.arange(ns)[:, None], idx.shape)

@@ -101,6 +101,21 @@ Heralding (Klyshko) efficiency of A given B: `C_true / S_B`.
 
 Heralded triples (herald H, detectors a, b), uncorrelated-process model:
 `R_Hab = R_Ha S_b' W + R_Hb S_a' W + S_H S_a S_b W^2`, `g2_H(0) = R_Hab * S_H / (R_Ha * R_Hb)`.
+Pulsed sources: `S' W` is replaced by the per-pulse probability, and its pair-sourced part is
+multiplied by `1 + 1/K_ab`, the unheralded bunching of a and b (K: Schmidt number of the
+filtered arm). Low gain, broadband herald, no herald saturation (exact low-mu value is
+`mu (2 - eta_H) (1 + 1/K)`; the engine returns the eta_H -> 0 limit `2 mu (1 + 1/K)`).
+
+### Mixed pair states (ensemble axis)
+
+`PairSource.amplitude` may carry a leading member axis `(K, 2, 2, ns, nm)`; member k holds
+`sqrt(w_k) psi_k` and members share the lattice. The engine adds members incoherently:
+rates, windows, correlation functions and HOM are sums over members. Per pulse the unheralded
+moments are averaged over members (each pulse is in member k with probability `w_k`); the
+Schmidt number is that of the averaged reduced density matrix `rho = sum_k w_k rho_k`. A mixture
+whose members share one reduced state (polarization mixing of a common JSA, e.g. Werner) has the
+K and g2 of the pure JSA, independent of the mixing. Mixed states leaving a single shared port
+are rejected.
 
 ### Unheralded g2 and Schmidt number
 
@@ -109,7 +124,8 @@ For detectors `a`, `b` fed by the same role `r`, the reduced one-photon operator
 thermal-statistics SPDC light, `g2_ab = 1 + Tr(N_ab N_ab^dagger) / (Tr N_aa * Tr N_bb)` per pulse.
 Schmidt number `K = 1 / sum(lambda_n^2)` of the filtered amplitude; `g2(0) = 1 + 1/K` for a single
 pulsed arm. For CW the histogram is `S_a S_b (1 + |G1_ab(tau)|^2 / (S_a S_b))` convolved with the
-jitter, `G1_ab(tau) = sum_nu exp(-2 pi i nu tau) tr[N_ab(nu)]`.
+jitter, with `|G1_ab(tau)|^2` the Frobenius norm over polarization components of
+`G1_ab(tau)_pq = sum_nu exp(-2 pi i nu tau) N_ab(nu)_pq` (an unpolarized arm gives g2(0) = 3/2).
 
 ### analyses (setup file, interpreted by the rate engine)
 

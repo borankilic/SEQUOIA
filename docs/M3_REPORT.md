@@ -176,7 +176,6 @@ unwrapped (-9.79 ns, from the nominal path delays) and the counts and CAR are un
   the HBT example, from the T_s = 0.001 leakage of the idler into the signal arm, visible in the
   `g2_ab` histogram as an apparent g2 peak of 15).
 - Fiber polarization is the identity (ideal); no paddles in the examples.
-- The engine prints duplicate `fiber_multimode` diagnostics for the 405 nm pump (classical and
-  photon pass); cosmetic.
+- `fiber_multimode` diagnostics for the 405 nm pump are de-duplicated (once per link).
 - One setup run builds the crystal once (about 1.5-3 s); the spdcalc evaluation (about 50 us per
   JSA point) dominates. The integration tests cache it.

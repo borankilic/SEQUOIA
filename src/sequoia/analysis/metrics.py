@@ -146,11 +146,22 @@ def amplitude_to_matrix(amplitude, n_signal=None, n_sum=None):
 
 
 def schmidt_number(amplitude, n_signal=None, n_sum=None):
-    if (n_signal is None or n_sum is None) and np.shape(amplitude)[3] == 1:
+    """Schmidt number 1/sum(lambda^2) of a pure amplitude (sigma_s, sigma_i, j, m).
+
+    An ensemble amplitude (members, sigma_s, sigma_i, j, m) whose members carry sqrt(weight)
+    gives the participation ratio (tr rho)^2 / tr rho^2 of the mixture's reduced signal state
+    rho = sum_k M_k M_k^dagger, which is what controls the unheralded g2 = 1 + 1/K.
+    """
+    if (n_signal is None or n_sum is None) and np.shape(amplitude)[-1] == 1:
         raise ValueError(
             "a single sum-frequency entry (CW pump) needs n_signal and n_sum to resolve the idler "
             "frequency; pass the lattice arguments of the PairSource"
         )
+    a = np.asarray(amplitude)
+    if a.ndim == 5:
+        mats = [amplitude_to_matrix(m, n_signal, n_sum) for m in a]
+        rho = sum(m @ m.conj().T for m in mats)
+        return float(np.real(np.trace(rho)) ** 2 / np.real(np.trace(rho @ rho)))
     return schmidt_number_matrix(amplitude_to_matrix(amplitude, n_signal, n_sum))
 
 

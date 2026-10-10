@@ -20,6 +20,7 @@ from sequoia.components.base import (
     Settings,
     register,
 )
+from sequoia.components.nonlinear import bell_ensemble, gaussian_pair_source
 from sequoia.engines.rates import has_rate_devices, simulate_rates
 from sequoia.library.store import Library
 from sequoia.light.detection import DetectorModel, TaggerModel
@@ -505,9 +506,9 @@ def hom_expected(tau, reflectance, sigma=SIGMA):
     return t**2 + reflectance**2 - 2 * t * reflectance * visibility
 
 
-def hom_run(lib, delta, reflectance=0.5, eta=0.5, rate=1e5):
+def hom_run(lib, delta, reflectance=0.5, eta=0.5, rate=1e5, pair=None):
     put(lib, "bsx", "BeamSplitter", reflectance=reflectance)
-    PAIRS["src"] = cw_pair(rate)
+    PAIRS["src"] = pair if pair is not None else cw_pair(rate)
     DETS["ds"], DETS["di"] = det(eta), det(eta)
     TAGS["tag"] = TaggerModel()
     length = 100e-3 + delta * C
@@ -1491,3 +1492,222 @@ def test_afterpulse_tau_does_not_change_rates(lib):
         )
         out.append(r.channels["tag.ch1"]["singles_hz"])
     assert out[0] == out[1]
+
+
+FWHM_FACTOR = 2.0 * math.sqrt(2.0 * math.log(2.0))
+GAUSS_BANDWIDTH = 300e9
+
+
+def gaussian_schmidt(bandwidth, pump_bandwidth):
+    sigma_x, sigma_p = bandwidth / FWHM_FACTOR, pump_bandwidth / FWHM_FACTOR
+    sigma_m = math.sqrt(4 * sigma_x**2 - sigma_p**2)
+    return 0.5 * (sigma_p / sigma_m + sigma_m / sigma_p)
+
+
+def pump_bandwidth_for_schmidt(bandwidth, k):
+    ratio = k + math.sqrt(k**2 - 1)
+    return 2.0 * bandwidth * ratio / math.sqrt(1 + ratio**2)
+
+
+def werner_pulsed_source(visibility, rate=1e5, rep=80e6, pump_bandwidth=100e9, state="phi+"):
+    ensemble = bell_ensemble(state, visibility) if visibility < 1.0 else None
+    polarization = None
+    if ensemble is None:
+        s = 1 / math.sqrt(2)
+        polarization = np.array([[s, 0.0], [0.0, s]]) if state == "phi+" else None
+    return gaussian_pair_source(
+        810e-9,
+        bandwidth=GAUSS_BANDWIDTH,
+        pump_bandwidth=pump_bandwidth,
+        rate=rate,
+        samples=301,
+        repetition_rate=rep,
+        ensemble=ensemble,
+        polarization=polarization,
+    )
+
+
+def signal_arm_hbt_setup(analyses):
+    return setup_from_dict(
+        {
+            "instances": [
+                inst("src", "pairbox"),
+                inst("bs", "bs"),
+                inst("ds", "det_s"),
+                inst("da", "det_a"),
+                inst("db", "det_b"),
+                inst("tag", "tagger"),
+            ],
+            "links": [
+                fs("h", "src.signal", "bs.in_a", "10 mm"),
+                fs("a", "bs.out_a", "da.in", "10 mm"),
+                fs("b", "bs.out_b", "db.in", "10 mm"),
+                fs("x", "src.idler", "ds.in", "10 mm"),
+                cable("c1", "ds", "ch1"),
+                cable("c2", "da", "ch2"),
+                cable("c3", "db", "ch3"),
+            ],
+            "analyses": analyses,
+        }
+    )
+
+
+def pulsed_g2_run(lib, pair, eta=(0.3, 0.5, 0.4)):
+    PAIRS["src"] = pair
+    DETS["ds"], DETS["da"], DETS["db"] = det(eta[0]), det(eta[1]), det(eta[2])
+    TAGS["tag"] = TaggerModel()
+    spec = {"name": "g", "type": "g2", "channels": ["tag.ch2", "tag.ch3"]}
+    spec |= {"range": "100 ps", "bins": 20}
+    return simulate_rates(signal_arm_hbt_setup([spec]), lib).analyses["g"]
+
+
+def test_mixed_state_schmidt_number_and_pulsed_g2_do_not_depend_on_visibility(lib):
+    k_f = gaussian_schmidt(GAUSS_BANDWIDTH, 100e9)
+    assert k_f == pytest.approx(3.04, abs=0.01)
+    results = {v: pulsed_g2_run(lib, werner_pulsed_source(v)) for v in (1.0, 0.5, 0.0)}
+    for v, g in results.items():
+        assert g["g2_per_pulse"] == pytest.approx(1 + 1 / (2 * k_f), rel=5e-3), v
+        assert g["by_role"]["signal"]["schmidt_a"] == pytest.approx(2 * k_f, rel=1e-2), v
+        assert g["by_role"]["signal"]["schmidt_b"] == pytest.approx(2 * k_f, rel=1e-2), v
+    pure = results[1.0]
+    for v in (0.5, 0.0):
+        assert results[v]["g2_per_pulse"] == pytest.approx(pure["g2_per_pulse"], rel=1e-9)
+        assert results[v]["by_role"]["signal"]["schmidt_a"] == pytest.approx(
+            pure["by_role"]["signal"]["schmidt_a"], rel=1e-9
+        )
+
+
+def test_mixed_state_pair_source_matches_pure_state_spectral_structure():
+    from sequoia.analysis import metrics
+
+    pure = werner_pulsed_source(1.0)
+    mixed = werner_pulsed_source(0.0)
+    assert mixed.is_ensemble and mixed.members.shape[0] == 4
+    assert np.array_equal(mixed.n_sum, pure.n_sum) and np.all(np.diff(mixed.n_sum) == 1)
+    assert np.allclose(mixed.member_weights, 0.25)
+    k_pure = metrics.schmidt_number(pure.amplitude, pure.n_signal, pure.n_sum)
+    k_mixed = metrics.schmidt_number(mixed.amplitude, mixed.n_signal, mixed.n_sum)
+    assert k_mixed == pytest.approx(k_pure, rel=1e-9)
+    assert k_pure == pytest.approx(2 * gaussian_schmidt(GAUSS_BANDWIDTH, 100e9), rel=1e-2)
+
+
+def werner_cw_source(visibility, rate=1e5, bandwidth=FWHM_FACTOR * SIGMA):
+    return gaussian_pair_source(
+        810e-9,
+        bandwidth=bandwidth,
+        rate=rate,
+        samples=101,
+        ensemble=bell_ensemble("phi+", visibility),
+    )
+
+
+@pytest.mark.parametrize("v", [1.0, 0.6, 0.0])
+def test_werner_ensemble_singles_and_bell_correlations_through_the_engine(lib, v):
+    rate, eta = 1e5, 0.7
+    pair = werner_cw_source(v, rate)
+
+    def run(a, b):
+        r = two_arm(
+            lib,
+            pair,
+            det(eta),
+            det(eta),
+            sig=[("polx", {"angle": f"{a} deg"})],
+            idl=[("polx", {"angle": f"{b} deg"})],
+            analyses=[coincidence()],
+        )
+        return r
+
+    a, b = 22.0, -13.0
+    first = run(a, b)
+    assert first.channels["tag.ch1"]["pair_singles_hz"] == pytest.approx(0.5 * rate * eta)
+    assert first.channels["tag.ch2"]["pair_singles_hz"] == pytest.approx(0.5 * rate * eta)
+    c = {}
+    for sa, sb in ((0, 0), (90, 90), (0, 90), (90, 0)):
+        c[(sa, sb)] = run(a + sa, b + sb).analyses["c"]["coincidence_rate_hz"]
+    delta = math.radians(a - b)
+    assert c[(0, 0)] == pytest.approx(rate * eta**2 * (1 + v * math.cos(2 * delta)) / 4, rel=1e-9)
+    e = (c[(0, 0)] + c[(90, 90)] - c[(0, 90)] - c[(90, 0)]) / sum(c.values())
+    assert e == pytest.approx(v * math.cos(2 * delta), abs=1e-9)
+    assert sum(c.values()) == pytest.approx(rate * eta**2, rel=1e-9)
+
+
+@pytest.mark.parametrize("v", [1.0, 0.6, 0.0])
+def test_werner_ensemble_hom_dip_matches_member_weights(lib, v):
+    rate, eta = 1e5, 0.5
+    pair = werner_cw_source(v, rate)
+    far = hom_run(lib, 2e-9, eta=eta, rate=rate, pair=pair).analyses["c"]["coincidence_rate_hz"]
+    assert far == pytest.approx(rate * eta**2 * 0.5, rel=2e-3)
+    for tau in (0.0, 8e-12, 20e-12):
+        got = hom_run(lib, tau, eta=eta, rate=rate, pair=pair).analyses["c"]["coincidence_rate_hz"]
+        vis = math.exp(-8 * math.pi**2 * SIGMA**2 * tau**2)
+        expected = 0.5 * rate * eta**2 * (1 - 0.5 * (1 + v) * vis)
+        assert got == pytest.approx(expected, rel=3e-3, abs=1e-6 * rate)
+
+
+@pytest.mark.parametrize("v", [1.0, 0.6, 0.0])
+def test_werner_ensemble_cw_thermal_g2_is_one_plus_polarization_purity(lib, v):
+    pair = werner_cw_source(v, 2e5)
+    r = hbt_run(lib, "2 ns", pair=pair)
+    assert r.analyses["u"]["g2_peak"] == pytest.approx(1.5, rel=1e-2)
+    assert r.analyses["u"]["g2"][0] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_cw_thermal_g2_of_polarized_arm_is_two_unpolarized_is_one_and_a_half(lib):
+    s = 1 / math.sqrt(2)
+    polarized = hbt_run(lib, "2 ns", pair=cw_pair(2e5))
+    assert polarized.analyses["u"]["g2_peak"] == pytest.approx(2.0, rel=1e-2)
+    bell = hbt_run(lib, "2 ns", pair=cw_pair(2e5, state={(0, 0): s, (1, 1): s}))
+    assert bell.analyses["u"]["g2_peak"] == pytest.approx(1.5, rel=1e-2)
+
+
+def test_ensemble_source_with_one_shared_port_is_rejected(lib):
+    pair = werner_cw_source(0.5)
+    PAIRS["src"] = pair
+    DETS["ds"], DETS["di"] = det(1.0), det(1.0)
+    TAGS["tag"] = TaggerModel()
+    setup = setup_from_dict(
+        {
+            "instances": [
+                inst("src", "pairbox_c"),
+                inst("pbs", "pbs"),
+                inst("ds", "det_s"),
+                inst("di", "det_i"),
+                inst("tag", "tagger"),
+            ],
+            "links": [
+                fs("h", "src.out", "pbs.in", "10 mm"),
+                fs("a", "pbs.out_t", "ds.in", "10 mm"),
+                fs("b", "pbs.out_r", "di.in", "10 mm"),
+                cable("c1", "ds", "ch1"),
+                cable("c2", "di", "ch2"),
+            ],
+            "analyses": [coincidence()],
+        }
+    )
+    from sequoia.errors import SetupError
+
+    with pytest.raises(SetupError, match="ensemble"):
+        simulate_rates(setup, lib)
+
+
+@pytest.mark.parametrize("k", [1.0, 3.0])
+def test_pulsed_heralded_g2_has_multimode_bunching_factor(lib, k):
+    rep, mu, eta_h = 80e6, 1e-3, 0.02
+    pump = (
+        pump_bandwidth_for_schmidt(GAUSS_BANDWIDTH, k) if k > 1 else math.sqrt(2) * GAUSS_BANDWIDTH
+    )
+    assert gaussian_schmidt(GAUSS_BANDWIDTH, pump) == pytest.approx(k, rel=1e-9)
+    pair = gaussian_pair_source(
+        810e-9,
+        bandwidth=GAUSS_BANDWIDTH,
+        pump_bandwidth=pump,
+        rate=mu * rep,
+        samples=201,
+        repetition_rate=rep,
+    )
+    r = hbt_run(lib, "1 ns", pair=pair, eta=(eta_h, 0.4, 0.3))
+    h = r.analyses["h"]
+    assert h["multimode_bunching"] == pytest.approx(1 / k, rel=0.02)
+    expected = mu * (2 - eta_h) * (1 + 1 / k)
+    assert h["g2_heralded"] == pytest.approx(expected, rel=0.02)

@@ -129,7 +129,7 @@ class HBT:
             1j * math.pi * self.pump.waist_radius.si**2 / 405e-9,
             [("d", self.lengths["s_pump"]), ("f", f_pump), ("d", self.lengths["s_focus"])],
         )
-        self.pump_waist_at_crystal = math.sqrt(-405e-9 / (math.pi * (1.0 / q).imag))
+        self.pump_waist_at_crystal = math.sqrt(405e-9 * q.imag / math.pi)
         self.spdc = spdcalc.SPDC.from_yaml(
             spdc_config(
                 self.crystal.length.si,
@@ -288,7 +288,7 @@ def test_hbt_example_has_no_unexpected_diagnostics(hbt):
 def test_hbt_pair_rate_matches_spdcalc_efficiencies(hbt):
     h, setup, result = hbt
     pump = result.classical.links["s_focus"].end
-    assert math.sqrt(pump.mode.w_x * pump.mode.w_y) == pytest.approx(
+    assert math.sqrt(pump.mode.waist_x * pump.mode.waist_y) == pytest.approx(
         h.pump_waist_at_crystal, rel=1e-6
     )
     s = spdcalc.SPDC.from_yaml(
@@ -472,7 +472,7 @@ def hom_pump_waist(setup):
         1j * math.pi * laser.waist_radius.si**2 / 405e-9,
         [("d", L["s_pump"]), ("f", f), ("d", L["s_focus"])],
     )
-    return math.sqrt(-405e-9 / (math.pi * (1.0 / q).imag))
+    return math.sqrt(405e-9 * q.imag / math.pi)
 
 
 def hom_engine_series(setup, delays_ps):

@@ -205,4 +205,6 @@ def simulate(setup: Setup, library: Library) -> SimulationResult:
         if issubclass(w.category, ExtrapolationWarning) and str(w.message) not in seen:
             seen.add(str(w.message))
             issues.append(Issue("warning", "curve_extrapolation", "data", str(w.message)))
+    unique = list(dict.fromkeys(issues))
+    issues[:] = unique
     return SimulationResult(states, readouts, probe_results, issues, sources)

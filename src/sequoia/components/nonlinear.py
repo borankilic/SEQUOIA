@@ -69,16 +69,6 @@ def bell_ensemble(
     ]
 
 
-def _lattice_sum_entries(
-    n_centre: int, copies: int, per_copy: int
-) -> tuple[np.ndarray, np.ndarray]:
-    half = per_copy // 2
-    base = n_centre + copies * (np.arange(per_copy) - half)
-    n_sum = (base[:, None] + np.arange(copies)[None, :]).reshape(-1)
-    copy_index = np.tile(np.arange(copies), per_copy)
-    return n_sum, copy_index
-
-
 def gaussian_pair_source(
     wavelength_signal: float,
     wavelength_idler: float | None = None,
@@ -103,18 +93,11 @@ def gaussian_pair_source(
     u = nu_s + nu_i - nu_p, v = nu_s - nu_i - (nu_s0 - nu_i0) and s_m^2 = 4 s_x^2 - s_p^2,
     so the marginal std is s_x = bandwidth / 2.3548 and the correlation is controlled by
     pump_bandwidth. ``polarization`` is a (2, 2) amplitude [sigma_s, sigma_i] (default HH);
-    ``ensemble`` is a list of (weight, (2, 2) amplitude) pairs encoding a mixed state: each
-    member is placed on its own interleaved sum-frequency entries so the engine, which adds
-    sum-frequency entries incoherently, reproduces the mixture. An ensemble member sits at a
-    sum frequency shifted by at most (members - 1) lattice steps.
-
-    The ensemble encoding reproduces the mixed state for every quantity that is a sum over
-    sum-frequency entries of per-entry terms (singles, coincidence rates, the coincidence
-    window fraction, HOM interference, CW thermal g2). It is not equivalent for pulsed
-    unheralded g2 / Schmidt number: there the one-photon reduced state is built coherently
-    over the sum-frequency index, members share idler lattice sites and each member alone
-    samples only every ``len(members)``-th sum frequency, so K and g2 - 1 come out wrong
-    (about a factor 2 for visibility < 1 with a pump bandwidth).
+    ``ensemble`` is a list of (weight, (2, 2) amplitude) pairs encoding a mixed state: the
+    returned ``PairSource`` has an ensemble axis (see ``PairSource``), every member shares the
+    same spectral amplitude on the same contiguous lattice and carries its polarization
+    amplitude times sqrt(weight). The engine adds members incoherently, so the polarization
+    mixing leaves the spectral structure (Schmidt number, unheralded g2) untouched.
     """
     c = constants.c
     nu_s0 = c / wavelength_signal
@@ -133,17 +116,16 @@ def gaussian_pair_source(
         members = [(1.0, np.asarray(pol, dtype=complex))]
     weights = np.array([w for w, _ in members], dtype=float)
     weights = weights / weights.sum()
-    copies = len(members)
 
     half = int(math.ceil(4.5 * sigma_x / dnu))
     n_s0 = int(round(nu_s0 / dnu))
     n_signal = n_s0 + np.arange(-half, half + 1)
     n_p0 = int(round(nu_p0 / dnu))
-    if sigma_p > 0.0 and 3.0 * pump_bandwidth / dnu >= 4.0 * copies:
-        per_copy = 2 * int(math.ceil(4.0 * sigma_p / (copies * dnu))) + 1
+    if sigma_p > 0.0 and 3.0 * pump_bandwidth / dnu >= 4.0:
+        n_half = int(math.ceil(4.0 * sigma_p / dnu))
+        n_sum = n_p0 + np.arange(-n_half, n_half + 1)
     else:
-        per_copy, sigma_p = 1, 0.0
-    n_sum, copy_index = _lattice_sum_entries(n_p0, copies, per_copy)
+        n_sum, sigma_p = np.array([n_p0]), 0.0
 
     nu_s = n_signal[:, None] * dnu
     nu_i = n_sum[None, :] * dnu - nu_s
@@ -152,16 +134,14 @@ def gaussian_pair_source(
     if sigma_p > 0.0:
         u = nu_s + nu_i - nu_p0
         f = f * np.exp(-(u**2) / (4.0 * sigma_p**2))
-    amplitude = np.zeros((2, 2, len(n_signal), len(n_sum)), dtype=complex)
+    spectral_part = f / np.sqrt(np.sum(f**2))
+    amplitude = np.zeros((len(members), 2, 2, len(n_signal), len(n_sum)), dtype=complex)
     for k, (_, pol) in enumerate(members):
-        cols = np.flatnonzero(copy_index == k)
-        block = f[:, cols]
-        norm = np.sqrt(np.sum(block**2))
         pol = np.asarray(pol, dtype=complex)
         pol = pol / np.sqrt(np.sum(np.abs(pol) ** 2))
-        amplitude[:, :, :, cols] = (
-            np.sqrt(weights[k]) * pol[:, :, None, None] * (block / norm)[None, None]
-        )
+        amplitude[k] = np.sqrt(weights[k]) * pol[:, :, None, None] * spectral_part[None, None]
+    if len(members) == 1:
+        amplitude = amplitude[0]
     if signal_mode is None:
         signal_mode = GaussianMode.from_waist(wavelength_signal, 1e-3)
     if idler_mode is None:
@@ -667,14 +647,12 @@ class EntangledPairSource(Component):
     ``center_wavelength`` (signal) and ``idler_wavelength`` (default: degenerate).
     ``pump_bandwidth`` (wavelength FWHM at the pump wavelength, None = CW) sets the sum-frequency
     spread. The rate is ``pair_rate`` or ``brightness`` (pairs/s/mW) times the ``pump_power``
-    setting. A visibility below 1 gives the Werner state v|B><B| + (1-v) I/4, encoded as an
-    ensemble of the four Bell states on interleaved sum-frequency entries. This is exact for
-    singles, coincidences, the coincidence-window fraction, HOM and CW thermal g2 (the
-    members sit at sum frequencies that differ by at most three lattice steps, negligible for
-    a lattice much finer than the bandwidth). It is NOT exact for pulsed unheralded g2 /
-    Schmidt number (visibility < 1 with ``pump_bandwidth``): members share idler lattice
-    sites and are sampled on every fourth sum frequency, so K and g2 - 1 are off by about a
-    factor 2.
+    setting. A visibility below 1 gives the Werner state v|B><B| + (1-v) I/4, represented as
+    an incoherent ensemble of the four Bell states (weights v + (1-v)/4 and (1-v)/4) sharing
+    one spectral amplitude, on one contiguous lattice. The rate engine sums members at the
+    level of density matrices, so singles, coincidences, windows, HOM, CW and pulsed
+    unheralded g2 and the Schmidt number are those of the mixed state; the one-photon
+    reduced state is I/2 x rho_f for every visibility, hence K and g2 do not depend on it.
 
     The frequency lattice spacing is dnu = 1/``delay_window`` (default 10 ns, as for
     SPDCCrystal) so that the pair state is periodic in time with that period and fibre
@@ -718,7 +696,7 @@ class EntangledPairSource(Component):
         else:
             cap = p.max_samples if p.samples is None else min(p.samples, p.max_samples)
             dnu = max(wanted, 9.0 * sigma_x / cap)
-            if pump_bandwidth and 3.0 * pump_bandwidth / dnu >= 4.0 * len(ensemble):
+            if pump_bandwidth and 3.0 * pump_bandwidth / dnu >= 4.0:
                 sigma_p = pump_bandwidth / _FWHM
                 dnu = max(dnu, math.sqrt(9.0 * sigma_x * 8.0 * sigma_p / p.max_samples))
         if dnu > 1.001 * wanted:
