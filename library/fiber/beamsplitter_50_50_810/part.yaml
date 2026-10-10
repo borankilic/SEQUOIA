@@ -1,0 +1,6 @@
+type: FiberBeamSplitter
+manufacturer: generic
+model: 2x2 single-mode fiber coupler, 50:50 at 810 nm
+params:
+  split_ratio: {value: 0.5, unit: "1", provenance: {source: ideal-default, note: generic placeholder}}
+  transmission: {value: 0.98, unit: "1", provenance: {source: ideal-default, note: excess loss 2 percent}}

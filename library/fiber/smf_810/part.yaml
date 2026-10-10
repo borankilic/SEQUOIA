@@ -1,0 +1,11 @@
+type: OpticalFiber
+manufacturer: generic
+model: 810 nm single-mode fiber
+description: Generic placeholder. Single-mode above the 730 nm cutoff; below it (e.g. the
+  405 nm pump) the fiber is multimode and the engine warns.
+params:
+  kind: smf
+  mode_field_diameter: {value: 5.2, unit: um, provenance: {source: ideal-default, note: generic value at 810 nm}}
+  cutoff_wavelength: {value: 730, unit: nm, provenance: {source: ideal-default, note: generic placeholder}}
+  numerical_aperture: 0.13
+  attenuation_db_per_km: 3.5

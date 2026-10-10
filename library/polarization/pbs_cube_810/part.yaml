@@ -1,0 +1,9 @@
+type: PBS
+manufacturer: generic
+model: polarizing beam splitter cube, 810 nm, finite extinction
+description: Generic placeholder values (T_p 0.98, T_s 0.001, R_s 0.99, R_p 0.05), not a vendor spec.
+params:
+  transmittance_p: {value: 0.98, unit: "1", provenance: {source: ideal-default, note: generic placeholder}}
+  transmittance_s: {value: 0.001, unit: "1", provenance: {source: ideal-default, note: generic placeholder}}
+  reflectance_s: {value: 0.99, unit: "1", provenance: {source: ideal-default, note: generic placeholder}}
+  reflectance_p: {value: 0.05, unit: "1", provenance: {source: ideal-default, note: generic placeholder}}

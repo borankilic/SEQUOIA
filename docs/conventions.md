@@ -84,3 +84,55 @@ These hold throughout the code. Each one gets a test when the code that depends 
 
 - The SMF polarization transform defaults to the identity, which is the ideal case.
 - The alternatives are an explicit SU(2) or a seeded random one.
+
+## Quantum layer (M3)
+
+These are the approximations a user must know. Details and validation numbers are in
+`docs/M3_REPORT.md`.
+
+- First order in the pair rate: the rate engine gives exact single-pair statistics. Multi-pair
+  events enter only through the uncorrelated-process formula for heralded g2 and the thermal term
+  of the unheralded g2 histogram. There is no high-gain or PNR physics (M8).
+- Photons travel the same linear network as classical light: the pair state is transformed with
+  the per-wavelength Jones matrices and the phase `nu*gpl/c + nu0*(opl - gpl)/c`. Fiber group delay
+  uses the part's `group_index`; fiber dispersion (GDD) and polarization-mode dispersion are
+  not modelled.
+- The pair state lives on an integer frequency lattice `nu = n*dnu`. Time structure is periodic
+  with period `1/dnu`. The correlation peak is found modulo that period and reported unwrapped
+  using the nominal path delays; the `delay_aliasing` diagnostic fires when a path-delay
+  difference reaches half a period (other paths can then alias). For
+  `SPDCCrystal` the lattice follows `delay_window` (the parts set 40 ns: fiber length differences
+  up to about 4 m are safe), limited by `max_samples`.
+- The spatial mode of each photon is a single Gaussian (the collection mode `signal_waist`,
+  `idler_waist` at the position spdcalc optimises) propagated through the optics at the photon's
+  central wavelength. Fiber coupling is the Gaussian overlap with the fiber mode. The pair rate is
+  computed for these collection waists and is not recomputed when the real optics back-propagate
+  a different fiber mode to the crystal, so choose the waists to match (the `coupling efficiency`
+  of the photon is then close to the product of component transmissions). There is no chromatic
+  focal shift across the pair spectrum.
+- The classical pump (leakage) is coupled into the single-mode fiber with the same mode-overlap
+  model as the photons, at the pump wavelength, using the fiber's MFD at its design wavelength.
+  It ignores multimode guidance below cutoff and the real chromatic mismatch of the collimators, so
+  leakage numbers are an estimate to within an order of magnitude; the engine warns
+  `fiber_multimode`.
+- `SPDCCrystal` keeps the signal band where |JSA|^2 on the phase-matching ridge exceeds
+  `spectral_cutoff` (default 1%) of its peak. This drops the far sinc side lobes: the pair rate of
+  the example crystal agrees with spdcalc to 0.1%, but HOM dip shapes near the apex differ by up to
+  0.02 (absolute, normalised rate) from the full exchange integral.
+- The polarization state and `Werner` visibility of `EntangledPairSource` are an ensemble on
+  interleaved sum-frequency entries (exact for singles, coincidences, HOM, CW g2; approximate for
+  pulsed unheralded g2 and Schmidt number at visibility < 1).
+- Wave plates follow `E ~ exp[i(kz - wt)]`: the Jones matrix of a plate at angle t is
+  `R(t) diag(e^{-i d/2}, e^{+i d/2}) R(-t)`, which is `diag(1, -1)` for a half-wave plate and
+  `diag(1, i)` (up to a global phase) for a quarter-wave plate. `metrics.tomography_settings()`
+  returns HWP/QWP angle pairs for an analyser arm HWP -> QWP -> PBS (H transmitted); a half-wave
+  plate at `h` analyses linear polarization at `2h`. R = (H - iV)/sqrt2, L = (H + iV)/sqrt2. This is
+  checked against the engine in `tests/test_m3_integration.py`.
+- A PBS transmits H (`out_t`) and reflects V (`out_r`) with the usual `i` phase; `PBS` parts with
+  finite extinction send leakage photons to the wrong arm and the engine counts them.
+- Detector dead time is non-paralyzable and applied to singles and coincidences; afterpulsing adds
+  to the background; jitter is a Gaussian plus optional exponential tail convolved into the
+  correlation function. Dark counts and leakage add incoherently.
+- Accidentals for CW sources use `S_A S_B W` with total singles; CAR is `true / accidental`.
+  The heralded g2 uses the uncorrelated-process model `R_Hab = R_Ha S_b W + R_Hb S_a W + S_H S_a S_b W^2`
+  (no intrinsic multi-pair term and no cross-talk pairs).

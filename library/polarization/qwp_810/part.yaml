@@ -1,0 +1,7 @@
+type: WavePlate
+manufacturer: generic
+model: zero-order quarter-wave plate, 810 nm
+description: Ideal placeholder; retardance scales as 1/lambda from the design wavelength.
+params:
+  retardance: {value: 0.25, unit: "1", provenance: {source: ideal-default, note: generic placeholder}}
+  design_wavelength: {value: 810, unit: nm, provenance: {source: ideal-default, note: generic placeholder}}

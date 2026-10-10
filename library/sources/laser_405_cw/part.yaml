@@ -1,0 +1,10 @@
+type: Laser
+manufacturer: generic
+model: 405 nm CW diode laser, collimated
+description: Generic placeholder pump laser. Replace with the lab's measured values.
+params:
+  wavelength: {value: 405, unit: nm, provenance: {source: ideal-default, note: generic placeholder}}
+  power: {value: 10, unit: mW, provenance: {source: ideal-default, note: generic placeholder}}
+  linewidth: {value: 1, unit: MHz, provenance: {source: ideal-default, note: generic placeholder}}
+  waist_radius: {value: 0.4, unit: mm, provenance: {source: ideal-default, note: generic placeholder}}
+  polarization_extinction_ratio: {value: 1000, unit: "1", provenance: {source: ideal-default, note: generic placeholder}}

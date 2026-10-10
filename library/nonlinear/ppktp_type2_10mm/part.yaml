@@ -1,0 +1,20 @@
+type: SPDCCrystal
+manufacturer: generic
+model: PPKTP type-II (e -> e + o), 10 mm, 405 nm -> 810 nm
+description: Generic placeholder crystal. Poling period is computed by spdcalc for the
+  design wavelengths at the design temperature. d_eff is the bulk d24 literature value (spdcalc applies the 2/pi QPM factor), not a
+  measured one; set 'brightness' (pairs/s/mW) to override the computed absolute rate.
+params:
+  material: KTP
+  pm_type: Type2_e_eo
+  length: {value: 10, unit: mm, provenance: {source: ideal-default}}
+  poling_period: auto
+  theta: auto
+  design_temperature: {value: 25, unit: degC, provenance: {source: ideal-default, note: generic placeholder}}
+  d_eff: {value: 3.9, unit: pm/V, provenance: {source: model, note: literature d24 of KTP at 405 to 810 nm; not measured}}
+  signal_wavelength: {value: 810, unit: nm, provenance: {source: ideal-default, note: generic placeholder}}
+  signal_waist: {value: 50, unit: um, provenance: {source: model, note: collection-mode waist at the crystal centre}}
+  idler_waist: {value: 50, unit: um, provenance: {source: model, note: collection-mode waist at the crystal centre}}
+  extraordinary_axis: H
+  delay_window: {value: 40, unit: ns}
+  max_samples: 100000

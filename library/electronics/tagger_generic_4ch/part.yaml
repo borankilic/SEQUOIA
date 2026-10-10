@@ -1,0 +1,7 @@
+type: TimeTagger
+manufacturer: generic
+model: 4-channel time tagger
+params:
+  channels: 4
+  jitter_fwhm: {value: 10, unit: ps, provenance: {source: ideal-default, note: generic placeholder}}
+  dead_time: {value: 0, unit: ns, provenance: {source: ideal-default, note: generic placeholder}}

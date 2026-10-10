@@ -1,0 +1,6 @@
+type: SpectralFilter
+manufacturer: generic
+model: 810 nm band-pass, 10 nm FWHM, OD 6 stop band
+description: Generic placeholder band-pass curve (not a vendor spectrum).
+params:
+  transmission: {curve: transmission.csv, x: wavelength (nm), y: transmission (1), provenance: {source: ideal-default, note: generic 10 nm flat-top band-pass; OD 6 stop band; 0.93 peak}}

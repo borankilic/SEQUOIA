@@ -1,0 +1,5 @@
+type: PBS
+manufacturer: generic
+model: ideal polarizing beam splitter cube
+description: H transmitted, V reflected, no loss and infinite extinction.
+params: {}

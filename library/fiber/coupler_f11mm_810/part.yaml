@@ -1,0 +1,8 @@
+type: FiberCoupler
+manufacturer: generic
+model: f = 11 mm aspheric fiber coupler, AR coated for 810 nm
+description: Generic placeholder; transmission includes lens and port losses.
+params:
+  focal_length: {value: 11, unit: mm, provenance: {source: ideal-default, note: generic placeholder}}
+  clear_aperture: {value: 6, unit: mm, provenance: {source: ideal-default, note: generic placeholder}}
+  transmission: {value: 0.98, unit: "1", provenance: {source: ideal-default, note: generic placeholder}}

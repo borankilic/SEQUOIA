@@ -1,0 +1,11 @@
+type: SNSPD
+manufacturer: generic
+model: SNSPD, fiber coupled
+description: Generic placeholder values and SDE curve (not a vendor spec). The polarization
+  extinction is 1 (insensitive); set the measured value and axis for a real detector.
+params:
+  efficiency: {curve: sde.csv, x: wavelength (nm), y: efficiency (1), provenance: {source: ideal-default, note: generic SDE curve}}
+  dark_count_rate: {value: 100, unit: Hz, provenance: {source: ideal-default, note: generic placeholder}}
+  dead_time: {value: 20, unit: ns, provenance: {source: ideal-default, note: generic placeholder}}
+  jitter_fwhm: {value: 30, unit: ps, provenance: {source: ideal-default, note: generic placeholder}}
+  polarization_extinction: {value: 1, unit: "1", provenance: {source: ideal-default, note: generic placeholder}}

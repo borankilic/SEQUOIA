@@ -1,0 +1,9 @@
+type: SPAD
+manufacturer: generic
+model: silicon SPAD, fiber coupled
+description: Generic placeholder values and PDE curve (not a vendor spec).
+params:
+  efficiency: {curve: pde.csv, x: wavelength (nm), y: efficiency (1), provenance: {source: ideal-default, note: generic silicon PDE curve}}
+  dark_count_rate: {value: 200, unit: Hz, provenance: {source: ideal-default, note: generic placeholder}}
+  dead_time: {value: 50, unit: ns, provenance: {source: ideal-default, note: generic placeholder}}
+  jitter_fwhm: {value: 350, unit: ps, provenance: {source: ideal-default, note: generic placeholder}}

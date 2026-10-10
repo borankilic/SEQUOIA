@@ -1,0 +1,6 @@
+type: SpectralFilter
+manufacturer: generic
+model: 650 nm long-pass, OD 8 stop band
+description: Generic placeholder pump-blocking long-pass curve (not a vendor spectrum).
+params:
+  transmission: {curve: transmission.csv, x: wavelength (nm), y: transmission (1), provenance: {source: ideal-default, note: generic long-pass edge at 650 nm; OD 8 stop band; 0.95 pass band}}

@@ -64,6 +64,10 @@ def check_setup(setup: Setup, library: Library) -> list[Issue]:
             )
             continue
         ports_of[inst.id] = {p.name: p for p in component.ports()}
+        try:
+            component.tagger_model()
+        except SequoiaError as exc:
+            error("invalid_settings", f"instance '{inst.id}'", str(exc))
 
     port_use: dict[str, str] = {}
     graph = nx.DiGraph()
