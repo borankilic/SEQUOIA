@@ -266,6 +266,40 @@ def test_fiber_below_cutoff_is_flagged(fiber_lib):
     assert "fiber_multimode" not in [i.code for i in launch_setup(fiber_lib).issues]
 
 
+def test_multimode_warning_is_suppressed_at_negligible_power():
+    from types import SimpleNamespace
+
+    from sequoia.components.base import Context, get_component
+    from sequoia.data import Scalar
+
+    link = SimpleNamespace(
+        length=Scalar(value=1.0, unit="m"),
+        connector_loss_db=0.0,
+        polarization=SimpleNamespace(kind="identity"),
+    )
+
+    def codes(power):
+        laser_cls = get_component("Laser")
+        laser = laser_cls(laser_cls.Params(**{**LASER, "power": power}))
+        ctx = Context(instance_id="src")
+        beam = laser.emit(ctx).beams[0][1]
+        fiber_cls = get_component("OpticalFiber")
+        part = fiber_cls(fiber_cls.Params(mode_field_diameter="5 um", cutoff_wavelength="850 nm"))
+        part.transmit(beam, link, ctx, "f")
+        return [i.code for i in ctx.issues]
+
+    quiet = codes("1 pW")
+    assert quiet == []
+    loud = codes("1 mW")
+    assert loud == ["fiber_multimode"]
+
+
+def test_context_power_threshold_is_configurable():
+    from sequoia.components.base import Context
+
+    assert Context().min_power_for_warnings == 1e-9
+
+
 def test_poor_coupling_and_defocus_are_flagged(fiber_lib):
     good = launch_setup(fiber_lib).links["f"].info["coupling_efficiency"]
     result = launch_setup(fiber_lib, {"defocus": "1 mm"})

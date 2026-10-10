@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import ClassVar
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict
 
 from sequoia.errors import Issue, UnknownComponentError
@@ -54,6 +55,22 @@ class Context:
     issues: list[Issue] = field(default_factory=list)
     subject: str = ""
     instance_id: str = ""
+    min_power_for_warnings: float = 1e-9
+    sources: dict[str, SourceLight] = field(default_factory=dict)
+
+    def beam_power(self, beam: Beam) -> float | None:
+        """Power (W) carried by ``beam``, or None when its source did not register itself."""
+        src = self.sources.get(beam.source)
+        if src is None:
+            return None
+        weights = src.power * np.asarray(src.spectrum.weights, dtype=float)
+        coherency = np.asarray(src.coherency, dtype=complex)
+        out = beam.jones @ coherency @ np.conj(np.swapaxes(beam.jones, -1, -2))
+        return float(np.sum(weights * np.real(np.trace(out, axis1=-2, axis2=-1))))
+
+    def significant(self, beam: Beam) -> bool:
+        power = self.beam_power(beam)
+        return power is None or power >= self.min_power_for_warnings
 
     def warn(self, code: str, message: str) -> None:
         self.issues.append(Issue("warning", code, self.subject, message))

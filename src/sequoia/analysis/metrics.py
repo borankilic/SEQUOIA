@@ -149,8 +149,19 @@ def schmidt_number(amplitude, n_signal=None, n_sum=None):
     """Schmidt number 1/sum(lambda^2) of a pure amplitude (sigma_s, sigma_i, j, m).
 
     An ensemble amplitude (members, sigma_s, sigma_i, j, m) whose members carry sqrt(weight)
-    gives the participation ratio (tr rho)^2 / tr rho^2 of the mixture's reduced signal state
-    rho = sum_k M_k M_k^dagger, which is what controls the unheralded g2 = 1 + 1/K.
+    gives the participation ratio (tr rho)^2 / tr rho^2 of the one-body density matrix of the
+    mixture, rho = sum_k M_k M_k^dagger (reduced signal state, partner traced out).
+
+    Meaning of the ensemble number. For a pure amplitude, 1 + 1/K is the unheralded g2 of one
+    arm. For a mixture it is the g2 only when the members share a common reduced state (for
+    example polarization mixing of one JSA, as in a Werner state). The rate engine assumes, for
+    pulsed sources, that every pulse is entirely in one member (a shot-to-shot mixture, so the
+    per pulse g2 averages 1 + 1/K_k over the members with their weights), and, for CW sources,
+    that independent pairs are drawn from the mixture, i.e. the field is the Gaussian field of
+    the one-body density matrix. This number is the one-body (purity) quantity of the second
+    model, and is not the g2 of the first when members differ in spectral structure: members
+    f1 g1 and f2 g2 with disjoint bands give g2 = 2 per pulse but K = 2 here. A pure multimode
+    JSA must never be encoded as an ensemble of its Schmidt modes.
     """
     if (n_signal is None or n_sum is None) and np.shape(amplitude)[-1] == 1:
         raise ValueError(

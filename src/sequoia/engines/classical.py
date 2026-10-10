@@ -1,5 +1,5 @@
 import math
-import warnings
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -8,6 +8,13 @@ import networkx as nx
 
 from sequoia.components.base import Component, Context, get_component
 from sequoia.data import ExtrapolationWarning
+from sequoia.engines.cache import (
+    Cancelled,
+    RunCache,
+    check_cancel,
+    record_warnings,
+    run_library,
+)
 from sequoia.errors import Issue
 from sequoia.library.store import Library
 from sequoia.light.state import Beam, LinkLight, SourceLight, combine
@@ -16,6 +23,8 @@ from sequoia.setup.resolve import instantiate
 from sequoia.setup.validate import validate_setup
 
 LOW_COUPLING = 0.5
+NEGLIGIBLE_POWER_FRACTION = 1e-6
+__all__ = ["Cancelled"]
 
 
 @dataclass
@@ -38,6 +47,7 @@ class SimulationResult:
     probes: dict[str, dict[str, Any]]
     issues: list[Issue]
     sources: dict[str, SourceLight]
+    network: "Network | None" = field(default=None, repr=False, compare=False)
 
 
 def _canvas_length(setup: Setup, link: FreeSpaceLink) -> float:
@@ -89,6 +99,7 @@ def propagate_network(
     *,
     states: dict[str, LinkState] | None = None,
     coupling_note: str = "",
+    should_cancel: Callable[[], bool] | None = None,
 ) -> tuple[dict[tuple[str, str], list[Beam]], dict[str, list[Beam]]]:
     """Push seed beams through the feed-forward network in topological order.
 
@@ -115,7 +126,10 @@ def propagate_network(
             if link.id not in fibers:
                 part = library.load_part(link.fiber)
                 fibers[link.id] = get_component(part.type)(part.params)
+            previous = ctx.subject
+            ctx.subject = f"link '{link.id}'"
             end, info = fibers[link.id].transmit(beam, link, ctx, link.id)
+            ctx.subject = previous
             if states is not None:
                 states[link.id].info = info
             if info["coupling_efficiency"] < LOW_COUPLING:
@@ -132,6 +146,7 @@ def propagate_network(
         arrivals.setdefault((dst_inst, dst_port), []).append(end)
 
     for inst_id in net.order:
+        check_cancel(should_cancel)
         comp = net.components[inst_id]
         ctx.subject = f"'{inst_id}'"
         ctx.instance_id = inst_id
@@ -144,16 +159,49 @@ def propagate_network(
     return arrivals, arrived_beams
 
 
-def simulate(setup: Setup, library: Library) -> SimulationResult:
+def _drop_negligible_multimode(
+    issues: list[Issue], states: dict[str, LinkState], total_power: float, fraction: float
+) -> list[Issue]:
+    kept = []
+    for issue in issues:
+        if issue.code == "fiber_multimode" and total_power > 0:
+            match = re.search(r"link '([^']+)'", issue.subject + " " + issue.message)
+            state = states.get(match.group(1)) if match else None
+            if state is not None and state.start is not None:
+                if state.start.power < fraction * total_power:
+                    continue
+        kept.append(issue)
+    return kept
+
+
+def simulate(
+    setup: Setup,
+    library: Library,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    cache: RunCache | None = None,
+    negligible_power_fraction: float = NEGLIGIBLE_POWER_FRACTION,
+    min_power_for_warnings: float = 0.0,
+) -> SimulationResult:
+    """Classical (power, polarization, Gaussian mode) propagation of every source.
+
+    ``fiber_multimode`` diagnostics are dropped for links whose incident power is below
+    ``negligible_power_fraction`` of the total source power, and components skip such warnings
+    for beams below the absolute ``min_power_for_warnings`` (W). ``should_cancel`` is polled
+    between stages and raises ``Cancelled``; ``cache`` reuses parsed parts across runs.
+    """
+    library = run_library(library, cache)
+    check_cancel(should_cancel)
     issues = list(validate_setup(setup, library))
+    check_cancel(should_cancel)
     net = build_network(setup, library)
     components = net.components
     states = {
         link.id: LinkState(link.id, link.kind, link.src, link.dst, net.lengths[link.id])
         for link in setup.links
     }
-    ctx = Context(issues=issues)
     sources: dict[str, SourceLight] = {}
+    ctx = Context(issues=issues, sources=sources, min_power_for_warnings=min_power_for_warnings)
 
     def emit(inst_id: str, comp: Component, ctx: Context) -> list[tuple[str, Beam]]:
         emission = comp.emit(ctx)
@@ -162,14 +210,16 @@ def simulate(setup: Setup, library: Library) -> SimulationResult:
         sources[inst_id] = emission.source
         return list(emission.beams)
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        arrivals, arrived_beams = propagate_network(net, ctx, emit, states=states)
+    with record_warnings() as caught:
+        arrivals, arrived_beams = propagate_network(
+            net, ctx, emit, states=states, should_cancel=should_cancel
+        )
 
         for link_id, state in states.items():
             state.start = combine(state.start_beams, sources)
             state.end = combine(arrived_beams[link_id], sources)
 
+        check_cancel(should_cancel)
         readouts: dict[str, dict[str, float]] = {}
         for inst_id, comp in components.items():
             ctx.subject = f"'{inst_id}'"
@@ -182,6 +232,7 @@ def simulate(setup: Setup, library: Library) -> SimulationResult:
             if values:
                 readouts[inst_id] = values
 
+        check_cancel(should_cancel)
         probe_results: dict[str, dict[str, Any]] = {}
         for probe in setup.probes:
             state = states[probe.link]
@@ -206,5 +257,7 @@ def simulate(setup: Setup, library: Library) -> SimulationResult:
             seen.add(str(w.message))
             issues.append(Issue("warning", "curve_extrapolation", "data", str(w.message)))
     unique = list(dict.fromkeys(issues))
+    total_power = sum(src.power for src in sources.values())
+    unique = _drop_negligible_multimode(unique, states, total_power, negligible_power_fraction)
     issues[:] = unique
-    return SimulationResult(states, readouts, probe_results, issues, sources)
+    return SimulationResult(states, readouts, probe_results, issues, sources, net)

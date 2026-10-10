@@ -1,5 +1,5 @@
 import math
-import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -11,7 +11,19 @@ from scipy.special import gammainc
 from sequoia.components.base import Component, Context, PortDirection, PortKind
 from sequoia.components.detectors import DetectorConfigWarning
 from sequoia.data import Duration, ExtrapolationWarning
+from sequoia.engines.cache import (
+    DEFAULT_MEMORY_LIMIT,
+    Cancelled,
+    ResourceLimitError,
+    RunCache,
+    check_cancel,
+    check_memory,
+    emit_with_cache,
+    record_warnings,
+    run_library,
+)
 from sequoia.engines.classical import (
+    LinkState,
     Network,
     SimulationResult,
     build_network,
@@ -35,6 +47,12 @@ FWHM_TO_SIGMA = 1.0 / (2.0 * math.sqrt(2.0 * math.log(2.0)))
 ROLES = ("signal", "idler")
 NULL_STATE = 1e-9
 STRONG = 1e-6
+ALIAS_STRENGTH = 1e-3
+DEAD_TIME_LOSS_WARNING = 0.1
+MIN_PAIR_FRACTION = 1e-6
+GRAM_SPACE: str | None = None
+MAX_SIMILARITY_MEMBERS = 16
+__all__ = ["Cancelled", "ResourceLimitError", "RunCache"]
 
 
 class AnalysisSpecError(ValueError):
@@ -50,6 +68,7 @@ class RateResult:
     detectors: dict[str, dict[str, Any]] = field(default_factory=dict)
     sources: dict[str, dict[str, Any]] = field(default_factory=dict)
     pairs: dict[tuple[str, str], dict[str, float]] = field(default_factory=dict)
+    links: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -147,9 +166,33 @@ def _next_pow2(n: float) -> int:
     return 1 << max(0, math.ceil(math.log2(max(n, 1))))
 
 
+def _min_eigenvalue(e: np.ndarray) -> np.ndarray:
+    trace = (e[:, 0, 0] + e[:, 1, 1]).real
+    det = (e[:, 0, 0] * e[:, 1, 1] - e[:, 0, 1] * e[:, 1, 0]).real
+    return 0.5 * (trace - np.sqrt(np.clip(trace**2 - 4.0 * det, 0.0, None)))
+
+
 def _psd_sqrt(e: np.ndarray) -> np.ndarray:
-    w, v = np.linalg.eigh(e)
-    return (v * np.sqrt(np.clip(w, 0.0, None))[:, None, :]) @ np.conj(np.swapaxes(v, 1, 2))
+    # Closed form for a 2x2 positive semidefinite matrix: sqrt(A) = (A + s I) / sqrt(tr A + 2 s)
+    # with s = sqrt(det A); entries with a negative eigenvalue are clipped through eigh.
+    e = np.asarray(e, dtype=complex)
+    trace = (e[:, 0, 0] + e[:, 1, 1]).real
+    det = (e[:, 0, 0] * e[:, 1, 1] - e[:, 0, 1] * e[:, 1, 0]).real
+    bad = _min_eigenvalue(e) < -1e-12 * np.maximum(trace, 1e-300)
+    s = np.sqrt(np.clip(det, 0.0, None))
+    tau = np.sqrt(np.clip(trace + 2.0 * s, 0.0, None))
+    safe = np.where(tau > 0, tau, 1.0)
+    out = (e + s[:, None, None] * np.eye(2)) / safe[:, None, None]
+    out[tau <= 0] = 0.0
+    if np.any(bad):
+        w, v = np.linalg.eigh(e[bad])
+        out[bad] = (v * np.sqrt(np.clip(w, 0.0, None))[:, None, :]) @ np.conj(np.swapaxes(v, 1, 2))
+    return out
+
+
+def _quadratic_trace(h: np.ndarray, rho: np.ndarray) -> float:
+    # sum_n tr(h_n rho_n h_n^dagger)
+    return float(np.sum(((h @ rho) * np.conj(h)).real))
 
 
 def _series_survival(rate: float, tau_detector: float, tau_tagger: float) -> float:
@@ -180,6 +223,12 @@ def _duration(value: Any, what: str) -> float:
         raise AnalysisSpecError(f"{what}: expected a duration such as '1 ns'") from exc
 
 
+def _ratio(numerator: float, denominator: float) -> float:
+    if denominator > 0:
+        return numerator / denominator
+    return math.nan if numerator <= 0 else math.inf
+
+
 def _jitter_cf(f: np.ndarray, fwhm: float, fraction: float, tau: float) -> np.ndarray:
     sigma = fwhm * FWHM_TO_SIGMA
     cf = np.exp(-2.0 * np.pi**2 * sigma**2 * f**2).astype(complex)
@@ -188,27 +237,57 @@ def _jitter_cf(f: np.ndarray, fwhm: float, fraction: float, tau: float) -> np.nd
     return cf
 
 
-def has_rate_devices(setup: Setup, library: Library) -> bool:
+def has_rate_devices(
+    setup: Setup,
+    library: Library,
+    cache: RunCache | None = None,
+    network: Network | None = None,
+) -> bool:
     """True when the setup contains a pair source or a single-photon detector."""
     from sequoia.setup.resolve import instantiate
 
-    for inst in setup.instances:
-        try:
-            comp = instantiate(library, inst)
-        except Exception:
-            continue
+    if network is not None:
+        comps = list(network.components.values())
+    else:
+        library = run_library(library, cache)
+        comps = []
+        for inst in setup.instances:
+            try:
+                comps.append(instantiate(library, inst))
+            except Exception:
+                continue
+    for comp in comps:
         if type(comp).emit_pairs is not Component.emit_pairs or comp.detector_model() is not None:
             return True
     return False
 
 
 class _Engine:
-    def __init__(self, setup: Setup, library: Library, classical: SimulationResult | None):
+    def __init__(
+        self,
+        setup: Setup,
+        library: Library,
+        classical: SimulationResult | None,
+        should_cancel: Callable[[], bool] | None = None,
+        cache: RunCache | None = None,
+        max_bytes: float | None = None,
+    ):
         self.setup = setup
-        self.library = library
-        self.classical = classical if classical is not None else simulate(setup, library)
+        self.cache = cache
+        self.library = run_library(library, cache)
+        self.should_cancel = should_cancel
+        self.max_bytes = DEFAULT_MEMORY_LIMIT if max_bytes is None else float(max_bytes)
+        if classical is None:
+            classical = simulate(setup, library, should_cancel=should_cancel, cache=cache)
+        self.classical = classical
         self.issues: list[Issue] = []
-        self.net: Network = build_network(setup, library)
+        network = getattr(classical, "network", None)
+        if network is not None and network.setup is setup:
+            self.net: Network = network
+        else:
+            self.net = build_network(setup, self.library)
+        self.link_photons: dict[str, dict[str, Any]] = {}
+        self._thermal_cache: dict[tuple, list] = {}
         self.detectors: dict[str, _Detector] = {}
         self.channels: dict[str, _Channel] = {}
         self.sources: list[_Source] = []
@@ -217,6 +296,9 @@ class _Engine:
         self._dtau_hint: dict[tuple[str, str], float] = {}
         self._seen: set[tuple[str, str, str]] = set()
         self._moments: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    def cancel_point(self) -> None:
+        check_cancel(self.should_cancel)
 
     def issue(self, severity: str, code: str, subject: str, message: str) -> None:
         key = (code, subject, message)
@@ -239,11 +321,18 @@ class _Engine:
         comps = self.net.components
         taggers: dict[str, TaggerModel] = {}
         for inst_id, comp in comps.items():
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
+            self.cancel_point()
+            with record_warnings() as caught:
                 model = comp.detector_model()
             self.collect_warnings(caught)
             if model is not None:
+                for field_name in ("dark_count_rate", "dead_time", "jitter_fwhm"):
+                    value = getattr(model, field_name)
+                    if not math.isfinite(value) or value < 0:
+                        raise SetupError(
+                            f"detector '{inst_id}': {field_name} = {value} is not a finite "
+                            "non-negative number"
+                        )
                 ports = [
                     p.name
                     for p in comp.ports()
@@ -288,28 +377,35 @@ class _Engine:
 
     def emit_sources(self) -> None:
         ctx = Context(issues=[])
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            for inst_id in self.net.order:
-                comp = self.net.components[inst_id]
-                lights = {}
-                for p in comp.ports():
-                    light = self.port_light(inst_id, p.name)
-                    if light is not None:
-                        lights[p.name] = light
-                ctx.subject = f"'{inst_id}'"
-                ctx.instance_id = inst_id
-                emission = comp.emit_pairs(lights, ctx)
-                if emission is not None:
-                    self.sources.append(self.prepare_source(inst_id, emission))
+        for inst_id in self.net.order:
+            self.cancel_point()
+            comp = self.net.components[inst_id]
+            lights = {}
+            for p in comp.ports():
+                light = self.port_light(inst_id, p.name)
+                if light is not None:
+                    lights[p.name] = light
+            ctx.subject = f"'{inst_id}'"
+            ctx.instance_id = inst_id
+            emission, caught = emit_with_cache(self.cache, comp, lights, ctx)
+            self.collect_warnings(caught)
+            if emission is not None:
+                self.sources.append(self.prepare_source(inst_id, emission))
         self.absorb(ctx)
-        self.collect_warnings(caught)
 
     def prepare_source(self, inst_id: str, emission: PairEmission) -> _Source:
         ps = emission.source
-        members = np.array(ps.members, dtype=complex)
         n_s = np.asarray(ps.n_signal, dtype=np.int64)
         n_sum = np.asarray(ps.n_sum, dtype=np.int64)
+        count = len(ps.members) * len(n_s) * len(n_sum)
+        check_memory(
+            count * (2 * 64 + 120),
+            self.max_bytes,
+            f"pair source '{inst_id}' ({len(n_s)} signal x {len(n_sum)} sum-frequency lattice "
+            f"points, {len(ps.members)} member(s))",
+            "use a coarser frequency lattice (larger dnu or fewer samples) in the pair source",
+        )
+        members = np.array(ps.members, dtype=complex)
         n_i_all = n_sum[None, :] - n_s[:, None]
         valid = (n_i_all > 0) & (n_s[:, None] > 0)
         lost = float(np.sum(np.abs(members[..., ~valid]) ** 2))
@@ -323,15 +419,13 @@ class _Engine:
             raise SetupError(f"pair source '{inst_id}': n_signal must be strictly increasing")
         n_i = np.unique(n_i_all[valid])
         idx = np.searchsorted(n_i, np.where(valid, n_i_all, n_i[0]))
-        rho_s = np.einsum("lsijm,ltijm->jst", members, np.conj(members))
-        r_i = np.einsum("lsijm,lskjm->jmik", members, np.conj(members))
-        flat = idx.ravel()
+        rho_s = np.zeros((len(n_s), 2, 2), dtype=complex)
         rho_i = np.zeros((len(n_i), 2, 2), dtype=complex)
-        for a in range(2):
-            for b in range(2):
-                v = r_i[..., a, b].ravel()
-                rho_i[:, a, b] = np.bincount(flat, weights=v.real, minlength=len(n_i))
-                rho_i[:, a, b] += 1j * np.bincount(flat, weights=v.imag, minlength=len(n_i))
+        for amp in members:
+            if np.any(amp):
+                rs, ri = self.member_rho(amp, idx, len(n_i))
+                rho_s += rs
+                rho_i += ri
         weight_s = np.real(np.trace(rho_s, axis1=1, axis2=2))
         weight_i = np.real(np.trace(rho_i, axis1=1, axis2=2))
         nu0 = {
@@ -356,6 +450,19 @@ class _Engine:
                 )
             self.setup_exchange(src, n_s, n_sum)
         return src
+
+    @staticmethod
+    def member_rho(amp: np.ndarray, idx: np.ndarray, n_idler: int) -> tuple[np.ndarray, np.ndarray]:
+        rho_s = np.einsum("sijm,tijm->jst", amp, np.conj(amp))
+        r_i = np.einsum("sijm,skjm->jmik", amp, np.conj(amp))
+        flat = idx.ravel()
+        rho_i = np.zeros((n_idler, 2, 2), dtype=complex)
+        for a in range(2):
+            for b in range(2):
+                v = r_i[..., a, b].ravel()
+                rho_i[:, a, b] = np.bincount(flat, weights=v.real, minlength=n_idler)
+                rho_i[:, a, b] += 1j * np.bincount(flat, weights=v.imag, minlength=n_idler)
+        return rho_s, rho_i
 
     def setup_exchange(self, src: _Source, n_s: np.ndarray, n_sum: np.ndarray) -> None:
         amp = src.members[0]
@@ -409,8 +516,32 @@ class _Engine:
         src.gram = (f + f.T).tocsr()
         src.union = union
 
+    def record_link_photons(self, src: _Source, role: str, ends, states) -> None:
+        rho = src.rho[role]
+        for link_id, beams in ends.items():
+            flux = 0.0
+            for beam in beams:
+                j = beam.jones
+                if len(j) != len(rho):
+                    continue
+                flux += _quadratic_trace(j, rho)
+            flux *= src.rate
+            if flux <= 0.0:
+                continue
+            entry = self.link_photons.setdefault(
+                link_id, {"by_source": {}, "coupling_efficiency": {}, "transmission": {}}
+            )
+            entry["by_source"].setdefault(src.inst, {})[role] = flux
+            info = states[link_id].info
+            if "coupling_efficiency" in info:
+                entry["coupling_efficiency"][role] = info["coupling_efficiency"]
+                entry["transmission"][role] = info["transmission"]
+            entry["wavelength_m"] = entry.get("wavelength_m", {})
+            entry["wavelength_m"][role] = C_LIGHT / src.nu0[role]
+
     def transfer_sources(self) -> None:
         for src in self.sources:
+            self.cancel_point()
             ps = src.emission.source
             arrivals: dict[str, dict[tuple[str, str], list[Beam]]] = {}
             for role in ROLES:
@@ -434,14 +565,23 @@ class _Engine:
                     return [(port, seed)] if inst_id == owner else []
 
                 ctx = Context(issues=[])
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always")
-                    arrived, _ = propagate_network(
-                        self.net, ctx, emit, coupling_note=f"{role} photon "
+                states = {
+                    link.id: LinkState(link.id, link.kind, link.src, link.dst, None)
+                    for link in self.net.setup.links
+                }
+                with record_warnings() as caught:
+                    arrived, ends = propagate_network(
+                        self.net,
+                        ctx,
+                        emit,
+                        states=states,
+                        coupling_note=f"{role} photon ",
+                        should_cancel=self.should_cancel,
                     )
                 self.absorb(ctx)
                 self.collect_warnings(caught)
                 arrivals[role] = arrived
+                self.record_link_photons(src, role, ends, states)
             for det_id, det in self.detectors.items():
                 src.h[det_id] = {}
                 radius_of = getattr(self.net.components[det_id], "aperture_radius", None)
@@ -470,10 +610,10 @@ class _Engine:
                     src.modes[(det_id, role)] = None
                     if strengths and max(strengths) > STRONG:
                         src.modes[(det_id, role)] = beams[int(np.argmax(strengths))].mode
-                    with warnings.catch_warnings(record=True) as caught:
-                        warnings.simplefilter("always")
+                    with record_warnings() as caught:
                         eff = np.asarray(det.model.efficiency(C_LIGHT / nu), dtype=complex)
                     self.collect_warnings(caught)
+                    self.validate_efficiency(det_id, eff)
                     src.h[det_id][role] = _psd_sqrt(eff) @ t
                 self.check_role_modes(src, det_id)
                 if src.exchange:
@@ -483,19 +623,25 @@ class _Engine:
                     }
                     continue
                 src.singles[det_id] = {
-                    role: src.rate
-                    * float(
-                        np.sum(
-                            np.einsum(
-                                "npb,nbc,npc->n",
-                                src.h[det_id][role],
-                                src.rho[role],
-                                np.conj(src.h[det_id][role]),
-                            ).real
-                        )
-                    )
+                    role: src.rate * _quadratic_trace(src.h[det_id][role], src.rho[role])
                     for role in ROLES
                 }
+
+    def validate_efficiency(self, det_id: str, eff: np.ndarray) -> None:
+        if not np.all(np.isfinite(eff)):
+            raise SetupError(
+                f"detector '{det_id}': the efficiency is not finite (NaN or inf) over the "
+                "photon spectrum; check the detector efficiency curve and parameters"
+            )
+        low = float(np.min(_min_eigenvalue(eff))) if len(eff) else 0.0
+        if low < -1e-9:
+            self.issue(
+                "warning",
+                "detector_efficiency_not_psd",
+                f"'{det_id}'",
+                f"the efficiency operator has a negative eigenvalue ({low:.3g}); negative parts "
+                "are clipped to zero",
+            )
 
     def exchange_singles(self, src: _Source, det_id: str) -> float:
         ps = src.emission.source
@@ -577,10 +723,10 @@ class _Engine:
                 light = self.port_light(det_id, port)
                 if light is None:
                     continue
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always")
+                with record_warnings() as caught:
                     eff = np.asarray(model.efficiency(light.wavelengths), dtype=complex)
                 self.collect_warnings(caught)
+                self.validate_efficiency(det_id, eff)
                 energy = constants.h * C_LIGHT / light.wavelengths
                 rate = np.einsum("nab,nba->n", eff, light.coherency).real / energy
                 collected = 1.0 if radius is None else aperture_transmission(radius, light.mode)
@@ -616,6 +762,7 @@ class _Engine:
                 "survival": survival,
                 "pair_by_source": pair,
             }
+            self.saturation_issues(det_id, incident, leak, survival, dead, model.dead_time)
             if incident > 0 and leak > LEAKAGE_FRACTION * incident:
                 self.issue(
                     "warning",
@@ -623,6 +770,58 @@ class _Engine:
                     f"'{det_id}'",
                     f"classical light reaching the detector produces {leak:.4g} counts/s, "
                     f"{100 * leak / incident:.1f}% of its singles",
+                )
+
+    def source_diagnostics(self) -> None:
+        if not self.detectors:
+            return
+        for src in self.sources:
+            if src.rate <= 0:
+                continue
+            best = max(sum(src.singles[d].values()) for d in self.detectors) / src.rate
+            if best < MIN_PAIR_FRACTION:
+                signal = C_LIGHT / src.nu0["signal"] * 1e9 if src.nu0["signal"] > 0 else math.nan
+                idler = C_LIGHT / src.nu0["idler"] * 1e9 if src.nu0["idler"] > 0 else math.nan
+                self.issue(
+                    "warning",
+                    "no_phase_matched_pairs",
+                    f"'{src.inst}'",
+                    f"pair source '{src.inst}' emits {src.rate:.4g} pairs/s but at most "
+                    f"{best:.2g} detected photons per pair (below {MIN_PAIR_FRACTION:g}) reach any "
+                    f"detector; the pair spectrum (signal about {signal:.1f} nm, idler about "
+                    f"{idler:.1f} nm) lies outside the passbands of the filters or detectors on "
+                    "the photon paths, or the crystal is detuned from phase matching for this "
+                    "pump (temperature, poling period, pump wavelength)",
+                )
+
+    def saturation_issues(
+        self, det_id: str, incident: float, leak: float, survival: float, dead: float, own: float
+    ) -> None:
+        loss = 1.0 - survival
+        if loss > DEAD_TIME_LOSS_WARNING:
+            limit = (
+                f"; the counts cannot exceed 1/dead time = {1 / dead:.4g} Hz" if dead > 0 else ""
+            )
+            self.issue(
+                "warning",
+                "detector_saturation",
+                f"'{det_id}'",
+                f"{incident:.4g} counts/s arrive at the detector and its dead time of "
+                f"{dead * 1e9:.4g} ns loses {100 * loss:.1f}% of them (recorded singles "
+                f"{incident * survival:.4g} Hz){limit}; coincidences, CAR and heralding "
+                "efficiencies are reduced accordingly",
+            )
+        if leak > 0 and dead > 0:
+            tagger = dead if dead > own else 0.0
+            leak_loss = 1.0 - _series_survival(leak, own, tagger)
+            if leak_loss > DEAD_TIME_LOSS_WARNING:
+                self.issue(
+                    "warning",
+                    "leakage_saturation",
+                    f"'{det_id}'",
+                    f"classical light alone produces {leak:.4g} counts/s, which already loses "
+                    f"{100 * leak_loss:.1f}% of the counts to the {dead * 1e9:.4g} ns dead time "
+                    "before any photon pair is detected; block or attenuate the classical light",
                 )
 
     def channel_lookup(self, name: str, analysis: str) -> _Channel:
@@ -687,6 +886,13 @@ class _Engine:
         for group in groups:
             g_lo = min(int(p.min()) for p, _, _ in group)
             g_hi = max(int(p.max()) for p, _, _ in group)
+            check_memory(
+                64.0 * (g_hi - g_lo + 1) * m,
+                self.max_bytes,
+                f"the time-correlation amplitudes of pair source '{src.inst}' "
+                f"({g_hi - g_lo + 1} frequency lattice points x {m} sum frequencies)",
+                "use a coarser frequency lattice or fewer samples in the pair source",
+            )
             arr = np.zeros((2, 2, g_hi - g_lo + 1, m), dtype=complex)
             for pos, mi, values in group:
                 if mi is None:
@@ -722,6 +928,12 @@ class _Engine:
         n_min = _next_pow2(2 * length)
         n_res = _next_pow2(math.ceil(period / dtau_target)) if math.isfinite(dtau_target) else 0
         n = max(n_min, n_res)
+        check_memory(
+            n * 48.0,
+            self.max_bytes,
+            f"the FFT of {n} points for the time correlation of {subject}",
+            "use a coarser frequency lattice (larger dnu) or fewer samples in the pair source",
+        )
         if n > MAX_FFT:
             n = max(n_min, MAX_FFT)
             self.issue(
@@ -760,6 +972,7 @@ class _Engine:
                 for p in range(2):
                     for q in range(2):
                         for start in range(0, arr.shape[3], chunk):
+                            self.cancel_point()
                             x = np.fft.fft(arr[p, q, :, start : start + chunk], n=n, axis=0)
                             g += np.sum(np.abs(x) ** 2, axis=1) / n
             dtau = period / n
@@ -774,33 +987,26 @@ class _Engine:
 
     def check_delays(self, src, a: _Channel, b: _Channel, period: float, subject: str) -> None:
         da, db = a.detector, b.detector
-        delays = [
-            x - y
+        combos = [
+            (x - y, sx * sy)
             for ra, rb in (("signal", "idler"), ("idler", "signal"))
-            for x, _ in src.delays.get((da, ra), [])
-            for y, _ in src.delays.get((db, rb), [])
+            for x, sx in src.delays.get((da, ra), [])
+            for y, sy in src.delays.get((db, rb), [])
         ]
-        if delays and max(delays) - min(delays) > period / 2.0:
+        if len(combos) < 2:
+            return
+        top = max(w for _, w in combos)
+        delays = [d for d, w in combos if w >= ALIAS_STRENGTH * top]
+        if len(delays) > 1 and max(delays) - min(delays) > period / 2.0:
             self.issue(
                 "warning",
                 "delay_aliasing",
                 subject,
-                f"group-delay differences between photon paths span "
+                f"group-delay differences between photon paths that interfere span "
                 f"{(max(delays) - min(delays)) * 1e9:.3g} ns, more than half the period "
-                f"1/dnu = {period * 1e9:.3g} ns of the source frequency lattice; correlation "
-                "peaks alias. Use a finer lattice spacing in the pair source",
-            )
-        elif delays and max(abs(d) for d in delays) > period / 2.0:
-            self.issue(
-                "warning",
-                "delay_aliasing",
-                subject,
-                f"the group-delay difference between the photon paths reaches "
-                f"{max(abs(d) for d in delays) * 1e9:.3g} ns, more than half the period "
-                f"1/dnu = {period * 1e9:.3g} ns of the source frequency lattice; the peak "
-                "position is unwrapped from the path delays, but the lattice is too coarse "
-                "to resolve other paths without aliasing. Use a finer lattice spacing in "
-                "the pair source",
+                f"1/dnu = {period * 1e9:.3g} ns of the source frequency lattice; the "
+                "correlation peaks of the paths alias onto each other. Use a finer lattice "
+                "spacing in the pair source",
             )
 
     def apply_kernel(self, g: np.ndarray, dtau: float, a: _Channel, b: _Channel) -> np.ndarray:
@@ -811,8 +1017,11 @@ class _Engine:
     def thermal_terms(
         self, chan_a: _Channel, chan_b: _Channel, window: float | None
     ) -> list[_Term]:
-        terms = []
         target = self.dtau_target(chan_a, chan_b, window)
+        cache_key = (chan_a.name, chan_b.name, target)
+        if cache_key in self._thermal_cache:
+            return self._thermal_cache[cache_key]
+        terms: list[_Term] = []
         subject = f"{chan_a.name} / {chan_b.name}"
         for src in self.sources:
             if src.pulsed:
@@ -836,6 +1045,13 @@ class _Engine:
                 if not np.any(np.abs(c) > 0):
                     continue
                 pos = grid - grid.min()
+                check_memory(
+                    128.0 * (int(pos.max()) + 1),
+                    self.max_bytes,
+                    f"the thermal correlation of {subject} "
+                    f"({int(pos.max()) + 1} frequency lattice points)",
+                    "use a coarser frequency lattice or fewer samples in the pair source",
+                )
                 arr = np.zeros((int(pos.max()) + 1, 2, 2), dtype=complex)
                 arr[pos] = c
                 period = 1.0 / src.dnu
@@ -849,6 +1065,7 @@ class _Engine:
                 power = self.apply_kernel(power, dtau, chan_a, chan_b)
                 delay = self.strongest_delay(src, chan_a.detector, chan_b.detector, same_role=True)
                 terms.append(_Term(weight, _Profile(power, dtau), "thermal", src.inst, delay))
+        self._thermal_cache[cache_key] = terms
         return terms
 
     def survival(self, chan: _Channel) -> float:
@@ -950,11 +1167,12 @@ class _Engine:
             if not src.pulsed:
                 continue
             period = 1.0 / src.emission.source.repetition_rate
-            if window >= period:
-                continue
             pa = s_a * da["pair_by_source"][src.inst]
             pb = s_b * db["pair_by_source"][src.inst]
-            acc += pa * pb * (period - window)
+            if pa * pb <= 0.0:
+                continue
+            count = self.same_pulse_count(src, a, b, window, center_opt, period)
+            acc += pa * pb * (period * count - window)
         true = in_window * s_a * s_b
         return {
             "rate_all": rate_all * s_a * s_b,
@@ -968,6 +1186,32 @@ class _Engine:
             "singles_a": sa,
             "singles_b": sb,
         }
+
+    def uncorrelated_delay(self, src: _Source, a: str, b: str) -> float:
+        best = []
+        for det in (a, b):
+            singles = src.singles.get(det, {})
+            role = max(ROLES, key=lambda r: singles.get(r, 0.0))
+            paths = src.delays.get((det, role), [])
+            best.append(max(paths, key=lambda p: p[1])[0] if paths else 0.0)
+        return best[0] - best[1]
+
+    def same_pulse_count(
+        self, src: _Source, a: _Channel, b: _Channel, window: float, centre: float, period: float
+    ) -> float:
+        # Expected number of pulse offsets k for which the arrival-time difference of two
+        # uncorrelated photons of pulses k periods apart falls in the window: the jitter
+        # distribution of the difference folded onto one repetition period and integrated over
+        # the window (a staircase for sharp timing, 1 for a window inside one period).
+        target = self.dtau_target(a, b, window)
+        n = _next_pow2(max(period / target if math.isfinite(target) else 0, 4096))
+        n = min(n, MAX_FFT)
+        delta = np.zeros(n)
+        delta[0] = 1.0
+        dtau = period / n
+        profile = _Profile(self.apply_kernel(delta, dtau, a, b), dtau)
+        d = centre - self.uncorrelated_delay(src, a.detector, b.detector)
+        return profile.window(d - window / 2.0, d + window / 2.0)
 
     def parse_center(self, spec: dict[str, Any], name: str) -> float | str:
         center = spec.get("center", "auto")
@@ -1032,7 +1276,8 @@ class _Engine:
             "true_hz": true,
             "accidental_hz": acc,
             "total_hz": true + acc,
-            "car": true / acc if acc > 0 else math.inf,
+            "car": _ratio(true, acc),
+            "car_total": _ratio(true + acc, acc),
             "singles_a_hz": n["singles_a"],
             "singles_b_hz": n["singles_b"],
             "heralding_a_given_b": true / n["singles_b"] if n["singles_b"] > 0 else 0.0,
@@ -1068,11 +1313,23 @@ class _Engine:
         s_h = self.det_data[herald.detector]["singles_hz"]
         p_a, q_a = self.uncorrelated_probability(a, window)
         p_b, q_b = self.uncorrelated_probability(b, window)
-        bunching = self.pulsed_bunching(a, b) if q_a > 0 and q_b > 0 else 0.0
+        subject = f"{herald.name} / {a.name} / {b.name}"
+        factor, bunching, saturation = 1.0, 0.0, 1.0
+        pulsed = [s for s in self.sources if s.pulsed]
+        if pulsed and q_a > 0 and q_b > 0:
+            moments = self.pulsed_moments(pulsed[0], a, b, herald)
+            self.ensemble_model_issue(pulsed[0], moments, subject)
+            factor = moments["pair_pair_factor"]
+            bunching = moments["bunching_conditional"]
+            saturation = moments["herald_saturation"]
+        b1, b2, qc_a, qc_b = self.cw_bunching(a, b, n_a, n_b, window)
+        for src in self.sources:
+            if not src.pulsed and src.emission.source.is_ensemble:
+                self.cw_ensemble_similarity(src, a, b)
         triples = (
-            n_a["true"] * (p_b + bunching * q_b)
-            + n_b["true"] * (p_a + bunching * q_a)
-            + s_h * p_a * p_b
+            n_a["true"] * (p_b + (factor - 1.0) * q_b + b1 * qc_b)
+            + n_b["true"] * (p_a + (factor - 1.0) * q_a + b1 * qc_a)
+            + s_h * (p_a * p_b + b2 * qc_a * qc_b)
         )
         meas_a = n_a["true"] + n_a["accidental"]
         meas_b = n_b["true"] + n_b["accidental"]
@@ -1090,14 +1347,50 @@ class _Engine:
             "true_hb_hz": n_b["true"],
             "triples_hz": triples,
             "multimode_bunching": bunching,
+            "herald_saturation": saturation,
+            "cw_bunching": b1,
+            "cw_bunching_accidental": b2,
             "g2_heralded": g2,
         }
+
+    def cw_bunching(self, a: _Channel, b: _Channel, n_a, n_b, window: float):
+        # Thermal bunching of the a and b photons of continuous sources: the excess coincidence
+        # density between a and b (jitter-convolved |G1|^2 profile) integrated over the b window,
+        # relative to the uncorrelated product of the pair-sourced singles, and the same integral
+        # with the triangular kernel of two free windows for the accidental triples.
+        cw = [s for s in self.sources if not s.pulsed]
+        da, db = self.det_data[a.detector], self.det_data[b.detector]
+        inc_a = sum(da["pair_by_source"][s.inst] for s in cw)
+        inc_b = sum(db["pair_by_source"][s.inst] for s in cw)
+        q_a, q_b = self.survival(a) * inc_a * window, self.survival(b) * inc_b * window
+        terms = self.thermal_terms(a, b, window) if cw else []
+        product = sum(da["pair_by_source"][s.inst] * db["pair_by_source"][s.inst] for s in cw)
+        if not terms or product <= 0 or window <= 0:
+            return 0.0, 0.0, q_a, q_b
+        centre = n_b["center_opt"] - n_a["center_opt"]
+        mass = 0.0
+        for t in terms:
+            shift = self.term_shift(t)
+            mass += t.weight * self.window_fraction(t, centre - shift, window)
+        u = np.linspace(0.0, window, 401)
+        profile = np.zeros_like(u)
+        for t in terms:
+            peak = t.peak if t.peak is not None else 0.0
+            half = t.profile.period / 2.0
+            c = centre - self.term_shift(t)
+            lo = np.clip(c - u, peak - half, peak + half)
+            hi = np.clip(c + u, peak - half, peak + half)
+            profile += t.weight * (t.profile.cdf(hi) - t.profile.cdf(lo))
+        integral = float(np.sum(0.5 * (profile[1:] + profile[:-1]) * np.diff(u)))
+        return mass / (product * window), integral / (product * window**2), q_a, q_b
 
     def bin_masses(self, terms: list[_Term], scale: float, edges: np.ndarray, offset: float):
         out = np.zeros(len(edges) - 1)
         for t in terms:
-            cdf = t.profile.cdf(edges - offset - self.term_shift(t))
-            out += t.weight * scale * np.diff(cdf)
+            x = edges - offset - self.term_shift(t)
+            peak = t.peak if t.peak is not None else 0.0
+            half = t.profile.period / 2.0
+            out += t.weight * scale * np.diff(t.profile.cdf(np.clip(x, peak - half, peak + half)))
         return out
 
     def a_histogram(self, name: str, spec: dict[str, Any]) -> dict[str, Any]:
@@ -1117,7 +1410,9 @@ class _Engine:
                     "range_exceeds_period",
                     f"analysis '{name}'",
                     f"the histogram range exceeds the period 1/dnu = {1e9 / src.dnu:.3g} ns "
-                    "of the source frequency lattice; the correlation repeats inside the range",
+                    "of the source frequency lattice; only one copy of the correlation "
+                    "(the principal period around the peak) is shown and the periodic images "
+                    "of the lattice are suppressed",
                 )
         data = self.pair_profile(a, b, bin_w)
         thermal = self.thermal_terms(a, b, bin_w)
@@ -1162,30 +1457,44 @@ class _Engine:
             )
             out["g2_at_center"] = float(np.mean(middle))
         if pulsed:
-            out.update(self.pulsed_g2(a, b))
+            try:
+                out.update(self.pulsed_g2(a, b))
+            except ResourceLimitError as exc:
+                self.issue(
+                    "warning",
+                    "memory_limit",
+                    f"analysis '{name}'",
+                    f"{exc}; the per-pulse g2 and Schmidt numbers are not computed",
+                )
+                out["g2_per_pulse"] = None
             out["note"] = (
                 "pulsed source: the accidental floor is the average uncorrelated rate "
                 "S_a*S_b spread uniformly; per-pulse g2 is in 'g2_per_pulse'"
             )
         elif spec["type"] == "g2":
             out["g2_per_pulse"] = None
+        if spec["type"] == "g2":
+            for src in self.sources:
+                if not src.pulsed and src.emission.source.is_ensemble:
+                    self.cw_ensemble_similarity(src, a, b)
         return out
 
     def pulsed_g2(self, a: _Channel, b: _Channel) -> dict[str, Any]:
         pulsed = [s for s in self.sources if s.pulsed]
         src = pulsed[0]
+        subject = f"{a.name} / {b.name}"
         if len(pulsed) > 1:
             self.issue(
                 "warning",
                 "multiple_pulsed_sources",
-                f"{a.name} / {b.name}",
+                subject,
                 "per-pulse g2 is computed for the first pulsed source only",
             )
         if src.exchange:
             self.issue(
                 "warning",
                 "same_mode_g2_approximation",
-                f"{a.name} / {b.name}",
+                subject,
                 "per-pulse g2 and Schmidt numbers of a source whose signal and idler share one "
                 "spatial mode treat the two roles separately and neglect their exchange terms",
             )
@@ -1194,77 +1503,316 @@ class _Engine:
         mu = src.rate / f_rep
         pa, pb = da["incident_hz"] / f_rep, db["incident_hz"] / f_rep
         moments = self.pulsed_moments(src, a, b)
+        self.ensemble_model_issue(src, moments, subject)
         excess = mu**2 * moments["excess"]
         pair = sum(t.weight for t in self.pair_profile(a, b, None)["terms"] if t.source == src.inst)
         denominator = pa * pb
         g2 = (pair / f_rep + denominator + excess) / denominator if denominator > 0 else math.nan
         return {"g2_per_pulse": g2, "by_role": moments["by_role"], "pulsed_source": src.inst}
 
-    def pulsed_moments(self, src: _Source, a: _Channel, b: _Channel) -> dict[str, Any]:
-        # Mixture of pair states, each pulse in member k with probability w_k (amplitudes carry
-        # sqrt(w_k)). Per member the unheralded second-order moment is the thermal one built
-        # from the reduced one-photon operators g = Y^dagger Y of the partner space (Y = filtered
-        # amplitude); normalised member operators are g_k / w_k. The per-pulse average gives
-        # sum_k w_k Tr(gh_a,k gh_b,k) plus the covariance over members of the detected
-        # intensities Tr(gh_a,k), Tr(gh_b,k) (zero when all members have the same reduced
-        # state, as for polarization mixing of a common JSA). The Schmidt numbers use the
-        # averaged operators G = sum_k g_k, i.e. the reduced density matrix of the mixture.
-        key = (src.inst, a.detector, b.detector)
+    def ensemble_model_issue(self, src: _Source, moments: dict[str, Any], subject: str) -> None:
+        similar = moments.get("similar")
+        if similar is None or similar:
+            return
+        self.issue(
+            "warning",
+            "ensemble_g2_model",
+            f"'{src.inst}'",
+            f"the mixed pair state of '{src.inst}' has members with different spectral "
+            f"structure (smallest normalised overlap of their reduced one-photon operators "
+            f"{moments['min_overlap']:.3f}), so its second-order statistics depend on the "
+            "mixing model. Pulsed sources: every pulse is entirely in one member, so g2 is the "
+            "per pulse average of 1 + 1/K_k over members, whereas the Schmidt number reported "
+            "is that of the averaged one-body density matrix; CW sources: independent pairs "
+            "are drawn from the mixture (one-body density matrix) and g2 follows from its "
+            "purity. 1 + 1/K is not the g2 here, and a pure multimode JSA must not be "
+            "encoded as an ensemble of its Schmidt modes",
+        )
+
+    def cw_ensemble_similarity(self, src: _Source, a: _Channel, b: _Channel) -> None:
+        members = src.members
+        if len(members) < 2 or len(members) > MAX_SIMILARITY_MEMBERS:
+            return
+        weights = src.emission.source.member_weights
+        active = [k for k in range(len(members)) if weights[k] > 0]
+        n_i = len(src.n_i)
+        overlap_min, spread = 1.0, 0.0
+        for det in (a.detector, b.detector):
+            for role in ROLES:
+                h = src.h[det][role]
+                ops = []
+                for k in active:
+                    rs, ri = self.member_rho(members[k], src.idx, n_i)
+                    rho = rs if role == "signal" else ri
+                    ops.append(np.einsum("npb,nbc,nqc->npq", h, rho, np.conj(h)) / weights[k])
+                norms = [float(np.sum(np.abs(o) ** 2)) for o in ops]
+                traces = [float(np.real(np.trace(o, axis1=1, axis2=2).sum())) for o in ops]
+                if max(traces) <= 0:
+                    continue
+                spread = max(spread, (max(traces) - min(traces)) / max(traces))
+                for i in range(len(ops)):
+                    for j in range(i + 1, len(ops)):
+                        den = math.sqrt(norms[i] * norms[j])
+                        if den > 0:
+                            c = float(np.real(np.sum(ops[i] * np.conj(ops[j])))) / den
+                            overlap_min = min(overlap_min, c)
+        if overlap_min < 0.999 or spread > 1e-3:
+            self.ensemble_model_issue(
+                src,
+                {"similar": False, "min_overlap": overlap_min},
+                f"{a.name} / {b.name}",
+            )
+
+    def herald_member_efficiency(self, src: _Source, det_id: str) -> np.ndarray:
+        weights = src.emission.source.member_weights
+        eta = np.zeros(len(weights))
+        n_i = len(src.n_i)
+        for k, amp in enumerate(src.members):
+            if weights[k] <= 0:
+                continue
+            rs, ri = self.member_rho(amp, src.idx, n_i)
+            total = 0.0
+            for role, rho in (("signal", rs), ("idler", ri)):
+                h = src.h[det_id][role]
+                total += _quadratic_trace(h, rho)
+            eta[k] = min(total / weights[k], 1.0)
+        return eta
+
+    def pulsed_moments(
+        self, src: _Source, a: _Channel, b: _Channel, herald: _Channel | None = None
+    ) -> dict[str, Any]:
+        # Model: every pulse is entirely in one member k of the mixture (probability w_k;
+        # amplitudes carry sqrt(w_k)). Per member the unheralded second-order moment is the
+        # thermal one built from the filtered one-photon operators N = Y Y^dagger of the arm
+        # (Y = filtered amplitude matrix, rows: arm frequencies and polarizations, columns: the
+        # partner photon). The per-pulse average is sum_k w_k Tr(Nh_a,k Nh_b,k) plus the
+        # covariance over members of the detected intensities (zero when all members have the
+        # same reduced state, as for polarization mixing of a common JSA). The Schmidt number is
+        # that of the averaged one-body operator sum_k N_k, i.e. of the reduced density matrix of
+        # the mixture. With a herald, the same-pulse triple moment H-a-b is evaluated from the
+        # herald-weighted cycle term Re Tr(N_a N_b E_H), so that the bunching factor follows the
+        # herald's spectral filter member by member.
+        key = (src.inst, a.detector, b.detector, None if herald is None else herald.detector)
         cached = self._moments.get(key)
         if cached is not None:
             return cached
-        weights = np.sum(np.abs(src.members) ** 2, axis=(1, 2, 3, 4))
-        thermal = 0.0
-        t_a = np.zeros(len(weights))
-        t_b = np.zeros(len(weights))
+        weights = src.emission.source.member_weights
+        k_count = len(weights)
+        keys = ("tr_a", "tr_b", "thermal", "h_a", "h_b", "cycle")
+        member = {name: np.zeros(k_count) for name in keys}
         by_role: dict[str, dict[str, float]] = {}
+        overlap_min, spread, checked = 1.0, 0.0, False
         for role in ROLES:
-            sum_a = sum_b = None
-            for k, amp in enumerate(src.members):
-                w = float(weights[k])
-                if w <= 0.0:
-                    continue
-                x = self.partner_matrix(src, role, amp)
-                ya = np.einsum("fps,fsk->fpk", src.h[a.detector][role], x).reshape(-1, x.shape[2])
-                yb = np.einsum("fps,fsk->fpk", src.h[b.detector][role], x).reshape(-1, x.shape[2])
-                ga, gb = np.conj(ya).T @ ya, np.conj(yb).T @ yb
-                thermal += float(np.real(np.sum(ga * gb.T))) / w
-                t_a[k] += float(np.real(np.trace(ga))) / w
-                t_b[k] += float(np.real(np.trace(gb))) / w
-                sum_a = ga if sum_a is None else sum_a + ga
-                sum_b = gb if sum_b is None else sum_b + gb
-            tr_a = float(np.real(np.trace(sum_a))) if sum_a is not None else 0.0
-            tr_b = float(np.real(np.trace(sum_b))) if sum_b is not None else 0.0
+            stats = self.role_gram_stats(src, role, a, b, herald, weights)
+            for name in keys:
+                member[name] += stats[name]
+            tr_a, tr_b = float(np.sum(stats["tr_a"])), float(np.sum(stats["tr_b"]))
             by_role[role] = {
                 "trace_a": tr_a,
                 "trace_b": tr_b,
-                "schmidt_a": tr_a**2 / float(np.real(np.sum(sum_a * sum_a.T)))
-                if tr_a > 0
-                else math.nan,
-                "schmidt_b": tr_b**2 / float(np.real(np.sum(sum_b * sum_b.T)))
-                if tr_b > 0
-                else math.nan,
+                "schmidt_a": tr_a**2 / stats["tr2_a"] if tr_a > 0 else math.nan,
+                "schmidt_b": tr_b**2 / stats["tr2_b"] if tr_b > 0 else math.nan,
             }
-        covariance = float(
-            np.sum(weights * t_a * t_b) - np.sum(weights * t_a) * np.sum(weights * t_b)
-        )
+            if stats["overlap"] is not None:
+                checked = True
+                overlap_min = min(overlap_min, stats["overlap"])
+                spread = max(spread, stats["spread"])
+        active = weights > 0
+        w = np.where(active, weights, 1.0)
+        t_a = member["tr_a"] / w
+        t_b = member["tr_b"] / w
         mean_a, mean_b = float(np.sum(weights * t_a)), float(np.sum(weights * t_b))
-        result = {
+        covariance = float(np.sum(weights * t_a * t_b) - mean_a * mean_b)
+        thermal = float(np.sum(member["thermal"][active] / weights[active]))
+        result: dict[str, Any] = {
             "excess": thermal + covariance,
             "by_role": by_role,
             "mean_a": mean_a,
             "mean_b": mean_b,
+            "similar": None if not checked else bool(overlap_min >= 0.999 and spread <= 1e-3),
+            "min_overlap": overlap_min,
         }
+        if herald is not None:
+            triple = member["h_a"] * member["tr_b"] + member["h_b"] * member["tr_a"]
+            triple = (triple + 2.0 * member["cycle"])[active] / weights[active]
+            eta = self.herald_member_efficiency(src, herald.detector)[active]
+            baseline = float(
+                np.sum(member["h_a"]) * np.sum(member["tr_b"])
+                + np.sum(member["h_b"]) * np.sum(member["tr_a"])
+            )
+            total = float(np.sum(triple))
+            saturated = float(np.sum((1.0 - eta / 2.0) * triple))
+            result["bunching_conditional"] = total / baseline - 1.0 if baseline > 0 else 0.0
+            result["pair_pair_factor"] = saturated / baseline if baseline > 0 else 1.0
+            result["herald_saturation"] = saturated / total if total > 0 else 1.0
         self._moments[key] = result
         return result
 
-    def pulsed_bunching(self, a: _Channel, b: _Channel) -> float:
-        pulsed = [s for s in self.sources if s.pulsed]
-        if not pulsed:
-            return 0.0
-        m = self.pulsed_moments(pulsed[0], a, b)
-        product = m["mean_a"] * m["mean_b"]
-        return m["excess"] / product if product > 0 else 0.0
+    def role_gram_stats(
+        self,
+        src: _Source,
+        role: str,
+        a: _Channel,
+        b: _Channel,
+        herald: _Channel | None,
+        weights: np.ndarray,
+    ) -> dict[str, Any]:
+        # Per member k with x the (arm rows) x (partner columns) amplitude matrix, Y_a = h_a x,
+        # Y_b = h_b x, and M the partner-space operator h_H^T conj(h_H) of the herald:
+        #   tr_a = |Y_a|^2, thermal = Tr(Y_a^+ Y_a Y_b^+ Y_b) = |Y_a Y_b^+|^2,
+        #   h_a = Tr(M Y_a^+ Y_a) (herald-a pair weight), cycle = Re Tr(Y_a^+ Y_a Y_b^+ Y_b M).
+        # Arm space (dimension rows): G = x x^+, G_H = x M x^+ and block products h G h^+, one
+        # big product per matrix. Partner space (dimension cols): g = x^+ E x with E = h^+ h.
+        members = src.members
+        k_count = len(members)
+        names = ("tr_a", "tr_b", "thermal", "h_a", "h_b", "cycle")
+        zeros = {n: np.zeros(k_count) for n in names}
+        zeros |= {"tr2_a": 0.0, "tr2_b": 0.0, "overlap": None, "spread": 0.0}
+        h_a, h_b = src.h[a.detector][role], src.h[b.detector][role]
+        if not (np.any(h_a) or np.any(h_b)):
+            return zeros
+        partner = "idler" if role == "signal" else "signal"
+        h_h = src.h[herald.detector][partner] if herald is not None else None
+        n_r, n_p = len(src.grid[role]), len(src.grid[partner])
+        rows, cols = 2 * n_r, 2 * n_p
+        affordable = k_count <= MAX_SIMILARITY_MEMBERS
+        keep = affordable and k_count > 1
+        space = GRAM_SPACE or ("col" if cols < rows and affordable else "row")
+        dim = cols if space == "col" else rows
+        needed = 16.0 * (
+            (6 + (2 * k_count if (keep or space == "col") else 0)) * dim * dim
+            + (5 + (k_count if space == "col" else 0)) * rows * cols
+        )
+        check_memory(
+            needed,
+            self.max_bytes,
+            f"the second-order moments of pair source '{src.inst}' "
+            f"({rows} x {cols} filtered amplitude matrix, evaluated in the "
+            f"{'partner' if space == 'col' else 'arm'} space of dimension {dim})",
+            "use a coarser frequency lattice or fewer samples in the pair source",
+        )
+        m_ops = None
+        if h_h is not None:
+            m_ops = np.einsum("fck,fcq->fkq", h_h, np.conj(h_h))
+        e_a = np.einsum("fsp,fsq->fpq", np.conj(h_a), h_a)
+        e_b = np.einsum("fsp,fsq->fpq", np.conj(h_b), h_b)
+        out = {n: np.zeros(k_count) for n in names}
+        total = {"a": None, "b": None}
+        stored: dict[str, list] = {"a": [], "b": []}
+        for k, amp in enumerate(members):
+            self.cancel_point()
+            if weights[k] <= 0.0:
+                stored["a"].append(None)
+                stored["b"].append(None)
+                continue
+            x = self.partner_matrix(src, role, amp).reshape(rows, cols)
+            if space == "row":
+                self.member_arm_space(x, rows, cols, h_a, h_b, m_ops, k, out, total, stored, keep)
+            else:
+                self.member_partner_space(x, rows, cols, n_p, e_a, e_b, m_ops, k, out, stored, keep)
+        active = [k for k in range(k_count) if weights[k] > 0]
+        result: dict[str, Any] = dict(out)
+        result["overlap"], result["spread"] = None, 0.0
+        for label in ("a", "b"):
+            tr2, gram = self.mixture_purity(
+                space, stored[label], total[label], active, keep, e_a if label == "a" else e_b
+            )
+            result[f"tr2_{label}"] = tr2
+            if gram is not None and label == "a" and len(active) > 1:
+                diag = np.sqrt(np.clip(np.diag(gram), 0.0, None))
+                den = np.outer(diag, diag)
+                sel = np.ix_(active, active)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    cos = np.where(den[sel] > 0, gram[sel] / den[sel], 1.0)
+                result["overlap"] = float(np.min(cos))
+                traces = out["tr_a"][active] / weights[active]
+                top = float(np.max(traces))
+                result["spread"] = float((top - np.min(traces)) / top) if top > 0 else 0.0
+        return result
+
+    @staticmethod
+    def block_product(left: np.ndarray, big: np.ndarray, right: np.ndarray) -> np.ndarray:
+        # left_f big_{f,g} right_g^+ for per-frequency 2x2 blocks; big has index (f, pol)
+        n = left.shape[0]
+        g4 = big.reshape(n, 2, right.shape[0], 2)
+        mid = np.einsum("fps,fsgt->fpgt", left, g4)
+        return np.einsum("fpgt,gqt->fpgq", mid, np.conj(right)).reshape(2 * n, -1)
+
+    def member_arm_space(self, x, rows, cols, h_a, h_b, m_ops, k, out, total, stored, keep):
+        n = rows // 2
+        g = x @ x.conj().T
+        g_diag = np.einsum("fsft->fst", g.reshape(n, 2, n, 2))
+        out["tr_a"][k] = float(np.einsum("fps,fst,fpt->", h_a, g_diag, np.conj(h_a)).real)
+        out["tr_b"][k] = float(np.einsum("fps,fst,fpt->", h_b, g_diag, np.conj(h_b)).real)
+        cross = self.block_product(h_a, g, h_b)
+        out["thermal"][k] = float(np.sum(np.abs(cross) ** 2))
+        if m_ops is not None:
+            x_m = np.einsum("rkf,fkq->rqf", x.reshape(rows, 2, cols // 2), m_ops).reshape(
+                rows, cols
+            )
+            gh = x_m @ x.conj().T
+            gh_diag = np.einsum("fsft->fst", gh.reshape(n, 2, n, 2))
+            out["h_a"][k] = float(np.einsum("fps,fst,fpt->", h_a, gh_diag, np.conj(h_a)).real)
+            out["h_b"][k] = float(np.einsum("fps,fst,fpt->", h_b, gh_diag, np.conj(h_b)).real)
+            cba = self.block_product(h_b, gh, h_a)
+            out["cycle"][k] = float(np.real(np.sum(cba * cross.T)))
+            del gh, x_m, cba
+        for label, h in (("a", h_a), ("b", h_b)):
+            nk = self.block_product(h, g, h)
+            total[label] = nk if total[label] is None else total[label] + nk
+            stored[label].append(nk if keep else None)
+
+    def member_partner_space(self, x, rows, cols, n_p, e_a, e_b, m_ops, k, out, stored, keep):
+        n = rows // 2
+        x3 = x.reshape(n, 2, cols)
+        xh = x.conj().T
+        xa = np.einsum("fps,fsc->fpc", e_a, x3).reshape(rows, cols)
+        xb = np.einsum("fps,fsc->fpc", e_b, x3).reshape(rows, cols)
+        ga, gb = xh @ xa, xh @ xb
+        out["tr_a"][k] = float(np.real(np.trace(ga)))
+        out["tr_b"][k] = float(np.real(np.trace(gb)))
+        out["thermal"][k] = float(np.real(np.sum(ga * gb.T)))
+        if m_ops is not None:
+            ga_d = np.einsum("kfqf->fkq", ga.reshape(2, n_p, 2, n_p))
+            gb_d = np.einsum("kfqf->fkq", gb.reshape(2, n_p, 2, n_p))
+            out["h_a"][k] = float(np.real(np.einsum("fkq,fqk->", ga_d, m_ops)))
+            out["h_b"][k] = float(np.real(np.einsum("fkq,fqk->", gb_d, m_ops)))
+            blocks = np.einsum("qfc,ckf->fqk", ga.reshape(2, n_p, cols), gb.reshape(cols, 2, n_p))
+            out["cycle"][k] = float(np.real(np.einsum("fqk,fkq->", blocks, m_ops)))
+        stored["a"].append(
+            (xh if keep else None, xa if keep else None, float(np.sum(np.abs(ga) ** 2)))
+        )
+        stored["b"].append(
+            (xh if keep else None, xb if keep else None, float(np.sum(np.abs(gb) ** 2)))
+        )
+
+    @staticmethod
+    def mixture_purity(space: str, stored: list, total, active: list, keep: bool, e_op):
+        # Tr(N^2) of the averaged arm operator N = sum_k N_k, and (when affordable) the matrix
+        # Tr(N_k N_l) of member overlaps.
+        if not active:
+            return 0.0, None
+        if space == "row":
+            tr2 = float(np.real(np.sum(total * total.T)))
+            if not keep:
+                return tr2, None
+            gram = np.zeros((len(stored), len(stored)))
+            for i in active:
+                for j in active:
+                    gram[i, j] = float(np.real(np.sum(stored[i] * stored[j].T)))
+            return tr2, gram
+        # partner space: Tr(N_k N_l) = |x_k^+ E x_l|^2 (stored: x_k^+ and E x_k)
+        gram = np.zeros((len(stored), len(stored)))
+        for i in active:
+            gram[i, i] = stored[i][2]
+        if len(active) > 1:
+            for i in active:
+                for j in active:
+                    if j < i:
+                        gram[i, j] = gram[j, i]
+                    elif j > i:
+                        gram[i, j] = float(np.sum(np.abs(stored[i][0] @ stored[j][1]) ** 2))
+        return float(np.sum(gram)), gram
 
     def partner_matrix(self, src: _Source, role: str, amp: np.ndarray) -> np.ndarray:
         idx = src.idx
@@ -1289,20 +1837,43 @@ class _Engine:
         return total * self.survival(a) * self.survival(b)
 
 
+MAX_PAIR_CHANNELS = 24
+
+
 def simulate_rates(
-    setup: Setup, library: Library, classical: SimulationResult | None = None
+    setup: Setup,
+    library: Library,
+    classical: SimulationResult | None = None,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    cache: RunCache | None = None,
+    max_memory_bytes: float | None = None,
 ) -> RateResult:
-    engine = _Engine(setup, library, classical)
+    """Run the photon-rate engine.
+
+    ``should_cancel`` is polled between stages and inside the long loops; when it returns True
+    the run stops with ``Cancelled``. ``cache`` (a ``RunCache``) lets parsed parts and the
+    ``emit_pairs`` results of components that declare ``emit_cache_key`` be reused across runs.
+    ``max_memory_bytes`` bounds the arrays the engine is allowed to allocate for one stage.
+    """
+    engine = _Engine(setup, library, classical, should_cancel, cache, max_memory_bytes)
     engine.discover()
     engine.emit_sources()
     engine.transfer_sources()
+    engine.cancel_point()
     engine.background()
+    engine.source_diagnostics()
     analyses: dict[str, dict[str, Any]] = {}
     for spec in setup.analyses:
+        engine.cancel_point()
         try:
             name, result = engine.analyse(spec)
         except AnalysisSpecError as exc:
             engine.issue("error", "bad_analysis", "analyses", str(exc))
+            continue
+        except ResourceLimitError as exc:
+            subject = f"analysis '{spec.get('name', spec.get('type', 'analysis'))}'"
+            engine.issue("error", "memory_limit", subject, f"{exc}; the analysis was skipped")
             continue
         analyses[name] = result
     channels = {}
@@ -1315,17 +1886,34 @@ def simulate_rates(
         }
     pairs: dict[tuple[str, str], dict[str, float]] = {}
     names = list(engine.channels)
-    if len(names) <= 8 and engine.sources:
-        for i, x in enumerate(names):
-            for y in names[i + 1 :]:
-                rate = engine.pair_rate(engine.channels[x], engine.channels[y])
-                pairs[(x, y)] = {"coincidence_rate_hz": rate}
+    if len(names) <= MAX_PAIR_CHANNELS and engine.sources:
+        try:
+            for i, x in enumerate(names):
+                for y in names[i + 1 :]:
+                    engine.cancel_point()
+                    rate = engine.pair_rate(engine.channels[x], engine.channels[y])
+                    pairs[(x, y)] = {"coincidence_rate_hz": rate}
+        except ResourceLimitError as exc:
+            engine.issue(
+                "error", "memory_limit", "setup", f"{exc}; the coincidence table was skipped"
+            )
+            pairs = {}
+    elif engine.sources:
+        engine.issue(
+            "warning",
+            "pair_table_truncated",
+            "setup",
+            f"{len(names)} tagger channels are connected; the all-pairs coincidence table is "
+            f"only built for up to {MAX_PAIR_CHANNELS} channels (use analyses for the others)",
+        )
     sources = {
         s.inst: {
             "rate_hz": s.rate,
             "dnu_hz": s.dnu,
             "pulsed": s.pulsed,
             "repetition_rate_hz": s.emission.source.repetition_rate,
+            "signal_wavelength_m": C_LIGHT / s.nu0["signal"] if s.nu0["signal"] > 0 else None,
+            "idler_wavelength_m": C_LIGHT / s.nu0["idler"] if s.nu0["idler"] > 0 else None,
         }
         for s in engine.sources
     }
@@ -1337,6 +1925,12 @@ def simulate_rates(
             "no component emitted photon pairs; only classical leakage and dark counts are "
             "reported",
         )
+    links = {}
+    for link_id, entry in engine.link_photons.items():
+        total = sum(sum(roles.values()) for roles in entry["by_source"].values())
+        links[link_id] = {"photons_hz": total, **entry}
     issues = list(engine.classical.issues)
     issues += [i for i in engine.issues if i not in issues]
-    return RateResult(engine.classical, channels, analyses, issues, engine.det_data, sources, pairs)
+    return RateResult(
+        engine.classical, channels, analyses, issues, engine.det_data, sources, pairs, links
+    )

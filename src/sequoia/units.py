@@ -16,6 +16,10 @@ _DIMENSIONS = {
     "frequency": ureg.Quantity(1.0, "Hz").dimensionality,
     "wavenumber": ureg.Quantity(1.0, "1/m").dimensionality,
     "energy": ureg.Quantity(1.0, "J").dimensionality,
+    "temperature": ureg.Quantity(1.0, "K").dimensionality,
+    "current": ureg.Quantity(1.0, "A").dimensionality,
+    "voltage": ureg.Quantity(1.0, "V").dimensionality,
+    "nonlinear_coefficient": ureg.Quantity(1.0, "m/V").dimensionality,
 }
 
 
@@ -61,6 +65,8 @@ def from_si(value, unit: str):
 
 
 def unit_dimension(unit: str) -> str:
+    if _base_units(unit) == ureg.radian:
+        return "angle"
     dim = ureg.Quantity(1.0, _unit(unit)).dimensionality
     for name, reference in _DIMENSIONS.items():
         if dim == reference:

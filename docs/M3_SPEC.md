@@ -103,8 +103,10 @@ Heralded triples (herald H, detectors a, b), uncorrelated-process model:
 `R_Hab = R_Ha S_b' W + R_Hb S_a' W + S_H S_a S_b W^2`, `g2_H(0) = R_Hab * S_H / (R_Ha * R_Hb)`.
 Pulsed sources: `S' W` is replaced by the per-pulse probability, and its pair-sourced part is
 multiplied by `1 + 1/K_ab`, the unheralded bunching of a and b (K: Schmidt number of the
-filtered arm). Low gain, broadband herald, no herald saturation (exact low-mu value is
-`mu (2 - eta_H) (1 + 1/K)`; the engine returns the eta_H -> 0 limit `2 mu (1 + 1/K)`).
+filtered arm). Low gain. The pair-pair terms carry the herald saturation factor
+`(1 - eta_H/2)`, giving the exact low-mu value `mu (2 - eta_H) (1 + B)`; B is the bunching of the
+pairs that actually herald (herald-conditioned, member by member for ensembles). CW sources add
+the thermal bunching `B_W` integrated over the window (see `docs/conventions.md`).
 
 ### Mixed pair states (ensemble axis)
 

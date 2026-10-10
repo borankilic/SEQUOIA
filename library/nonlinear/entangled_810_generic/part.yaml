@@ -1,7 +1,7 @@
 type: EntangledPairSource
 manufacturer: generic
 model: polarization-entangled pair source (Sagnac-type black box), 810 nm
-description: Generic placeholder. Ideal Bell state phi+; brightness is in pairs/s/mW of pump power (setting pump_power).
+description: Generic placeholder. Ideal Bell state phi+; brightness is the pair rate in pairs/s per mW of pump power (setting pump_power) emitted into the collection modes, before any filter, fibre or detector loss.
 params:
   brightness: 100000
   center_wavelength: {value: 810, unit: nm, provenance: {source: ideal-default, note: generic placeholder}}

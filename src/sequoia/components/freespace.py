@@ -12,7 +12,7 @@ from sequoia.components.base import (
     Settings,
     register,
 )
-from sequoia.data import Curve, Length, Scalar
+from sequoia.data import Angle, Curve, Dimensionless, Length, Scalar
 from sequoia.light.gaussian import aperture_transmission, thin_lens
 
 FREE, IN, OUT = PortKind.FREE_SPACE, PortDirection.IN, PortDirection.OUT
@@ -37,7 +37,7 @@ class _Optic(Component):
 class LensParams(Params):
     focal_length: Length
     focal_length_curve: Curve | None = None
-    transmission: Scalar | Curve = Unity
+    transmission: Dimensionless | Curve = Unity
     clear_aperture: Length | None = None
 
 
@@ -69,10 +69,10 @@ class Lens(_Optic):
 
 class ObjectiveParams(Params):
     effective_focal_length: Length
-    numerical_aperture: Scalar
+    numerical_aperture: Dimensionless
     back_aperture: Length | None = None
     working_distance: Length | None = None
-    transmission: Scalar | Curve = Unity
+    transmission: Dimensionless | Curve = Unity
 
 
 @register("freespace", "Objective")
@@ -97,13 +97,13 @@ class Objective(_Optic):
 
 
 class MirrorParams(Params):
-    reflectance: Scalar | Curve = Unity
+    reflectance: Dimensionless | Curve = Unity
     radius_of_curvature: Length | None = None
     clear_aperture: Length | None = None
 
 
 class MirrorSettings(Settings):
-    angle_of_incidence: Scalar = Scalar(value=0.0, unit="deg")
+    angle_of_incidence: Angle = Scalar(value=0.0, unit="deg")
 
 
 @register("freespace", "Mirror")
@@ -129,9 +129,9 @@ class Mirror(_Optic):
 
 
 class BeamSplitterParams(Params):
-    reflectance: Scalar | Curve = Scalar(value=0.5)
-    reflectance_v: Scalar | Curve | None = None
-    absorption: Scalar | Curve = Scalar(value=0.0)
+    reflectance: Dimensionless | Curve = Scalar(value=0.5)
+    reflectance_v: Dimensionless | Curve | None = None
+    absorption: Dimensionless | Curve = Scalar(value=0.0)
 
 
 @register("freespace", "BeamSplitter")
@@ -168,8 +168,8 @@ class BeamSplitter(Component):
 
 
 class DichroicParams(Params):
-    transmittance: Scalar | Curve
-    reflectance: Scalar | Curve | None = None
+    transmittance: Dimensionless | Curve
+    reflectance: Dimensionless | Curve | None = None
 
 
 @register("freespace", "DichroicMirror")

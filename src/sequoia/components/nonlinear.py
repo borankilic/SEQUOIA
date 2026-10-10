@@ -6,7 +6,7 @@ from typing import Literal
 
 import numpy as np
 import spdcalc
-from pydantic import Field
+from pydantic import Field, field_validator
 from scipy import constants
 
 from sequoia.components._util import diag_jones, spectral, sqrt_power
@@ -19,7 +19,19 @@ from sequoia.components.base import (
     Settings,
     register,
 )
-from sequoia.data import Curve, Duration, Length, Power, Scalar
+from sequoia.data import (
+    Angle,
+    Curve,
+    Dimensionless,
+    Duration,
+    Frequency,
+    Length,
+    NonlinearCoefficient,
+    Power,
+    Rate,
+    Scalar,
+    Temperature,
+)
 from sequoia.errors import SetupError
 from sequoia.light.gaussian import GaussianMode
 from sequoia.light.pairs import PairEmission, PairSource
@@ -30,11 +42,32 @@ _FWHM = 2.0 * math.sqrt(2.0 * math.log(2.0))
 _TWO_PI = 2.0 * math.pi
 _KELVIN = 273.15
 _REFERENCE_BANDWIDTH = 1e-4
+_MAX_GRID_CELLS = 4_000_000
+_MAX_TEMPERATURE_C = 900.0
+_CALIBRATED_TEMPERATURE_C = (-20.0, 250.0)
 
 PMType = Literal["Type0_e_ee", "Type0_o_oo", "Type1_e_oo", "Type2_e_eo", "Type2_e_oe"]
 BellState = Literal["phi+", "phi-", "psi+", "psi-"]
 
 _BELL_ORDER = ("phi+", "phi-", "psi+", "psi-")
+
+
+def _guard_grid(n_signal: float, n_sum: float, max_samples: int, dnu: float, explicit: bool, ctx):
+    cells = n_signal * n_sum
+    if cells > 10 * max_samples or cells > _MAX_GRID_CELLS:
+        raise SetupError(
+            f"the requested spectral grid needs about {cells:.3g} points "
+            f"({n_signal:.3g} signal x {n_sum:.3g} sum-frequency) at dnu = {dnu:.3g} Hz, above "
+            f"the limit of {min(10 * max_samples, _MAX_GRID_CELLS):.3g} (10 x max_samples = "
+            f"{max_samples}, absolute limit {_MAX_GRID_CELLS}); raise dnu (a shorter "
+            "delay_window), or raise max_samples if the memory is available"
+        )
+    if explicit and cells > max_samples and ctx is not None:
+        ctx.warn(
+            "pair_grid_exceeds_max_samples",
+            f"the explicit dnu = {dnu:.3g} Hz gives about {cells:.3g} lattice points, more than "
+            f"max_samples = {max_samples}",
+        )
 
 
 def bell_amplitude(state: BellState, phase: float = 0.0) -> np.ndarray:
@@ -117,7 +150,15 @@ def gaussian_pair_source(
     weights = np.array([w for w, _ in members], dtype=float)
     weights = weights / weights.sum()
 
+    if not dnu > 0.0:
+        raise ValueError("dnu must be positive")
     half = int(math.ceil(4.5 * sigma_x / dnu))
+    n_sum_count = 2 * int(math.ceil(4.0 * sigma_p / dnu)) + 1 if sigma_p > 0.0 else 1
+    if (2 * half + 1) * n_sum_count * len(members) > _MAX_GRID_CELLS:
+        raise ValueError(
+            f"the pair lattice would need {(2 * half + 1)} signal x {n_sum_count} sum-frequency "
+            f"x {len(members)} points at dnu = {dnu:.3g} Hz; raise dnu (limit {_MAX_GRID_CELLS})"
+        )
     n_s0 = int(round(nu_s0 / dnu))
     n_signal = n_s0 + np.arange(-half, half + 1)
     n_p0 = int(round(nu_p0 / dnu))
@@ -175,10 +216,10 @@ class SPDCCrystalParams(Params):
     material: str = "KTP"
     pm_type: PMType = "Type2_e_eo"
     length: Length
-    theta: Scalar | Literal["auto"] = Scalar(value=90.0, unit="deg")
+    theta: Angle | Literal["auto"] = Scalar(value=90.0, unit="deg")
     poling_period: Length | Literal["auto"] | None = None
-    design_temperature: Scalar = Scalar(value=25.0, unit="degC")
-    d_eff: Scalar | None = Field(
+    design_temperature: Temperature = Scalar(value=25.0, unit="degC")
+    d_eff: NonlinearCoefficient | None = Field(
         default=None,
         description=(
             "bulk nonlinear coefficient of the interacting polarization components (pm/V, "
@@ -191,11 +232,18 @@ class SPDCCrystalParams(Params):
     signal_waist: Length = Scalar(value=50e-6, unit="m")
     idler_waist: Length = Scalar(value=50e-6, unit="m")
     extraordinary_axis: Literal["H", "V"] = "H"
-    pump_transmission: Scalar | Curve = Unity
-    brightness: float | None = None
+    pump_transmission: Dimensionless | Curve = Unity
+    brightness: float | None = Field(
+        default=None,
+        description=(
+            "pairs per second per mW of pump emitted into the collection modes, before any "
+            "filter, coupling or detector loss (not a detected coincidence rate: entering one "
+            "double-counts the losses). Overrides the computed rate when given"
+        ),
+    )
     delay_window: Duration = Scalar(value=10e-9, unit="s")
     max_samples: int = 20000
-    dnu: Scalar | None = None
+    dnu: Frequency | None = None
     spectral_cutoff: float = Field(
         default=0.01,
         description=(
@@ -205,10 +253,28 @@ class SPDCCrystalParams(Params):
         ),
     )
     integration_degree: int = 100
+    spdcalc_counts_correction: bool = Field(
+        default=False,
+        description=(
+            "multiply the pair rate by spdcalc's get_counts_correction (about 0.2 for ppKTP "
+            "405 -> 810 nm, 0.1 for LiNbO3). Off by default: the uncorrected spectral integral "
+            "of spdcalc's JSI agrees with an independent first-principles coupled-mode "
+            "calculation to 0.8-0.9 (ppKTP) and 0.6-1.1 (other crystals, bulk and poled), "
+            "while the corrected figure is 4-10 times lower (see docs/M3_REPORT.md section "
+            "'Absolute pair rate')"
+        ),
+    )
+
+    @field_validator("dnu")
+    @classmethod
+    def _dnu_positive(cls, v):
+        if v is not None and not v.si > 0.0:
+            raise ValueError("dnu must be a positive frequency spacing")
+        return v
 
 
 class SPDCCrystalSettings(Settings):
-    temperature: Scalar = Scalar(value=25.0, unit="degC")
+    temperature: Temperature = Scalar(value=25.0, unit="degC")
 
 
 def _config(
@@ -315,12 +381,23 @@ def _ridge_hull(js, w_p: float, w_prior: float, cutoff: float) -> tuple[float, f
 class SPDCCrystal(Component):
     """Bulk or periodically poled SPDC crystal driven by the pump arriving at ``in``.
 
-    Pair rates come from spdcalc: ``counts_coincidences`` is documented as a coincidence rate
-    for the configured ``average_power_mw``; we use it as pairs per second (time averaged)
-    into the two Gaussian collection modes, per mW of pump polarized along the pump axis. It
-    scales as d_eff^2 and linearly with power. Only the spectral window covered by the JSA
-    grid is counted (spectral_cutoff of the phase-matching peak), so the rate is the pair rate
-    within that band (the default cutoff of 1% costs about 2.3% of the rate).
+    Pair rates: the spectral shape and the geometry (focusing, walk-off, phase matching) come
+    from spdcalc's joint spectral intensity, which is documented in pairs per second per
+    (rad/s)^2 at 1 mW. The rate is its integral over the signal/idler frequencies: pairs per
+    second (time averaged) into the two Gaussian collection modes, per mW of pump polarized
+    along the pump axis. It scales as d_eff^2 and linearly with power. Only the spectral
+    window covered by the JSA grid is counted (spectral_cutoff of the phase-matching peak),
+    so the rate is the pair rate within that band (the default cutoff of 1% costs about 2.3%).
+
+    The absolute scale was checked against an independent first-principles calculation (first
+    order perturbation theory, H = 4 eps0 d E_p^+ E_s^- E_i^-, Gaussian pump and collection
+    modes, longitudinal phase-matching integral; see docs/M3_REPORT.md). spdcalc's own
+    ``efficiencies()['coincidences_hz']`` multiplies this integral by a "counts correction"
+    of 0.1-0.2 that the independent calculation does not support (it would make the rate 4-10
+    times lower than first principles); it is therefore not applied unless
+    ``spdcalc_counts_correction`` is set. The remaining uncertainty of the absolute rate is
+    about +-40% (PPKTP) and the unvalidated vs. measured crystal: set ``brightness``
+    (pairs/s/mW emitted into the collection modes, measured) to be independent of it.
 
     ``d_eff`` is the bulk coefficient: spdcalc multiplies by the 2/pi quasi-phase-matching
     factor itself. It is required unless a measured ``brightness`` is given.
@@ -364,6 +441,23 @@ class SPDCCrystal(Component):
             text = _config(**common, theta_deg=theta, period_um="auto", temperature_c=design_c)
             period = spdcalc.SPDC.from_yaml(text).poling_period_um
         return theta, period
+
+    def _check_temperature(self, ctx) -> None:
+        t_c = self.settings.temperature.si - _KELVIN
+        if t_c > _MAX_TEMPERATURE_C:
+            raise SetupError(
+                f"crystal temperature {t_c:.0f} degC is above any physical operating range "
+                f"(limit {_MAX_TEMPERATURE_C:.0f} degC); the temperature-dependent Sellmeier "
+                "model is meaningless there"
+            )
+        low, high = _CALIBRATED_TEMPERATURE_C
+        if not low <= t_c <= high:
+            ctx.warn(
+                "temperature_extrapolation",
+                f"crystal temperature {t_c:.0f} degC is outside the range ({low:.0f} to "
+                f"{high:.0f} degC) in which the temperature dependence of the refractive "
+                "indices is calibrated; the phase-matching wavelength is an extrapolation",
+            )
 
     def _check_wavelengths(self, ctx, pump_nm: float, signal_nm: float) -> None:
         p = self.params
@@ -452,6 +546,7 @@ class SPDCCrystal(Component):
                 "quasi-phase-matching factor) or a measured 'brightness'"
             )
         self._check_wavelengths(ctx, pump_nm, signal_nm)
+        self._check_temperature(ctx)
 
         try:
             with _spdcalc_panics():
@@ -508,6 +603,20 @@ class SPDCCrystal(Component):
             hi = b if hi is None else max(hi, b)
             if shift == 0.0:
                 peak, ridge_fwhm = pk, fwhm
+        peak_nm = _TWO_PI * c / peak * 1e9
+        fwhm_nm = ridge_fwhm / _TWO_PI * (peak_nm * 1e-9) ** 2 / c * 1e9
+        detuning_nm = peak_nm - common["signal_nm"]
+        if abs(detuning_nm) > max(5.0 * fwhm_nm, 0.5):
+            idler_nm = _TWO_PI * c / (w_p0 - peak) * 1e9
+            ctx.warn(
+                "phase_matching_detuned",
+                f"the crystal is phase matched at a signal wavelength of {peak_nm:.1f} nm "
+                f"(idler {idler_nm:.1f} nm), {detuning_nm:+.1f} nm "
+                f"({abs(detuning_nm) / fwhm_nm:.0f} phase-matching widths) away from the "
+                "requested signal_wavelength "
+                f"{common['signal_nm']:.1f} nm; check the temperature, poling_period and "
+                "theta, and the filters and detectors for the wavelengths actually emitted",
+            )
         span_hz = (hi - lo) / _TWO_PI
         wanted = 1.0 / p.delay_window.si
         dnu = p.dnu.si if p.dnu is not None else max(wanted, span_hz / p.max_samples)
@@ -528,6 +637,11 @@ class SPDCCrystal(Component):
                 f"the phase-matching peak ({ridge_fwhm / _TWO_PI * 1e-9:.3g} GHz FWHM) is "
                 f"sampled by fewer than 4 lattice points (dnu = {dnu * 1e-9:.3g} GHz)",
             )
+        pulsed_grid = pulsed and 3.0 * pump_fwhm / dnu >= 4.0
+        n_sum_est = 2.0 * math.ceil(1.5 * pump_fwhm / dnu) + 1.0 if pulsed_grid else 1.0
+        _guard_grid(
+            (hi - lo) / (_TWO_PI * dnu) + 2.0, n_sum_est, p.max_samples, dnu, p.dnu is not None, ctx
+        )
         n_signal = np.arange(
             int(math.floor(lo / (_TWO_PI * dnu))), int(math.ceil(hi / (_TWO_PI * dnu))) + 1
         )
@@ -569,7 +683,8 @@ class SPDCCrystal(Component):
         if p.brightness is not None:
             rate = p.brightness * power_mw
         else:
-            rate = power_mw * _kappa(config) * weight * total
+            kappa = _kappa(config) if p.spdcalc_counts_correction else 1.0
+            rate = power_mw * kappa * weight * total
         if not math.isfinite(rate) or rate < 0.0:
             raise SetupError(
                 "spdcalc returned a non-finite pair rate: the pump, signal or idler wavelength "
@@ -608,16 +723,23 @@ class SPDCCrystal(Component):
 
 
 class EntangledPairSourceParams(Params):
-    pair_rate: Scalar | None = None
-    brightness: float | None = None
+    pair_rate: Rate | None = None
+    brightness: float | None = Field(
+        default=None,
+        description=(
+            "pairs per second per mW of pump emitted into the collection modes, before any "
+            "filter, coupling or detector loss (not a detected coincidence rate: entering one "
+            "double-counts the losses). Overrides the computed rate when given"
+        ),
+    )
     center_wavelength: Length
     idler_wavelength: Length | None = None
     bandwidth: Length
     pump_bandwidth: Length | None = None
-    repetition_rate: Scalar | None = None
+    repetition_rate: Frequency | None = None
     state: BellState = "phi+"
-    visibility: Scalar = Unity
-    phase: Scalar = Scalar(value=0.0, unit="rad")
+    visibility: Dimensionless = Unity
+    phase: Angle = Scalar(value=0.0, unit="rad")
     signal_waist: Length = Scalar(value=0.5e-3, unit="m")
     idler_waist: Length = Scalar(value=0.5e-3, unit="m")
     delay_window: Duration = Scalar(value=10e-9, unit="s")
@@ -632,7 +754,14 @@ class EntangledPairSourceParams(Params):
             "when it forces a lattice spacing above 1/delay_window a warning gives the period"
         ),
     )
-    dnu: Scalar | None = None
+    dnu: Frequency | None = None
+
+    @field_validator("dnu")
+    @classmethod
+    def _dnu_positive(cls, v):
+        if v is not None and not v.si > 0.0:
+            raise ValueError("dnu must be a positive frequency spacing")
+        return v
 
 
 class EntangledPairSourceSettings(Settings):
@@ -707,6 +836,20 @@ class EntangledPairSource(Component):
                 f"time with period {1e9 / dnu:.3g} ns (requested {p.delay_window.si * 1e9:.3g} "
                 "ns); delays and delay differences beyond it alias",
             )
+        sigma_p = 0.0 if not pump_bandwidth else pump_bandwidth / _FWHM
+        n_sum_est = (
+            2.0 * math.ceil(4.0 * sigma_p / dnu) + 1.0
+            if sigma_p > 0.0 and 3.0 * pump_bandwidth / dnu >= 4.0
+            else 1.0
+        )
+        _guard_grid(
+            2.0 * math.ceil(4.5 * sigma_x / dnu) + 1.0,
+            n_sum_est,
+            p.max_samples,
+            dnu,
+            p.dnu is not None,
+            ctx,
+        )
         try:
             source = gaussian_pair_source(
                 lam_s,

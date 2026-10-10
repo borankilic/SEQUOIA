@@ -94,18 +94,73 @@ class Scalar(BaseModel):
         return f"{_format_number(self.value)} {self.unit}"
 
 
-def _require_dimension(dimension: str):
+_BARE_HINTS = {
+    "temperature": "write the unit, e.g. '25 degC' or '298.15 K'",
+    "angle": "write the unit, e.g. '45 deg' or '0.785 rad'",
+    "frequency": "write the unit, e.g. '100 Hz', '80 MHz' or '100 cps'",
+    "current": "write the unit, e.g. '10 uA' or '1 mA'",
+    "voltage": "write the unit, e.g. '5 V'",
+    "length": "write the unit, e.g. '810 nm' or '10 mm'",
+    "time": "write the unit, e.g. '50 ns'",
+    "power": "write the unit, e.g. '10 mW'",
+    "nonlinear_coefficient": "write the unit, e.g. '3.9 pm/V'",
+}
+
+
+def _require_dimension(dimension: str, *, label: str | None = None, allow_bare_zero: bool = False):
+    name = label or dimension
+
     def check(scalar: Scalar) -> Scalar:
         if unit_dimension(scalar.unit) != dimension:
-            raise ValueError(f"expected a {dimension} quantity, got unit {scalar.unit!r}")
+            if dimension != "dimensionless" and scalar.unit.strip() in ("", "1"):
+                if allow_bare_zero and scalar.value == 0.0:
+                    return scalar
+                hint = _BARE_HINTS.get(dimension, "write the unit")
+                raise ValueError(
+                    f"a bare number {_format_number(scalar.value)} is ambiguous for a {name} "
+                    f"quantity; {hint}"
+                )
+            raise ValueError(
+                f"expected a {name} quantity, got unit {scalar.unit!r}"
+                + (
+                    f" (a {_UNIT_EXAMPLES[dimension]} unit is required)"
+                    if dimension in _UNIT_EXAMPLES
+                    else ""
+                )
+            )
+        if dimension == "temperature" and scalar.si < 0.0:
+            raise ValueError(
+                f"temperature {_format_number(scalar.value)} {scalar.unit} is below absolute "
+                "zero (0 K = -273.15 degC)"
+            )
         return scalar
 
     return check
 
 
+_UNIT_EXAMPLES = {
+    "temperature": "degC or K",
+    "angle": "deg, rad, mrad or arcmin",
+    "frequency": "Hz, kHz, MHz or cps",
+    "current": "A, mA or uA",
+    "voltage": "V or mV",
+    "nonlinear_coefficient": "pm/V",
+}
+
 Length = Annotated[Scalar, AfterValidator(_require_dimension("length"))]
 Duration = Annotated[Scalar, AfterValidator(_require_dimension("time"))]
 Power = Annotated[Scalar, AfterValidator(_require_dimension("power"))]
+Temperature = Annotated[Scalar, AfterValidator(_require_dimension("temperature"))]
+Angle = Annotated[Scalar, AfterValidator(_require_dimension("angle", allow_bare_zero=True))]
+Frequency = Annotated[Scalar, AfterValidator(_require_dimension("frequency"))]
+Rate = Annotated[Scalar, AfterValidator(_require_dimension("frequency", label="rate"))]
+Current = Annotated[Scalar, AfterValidator(_require_dimension("current"))]
+Voltage = Annotated[Scalar, AfterValidator(_require_dimension("voltage"))]
+NonlinearCoefficient = Annotated[
+    Scalar,
+    AfterValidator(_require_dimension("nonlinear_coefficient", label="nonlinear coefficient")),
+]
+Dimensionless = Annotated[Scalar, AfterValidator(_require_dimension("dimensionless"))]
 
 
 def parse_axis(text: str) -> tuple[str, str]:

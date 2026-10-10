@@ -57,6 +57,17 @@ def test_unknown_unit(unit):
         ("eV", "energy"),
         ("%", "dimensionless"),
         ("A/W", "other"),
+        ("degC", "temperature"),
+        ("K", "temperature"),
+        ("deg", "angle"),
+        ("rad", "angle"),
+        ("mrad", "angle"),
+        ("arcmin", "angle"),
+        ("mA", "current"),
+        ("mV", "voltage"),
+        ("cps", "frequency"),
+        ("pm/V", "nonlinear_coefficient"),
+        ("1", "dimensionless"),
     ],
 )
 def test_unit_dimension(unit, dimension):

@@ -18,21 +18,21 @@ from sequoia.components.base import (
     Settings,
     register,
 )
-from sequoia.data import Curve, Length, Scalar
+from sequoia.data import Angle, Curve, Dimensionless, Length, Scalar
 
 FREE, FIBER, IN, OUT = PortKind.FREE_SPACE, PortKind.FIBER, PortDirection.IN, PortDirection.OUT
 Unity = Scalar(value=1.0)
 
 
 class AngleSettings(Settings):
-    angle: Scalar = Scalar(value=0.0, unit="deg")
+    angle: Angle = Scalar(value=0.0, unit="deg")
 
 
 class WavePlateParams(Params):
-    retardance: Scalar
+    retardance: Dimensionless
     design_wavelength: Length
     retardance_curve: Curve | None = None
-    transmission: Scalar | Curve = Unity
+    transmission: Dimensionless | Curve = Unity
 
 
 @register("polarization", "WavePlate")
@@ -56,8 +56,8 @@ class WavePlate(Component):
 
 
 class PolarizerParams(Params):
-    extinction_ratio: Scalar = Scalar(value=1000.0)
-    transmission: Scalar | Curve = Unity
+    extinction_ratio: Dimensionless = Scalar(value=1000.0)
+    transmission: Dimensionless | Curve = Unity
 
 
 @register("polarization", "Polarizer")
@@ -77,10 +77,10 @@ class Polarizer(Component):
 
 
 class PBSParams(Params):
-    transmittance_p: Scalar | Curve = Unity
-    transmittance_s: Scalar | Curve = Scalar(value=0.0)
-    reflectance_s: Scalar | Curve = Unity
-    reflectance_p: Scalar | Curve = Scalar(value=0.0)
+    transmittance_p: Dimensionless | Curve = Unity
+    transmittance_s: Dimensionless | Curve = Scalar(value=0.0)
+    reflectance_s: Dimensionless | Curve = Unity
+    reflectance_p: Dimensionless | Curve = Scalar(value=0.0)
 
 
 @register("polarization", "PBS")
@@ -117,9 +117,9 @@ class PaddleParams(Params):
 
 
 class PaddleSettings(Settings):
-    angle_1: Scalar = Scalar(value=0.0, unit="deg")
-    angle_2: Scalar = Scalar(value=0.0, unit="deg")
-    angle_3: Scalar = Scalar(value=0.0, unit="deg")
+    angle_1: Angle = Scalar(value=0.0, unit="deg")
+    angle_2: Angle = Scalar(value=0.0, unit="deg")
+    angle_3: Angle = Scalar(value=0.0, unit="deg")
 
 
 @register("polarization", "FiberPaddleController")

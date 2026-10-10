@@ -10,7 +10,7 @@ from sequoia.components.base import (
     Settings,
     register,
 )
-from sequoia.data import Curve, Scalar
+from sequoia.data import Angle, Curve, Dimensionless, Scalar
 
 FREE, IN, OUT = PortKind.FREE_SPACE, PortDirection.IN, PortDirection.OUT
 
@@ -21,7 +21,7 @@ class SpectralFilterParams(Params):
 
 
 class FilterSettings(Settings):
-    angle_of_incidence: Scalar = Scalar(value=0.0, unit="deg")
+    angle_of_incidence: Angle = Scalar(value=0.0, unit="deg")
 
 
 @register("filters", "SpectralFilter")
@@ -42,7 +42,7 @@ class SpectralFilter(Component):
 
 
 class NDFilterParams(Params):
-    optical_density: Scalar | Curve
+    optical_density: Dimensionless | Curve
 
 
 @register("filters", "NDFilter")

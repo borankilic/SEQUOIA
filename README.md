@@ -61,6 +61,24 @@ result = simulate_rates(setup, library)
 result.analyses["herald_a"]["car"], result.channels["tagger.ch1"]["singles_hz"]
 ```
 
+### Units and the meaning of `brightness`
+
+Every physical quantity in a part or setup file is written with its unit (`810 nm`, `10 mW`,
+`45 deg`, `25 degC`, `100 cps`, `3.9 pm/V`) and is dimension-checked with a message that names the
+field. A bare number is only accepted for dimensionless quantities (extinction ratios, split ratios,
+optical density, wave-plate retardance in waves, visibility). In particular a bare `temperature: 25`,
+`angle: 45` or `dark_count_rate: 100` is an error with a hint (write `25 degC`, `45 deg`,
+`100 Hz`; a bare `0` is accepted for an angle), and `-300 degC` (below absolute zero), `25 mW` for
+a temperature or `45 mm` for an angle are rejected. Angles are stored in radians internally and
+temperatures in kelvin.
+
+`brightness` (on `SPDCCrystal` and `EntangledPairSource` parts) is the pair rate in pairs/s per
+mW of pump power **emitted into the collection modes, before any downstream loss** (filters, fibre
+coupling, detector efficiency). It is not a detected coincidence rate: entering a measured
+coincidence rate there counts the losses twice. When given it replaces the computed rate of
+`SPDCCrystal`; the computed rate carries the uncertainty described in
+[docs/M3_REPORT.md](docs/M3_REPORT.md), section 6.
+
 Things to know before trusting a number: [docs/conventions.md](docs/conventions.md) (quantum-layer
 approximations) and [docs/M3_REPORT.md](docs/M3_REPORT.md) (physics model, validation, limitations).
 

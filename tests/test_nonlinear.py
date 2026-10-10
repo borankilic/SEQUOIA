@@ -1,4 +1,5 @@
 import math
+import re
 from dataclasses import replace
 
 import numpy as np
@@ -11,6 +12,7 @@ from scipy.optimize import brentq
 import sequoia.components.builtin  # noqa: F401
 from sequoia.components.base import Context, get_component
 from sequoia.components.nonlinear import (
+    _config,
     bell_amplitude,
     bell_ensemble,
     gaussian_pair_source,
@@ -337,7 +339,28 @@ def test_crystal_rate_agrees_with_spdcalc_efficiencies_on_default_ktp():
     ref = spdcalc.SPDC.default()
     rng = ref.optimum_range(100)
     windowed = ref.efficiencies(rng)["coincidences_hz"]
-    assert 0.95 < src.rate / windowed < 1.4
+    x, y = np.asarray(rng.x_values()), np.asarray(rng.y_values())
+    raw = float(
+        np.asarray(ref.joint_spectrum().jsi_range(rng)).sum() * (x[1] - x[0]) * (y[1] - y[0])
+    )
+    assert 0.95 < src.rate / raw < 1.4
+    counted = emit(
+        crystal(
+            material="KTP",
+            pm_type="Type2_e_eo",
+            length="2 mm",
+            theta="52.7289 deg",
+            poling_period=None,
+            signal_wavelength="1550 nm",
+            signal_waist="100 um",
+            idler_waist="100 um",
+            spectral_cutoff=1e-3,
+            settings={"temperature": "20 degC"},
+            spdcalc_counts_correction=True,
+        ),
+        light,
+    )[0].source.rate
+    assert 0.95 < counted / windowed < 1.4
 
 
 def test_crystal_rate_independent_of_pump_bandwidth_in_linear_regime():
@@ -490,8 +513,10 @@ def test_pump_outside_transmission_range_warns_and_pair_state_errors_are_not_mis
     emission, ctx = emit(crystal(), pump_light(wavelength=300e-9))
     assert emission is not None
     assert any(i.code == "pump_transmission_range" for i in ctx.issues)
+    _, ctx = emit(crystal(), pump_light(wavelength=250e-9))
+    assert any(i.code == "pump_transmission_range" for i in ctx.issues)
     with pytest.raises(SetupError) as info:
-        emit(crystal(), pump_light(wavelength=250e-9))
+        emit(crystal(spdcalc_counts_correction=True), pump_light(wavelength=250e-9))
     assert "spdcalc rejected" not in str(info.value)
 
 
@@ -583,56 +608,361 @@ def test_pulsed_crystal_period_warning_states_actual_number():
     assert 1.0 / emission.source.dnu < 10e-9
 
 
-def test_crystal_rate_against_golden_rule_estimate():
-    """Independent first-principles check of the absolute pair rate.
+_EPS0 = constants.epsilon_0
 
-    Lowest-order perturbation theory (golden rule) for collinear, loosely focused Gaussian
-    modes, H = 2 eps0 d_eff E_p^+ E_s^- E_i^-, one-photon quantisation field
-    E0 = sqrt(hbar w / (2 eps0 n^2 V)), plane-wave phase matching over the length L with
-    group velocities v. After integrating over the signal frequency at fixed pump frequency
-    (the CW limit), pairs per second into the two single-mode collection modes are
 
-      R = d^2 P w_s w_i I^2 L / (2 eps0 n_p c v_s v_i (n_s n_i)^2 |1/v_s - 1/v_i|),
-      I = (2/pi)^(3/2) pi / (w_p w_s w_i (1/w_p^2 + 1/w_s^2 + 1/w_i^2)),
+def _index(material, wavelength, axis, kelvin):
+    return float(spdcalc.get_crystal_indices(material, wavelength * 1e9, kelvin)[axis])
 
-    where I is the transverse overlap of the three Gaussian modes (w are the 1/e^2 radii),
-    P is the pump power, and d = (2/pi) d_eff is the first-order quasi-phase-matching
-    coefficient. For 10 mm ppKTP, d_eff = 1 pm/V, waists 100/50/50 um, 1 mW this gives about
-    1150 Hz (the correction of using sqrt(n n_g) in the field normalisation lowers it to
-    about 1080 Hz); spdcalc gives 943 Hz. The formula neglects focusing (Gouy phase, the
-    finite confocal parameter) and the dispersion of the mode normalisation, which are
-    exactly the 10-25% effects spdcalc includes, so the ratio spdcalc / estimate is expected
-    in 0.8-1.3 (the same ratio is 0.78-0.83 for 2-5 mm crystals with 150-300 um waists).
-    Without spdcalc's counts correction the ratio would be about 4: this bounds an error in
-    the absolute normalisation, which a test of spdcalc against spdcalc cannot.
-    """
-    temperature = 298.15
-    c, eps0 = constants.c, constants.epsilon_0
 
-    def index(nm, axis):
-        return spdcalc.get_crystal_indices("KTP", nm, temperature)[axis]
+def _group_index(material, wavelength, axis, kelvin):
+    h = 1e-4 * wavelength
+    slope = (
+        _index(material, wavelength + h, axis, kelvin)
+        - _index(material, wavelength - h, axis, kelvin)
+    ) / (2.0 * h)
+    return _index(material, wavelength, axis, kelvin) - wavelength * slope
 
-    def group_index(nm, axis):
-        h = 0.05
-        omega = lambda x: 2.0 * np.pi * c / (x * 1e-9)  # noqa: E731
-        slope = (index(nm + h, axis) - index(nm - h, axis)) / (omega(nm + h) - omega(nm - h))
-        return index(nm, axis) + omega(nm) * slope
 
-    n_p, n_s, n_i = index(405, 1), index(810, 1), index(810, 2)
-    v_s, v_i = c / group_index(810, 1), c / group_index(810, 2)
-    w_s = w_i = 2.0 * np.pi * c / 810e-9
-    wp, ws, wi, length, power = 100e-6, 50e-6, 50e-6, 10e-3, 1e-3
-    overlap = (2.0 / np.pi) ** 1.5 * np.pi / (wp * ws * wi * (1 / wp**2 + 1 / ws**2 + 1 / wi**2))
-    d = 2.0 / np.pi * 1e-12
-    estimate = (
-        d**2
-        * power
-        * w_s
-        * w_i
-        * overlap**2
-        * length
-        / (2.0 * eps0 * n_p * c * v_s * v_i * (n_s * n_i) ** 2 * abs(1.0 / v_s - 1.0 / v_i))
+def _overlap_closed_form(w_p, w_s, w_i):
+    return 2.0 / (w_s * w_i * (1.0 / w_p**2 + 1.0 / w_s**2 + 1.0 / w_i**2))
+
+
+def _phase_mismatch(material, kelvin, lam_p, lam_s, lam_i, axes, period):
+    ip, is_, ii = axes
+    dk = (
+        2.0
+        * np.pi
+        * (
+            _index(material, lam_p, ip, kelvin) / lam_p
+            - _index(material, lam_s, is_, kelvin) / lam_s
+            - _index(material, lam_i, ii, kelvin) / lam_i
+        )
     )
-    assert 1000.0 < estimate < 1300.0
-    rate = emit(crystal(), pump_light(power=power, waist=wp))[0].source.rate
-    assert 0.8 < rate / estimate < 1.3
+    return dk if period is None else dk - 2.0 * np.pi / period
+
+
+def _gaussian_beam_overlap(
+    material, kelvin, length, lam_p, lam_s, lam_i, axes, waists, period, zpos
+):
+    """Brute-force J / A_0 = int d^3r g_p(r) u_s^*(r) u_i^*(r) exp(i dk z) on an (r, z) grid
+    with explicit paraxial beams exp(-r^2/(w0^2 q))/q, q = 1 + i zeta (conjugated for the
+    photons), the collection modes normalised to unit power at every z."""
+    ip, is_, ii = axes
+    w_p, w_s, w_i = waists
+    n_p = _index(material, lam_p, ip, kelvin)
+    n_s = _index(material, lam_s, is_, kelvin)
+    n_i = _index(material, lam_i, ii, kelvin)
+    z = np.linspace(-length / 2, length / 2, 601)
+    r = np.linspace(0.0, 4.0 * max(w_p, w_s, w_i) * 3.0, 3000)
+    rr, zz = r[None, :], z[:, None]
+
+    def beam(w0, n, lam, z0, conj):
+        zeta = (zz - z0) / (np.pi * n * w0**2 / lam)
+        q = 1.0 + (-1j if conj else 1j) * zeta
+        return np.exp(-(rr**2) / (w0**2 * q)) / q
+
+    pump = beam(w_p, n_p, lam_p, 0.0, False)
+    sig = beam(w_s, n_s, lam_s, zpos[0], True) * np.sqrt(2.0 / np.pi) / w_s
+    idl = beam(w_i, n_i, lam_i, zpos[1], True) * np.sqrt(2.0 / np.pi) / w_i
+    radial = np.trapezoid(pump * sig * idl * 2.0 * np.pi * rr, r, axis=1)
+    dk = _phase_mismatch(material, kelvin, lam_p, lam_s, lam_i, axes, period)
+    return np.trapezoid(radial * np.exp(1j * dk * z), z)
+
+
+def coupled_mode_pair_rate(
+    material, kelvin, length, lam_p, lam_s0, axes, waists, d, period=None, zpos=(0.0, 0.0), n=801
+):
+    """Pairs/s per mW of the first-order perturbation theory described in
+    ``test_absolute_pair_rate_first_principles`` (signal wavelength scanned +-3%)."""
+    ip, is_, ii = axes
+    w_p, w_s, w_i = waists
+    n_p = _index(material, lam_p, ip, kelvin)
+    a0_sq = 1e-3 / (np.pi * w_p**2 * n_p * _EPS0 * C)
+    z = np.linspace(-length / 2, length / 2, n)
+    lam = np.linspace(0.97 * lam_s0, 1.03 * lam_s0, n)
+    rate = np.zeros(n)
+    for k, ls in enumerate(lam):
+        li = 1.0 / (1.0 / lam_p - 1.0 / ls)
+        ns, ni = _index(material, ls, is_, kelvin), _index(material, li, ii, kelvin)
+        dk = _phase_mismatch(material, kelvin, lam_p, ls, li, axes, period)
+        rayleigh = [
+            np.pi * nn * w**2 / lw
+            for nn, w, lw in ((n_p, w_p, lam_p), (ns, w_s, ls), (ni, w_i, li))
+        ]
+        zp, zs, zi = z / rayleigh[0], (z - zpos[0]) / rayleigh[1], (z - zpos[1]) / rayleigh[2]
+        a_p = 1.0 / (w_p**2 * (1.0 + 1j * zp))
+        a_s = 1.0 / (w_s**2 * (1.0 - 1j * zs))
+        a_i = 1.0 / (w_i**2 * (1.0 - 1j * zi))
+        integrand = np.exp(1j * dk * z) / ((1 + 1j * zp) * (1 - 1j * zs) * (1 - 1j * zi))
+        integrand = integrand * (np.pi / (a_p + a_s + a_i)) * (2.0 / np.pi) / (w_s * w_i)
+        j = np.trapezoid(integrand, z)
+        omega_s, omega_i = 2.0 * np.pi * C / ls, 2.0 * np.pi * C / li
+        rate[k] = 2.0 * d**2 / (np.pi * C**2) * omega_s * omega_i / (ns * ni) * a0_sq * abs(j) ** 2
+    domega = 2.0 * np.pi * C * np.gradient(lam) / lam**2
+    return float(np.sum(rate * domega))
+
+
+def _ktp_config(length, w_p, w_s, period="auto"):
+    return _config(
+        kind="KTP",
+        pm_type="Type2_e_eo",
+        theta_deg=90.0,
+        length_um=length * 1e6,
+        temperature_c=25.0,
+        pump_nm=405.0,
+        bandwidth_nm=0.0405,
+        pump_waist_um=w_p * 1e6,
+        signal_nm=810.0,
+        signal_waist_um=w_s * 1e6,
+        idler_waist_um=w_s * 1e6,
+        period_um=period,
+        deff=1.0,
+    )
+
+
+@pytest.mark.parametrize(("w_p", "w_s"), [(400e-6, 300e-6), (100e-6, 50e-6), (30e-6, 30e-6)])
+def test_transverse_overlap_matches_brute_force_gaussian_beams(w_p, w_s):
+    length, kelvin, lam_p = 10e-3, 298.15, 405e-9
+    cfg = spdcalc.SPDC.from_yaml(_ktp_config(length, w_p, w_s))
+    period = cfg.poling_period_um * 1e-6
+    zpos = (cfg.signal_waist_position_um * 1e-6, cfg.idler_waist_position_um * 1e-6)
+    z = np.linspace(-length / 2, length / 2, 2001)
+    for lam_s in (808e-9, 810e-9, 812e-9):
+        lam_i = 1.0 / (1.0 / lam_p - 1.0 / lam_s)
+        brute = _gaussian_beam_overlap(
+            "KTP", kelvin, length, lam_p, lam_s, lam_i, (1, 1, 2), (w_p, w_s, w_s), period, zpos
+        )
+        n_p, n_s, n_i = (
+            _index("KTP", lam_p, 1, kelvin),
+            _index("KTP", lam_s, 1, kelvin),
+            _index("KTP", lam_i, 2, kelvin),
+        )
+        zp = z / (np.pi * n_p * w_p**2 / lam_p)
+        zs = (z - zpos[0]) / (np.pi * n_s * w_s**2 / lam_s)
+        zi = (z - zpos[1]) / (np.pi * n_i * w_s**2 / lam_i)
+        a_p = 1.0 / (w_p**2 * (1 + 1j * zp))
+        a_s = 1.0 / (w_s**2 * (1 - 1j * zs))
+        a_i = 1.0 / (w_s**2 * (1 - 1j * zi))
+        dk = _phase_mismatch("KTP", kelvin, lam_p, lam_s, lam_i, (1, 1, 2), period)
+        closed = np.trapezoid(
+            np.exp(1j * dk * z)
+            / ((1 + 1j * zp) * (1 - 1j * zs) * (1 - 1j * zi))
+            * (2.0 / (w_s * w_s))
+            / (a_p + a_s + a_i),
+            z,
+        )
+        assert abs(brute) == pytest.approx(abs(closed), rel=5e-3)
+
+
+def test_plane_wave_pair_rate_closed_form_matches_the_numerical_overlap():
+    """R = 4 d^2 w_s w_i P L I^2 / (c^2 n_s n_i pi w_p^2 n_p eps0 c |1/v_s - 1/v_i|), the
+    textbook plane-wave (loose focusing) limit, I the transverse overlap of the 3 modes."""
+    kelvin, length, w_p, w_s = 298.15, 10e-3, 400e-6, 300e-6
+    cfg = spdcalc.SPDC.from_yaml(_ktp_config(length, w_p, w_s))
+    period = cfg.poling_period_um * 1e-6
+    d = 2.0 / np.pi * 1e-12
+    n_p = _index("KTP", 405e-9, 1, kelvin)
+    n_s, n_i = _index("KTP", 810e-9, 1, kelvin), _index("KTP", 810e-9, 2, kelvin)
+    dbeta = abs(_group_index("KTP", 810e-9, 1, kelvin) - _group_index("KTP", 810e-9, 2, kelvin)) / C
+    omega = 2.0 * np.pi * C / 810e-9
+    overlap = _overlap_closed_form(w_p, w_s, w_s)
+    closed = (
+        4.0
+        * d**2
+        * omega**2
+        * 1e-3
+        * length
+        * overlap**2
+        / (C**2 * n_s * n_i * np.pi * w_p**2 * n_p * _EPS0 * C * dbeta)
+    )
+    numeric = coupled_mode_pair_rate(
+        "KTP", kelvin, length, 405e-9, 810e-9, (1, 1, 2), (w_p, w_s, w_s), d, period
+    )
+    assert closed == pytest.approx(numeric, rel=0.06)
+    assert 150.0 < closed < 260.0
+
+
+@pytest.mark.parametrize(
+    ("w_p", "w_s", "length"),
+    [(400e-6, 300e-6, 10e-3), (100e-6, 50e-6, 10e-3), (30e-6, 30e-6, 10e-3)],
+)
+def test_absolute_pair_rate_first_principles(w_p, w_s, length):
+    """Absolute pair rate against an independent first-principles evaluation.
+
+    Derivation. H_I = 4 eps0 d E_p^+ E_s^- E_i^- + h.c. (the energy density -(eps0 chi/3)E^3
+    with chi = 2 d; it reproduces Boyd's coupled equations dA_s/dz = 2 i w_s d A_p A_i^* /
+    (n_s c) for E = A e^{i(kz - wt)} + c.c.), d being the quasi-phase-matched coefficient
+    (2/pi) d_bulk. Collection mode u (int |u|^2 d^2r = 1) photon field:
+    E^+ = i int dw sqrt(hbar w / (4 pi eps0 n c)) u a(w) e^{i(kz - wt)}. Fermi's golden rule
+    with a classical pump A_p(r) (I = 2 n eps0 c |A_p|^2, A_0^2 = P/(pi w_p^2 n_p eps0 c)):
+      R = (2 d^2 / (pi c^2)) int dw_s (w_s w_i / (n_s n_i)) |J|^2,
+      J = int d^3r A_p(r) u_s^*(r) u_i^*(r) exp[i (k_p - k_s - k_i - 2 pi / Lambda) z].
+    In the plane-wave limit this is R = int dw_s/(2 pi) g^2 L^2 sinc^2(dk L / 2) with the
+    parametric gain g^2 = 4 w_s w_i d^2 |A_p|^2 / (n_s n_i c^2) (one vacuum photon per mode
+    amplified).
+
+    Result, 10 mm ppKTP, d_bulk = 1 pm/V, waists 100/50/50 um, 1 mW: 4.1 kHz here; spdcalc's
+    JSI integral (what the engine now uses) gives 4.7 kHz (ratio 1.15; 1.12 loose focus, 1.26
+    at 30 um); spdcalc's coincidences_hz (the same integral times get_counts_correction =
+    0.2035) gives 0.94 kHz, i.e. 4.3x below this derivation. A golden-rule estimate that
+    takes H = 2 eps0 d (half the coupling above, hence 1/4 of the rate) lands within 20% of
+    the corrected figure only because the two factors cancel (0.82 in the first review). The
+    pi^2/2 of the second review is not a quasi-phase-matching double count (see the bulk
+    versus poled test): the correction factor is 0.1-0.2 depending on crystal and wavelengths
+    and is close to 2/pi^2 at 405 -> 810 nm in KTP by accident.
+    """
+    kelvin = 298.15
+    cfg = spdcalc.SPDC.from_yaml(_ktp_config(length, w_p, w_s))
+    period = cfg.poling_period_um * 1e-6
+    zpos = (cfg.signal_waist_position_um * 1e-6, cfg.idler_waist_position_um * 1e-6)
+    reference = coupled_mode_pair_rate(
+        "KTP",
+        kelvin,
+        length,
+        405e-9,
+        810e-9,
+        (1, 1, 2),
+        (w_p, w_s, w_s),
+        2.0 / np.pi * 1e-12,
+        period,
+        zpos,
+    )
+    options = dict(
+        length=f"{length * 1e3} mm",
+        signal_waist=f"{w_s * 1e6} um",
+        idler_waist=f"{w_s * 1e6} um",
+        spectral_cutoff=1e-3,
+        max_samples=60000,
+        delay_window="100 ns",
+    )
+    rate = emit(crystal(**options), pump_light(power=1e-3, waist=w_p))[0].source.rate
+    assert 0.9 < rate / reference < 1.4
+    corrected = emit(
+        crystal(spdcalc_counts_correction=True, **options), pump_light(power=1e-3, waist=w_p)
+    )[0].source.rate
+    assert 3.0 < reference / corrected < 6.0
+
+
+def _lithium_niobate_config(kelvin, period):
+    return _config(
+        kind="LiNb_MgO",
+        pm_type="Type1_e_oo",
+        theta_deg=90.0,
+        length_um=10e3,
+        temperature_c=kelvin - 273.15,
+        pump_nm=532.0,
+        bandwidth_nm=0.0405,
+        pump_waist_um=100.0,
+        signal_nm=900.0,
+        signal_waist_um=70.0,
+        idler_waist_um=70.0,
+        period_um=period,
+        deff=1.0,
+    )
+
+
+def _lithium_niobate_phase_matching_temperature():
+    lam_p, lam_s = 532e-9, 900e-9
+    lam_i = 1.0 / (1.0 / lam_p - 1.0 / lam_s)
+    return brentq(
+        lambda t: _phase_mismatch("LiNb_MgO", t, lam_p, lam_s, lam_i, (2, 0, 0), None),
+        298.0,
+        400.0,
+    )
+
+
+def test_poled_and_bulk_jsa_peaks_differ_by_exactly_two_over_pi():
+    """No double counting of the quasi-phase-matching factor: at the same geometry (non-
+    critical LiNbO3:MgO) the spdcalc JSA peak of a poled crystal is 2/pi of the bulk one."""
+    lam_p = 532e-9
+
+    def peak(kelvin, period):
+        js = spdcalc.SPDC.from_yaml(_lithium_niobate_config(kelvin, period)).joint_spectrum(
+            spdcalc.Integrator.gauss_legendre(100)
+        )
+        w_p = 2.0 * np.pi * C / lam_p
+        w_s = np.linspace(0.98, 1.02, 801) * 2.0 * np.pi * C / 900e-9
+        return max(abs(js.jsa(x, w_p - x)) for x in w_s)
+
+    ratio = peak(298.15, "auto") / peak(_lithium_niobate_phase_matching_temperature(), None)
+    assert ratio == pytest.approx(2.0 / np.pi, rel=0.01)
+
+
+def test_bulk_crystal_rate_agrees_with_first_principles_too():
+    """The agreement is not specific to ppKTP: non-critically phase-matched bulk LiNbO3:MgO
+    (no QPM factor), e -> o + o, 532 -> 900 + 1301 nm, 10 mm, waists 100/70/70 um."""
+    kelvin = _lithium_niobate_phase_matching_temperature()
+    comp = crystal(
+        material="LiNb_MgO",
+        pm_type="Type1_e_oo",
+        poling_period=None,
+        signal_wavelength="900 nm",
+        signal_waist="70 um",
+        idler_waist="70 um",
+        design_temperature=f"{kelvin - 273.15} degC",
+        settings={"temperature": f"{kelvin - 273.15} degC"},
+        spectral_cutoff=1e-3,
+        max_samples=100000,
+        delay_window="100 ns",
+    )
+    rate = emit(comp, pump_light(power=1e-3, wavelength=532e-9, waist=100e-6))[0].source.rate
+    ref = spdcalc.SPDC.from_yaml(_lithium_niobate_config(kelvin, None))
+    reference = coupled_mode_pair_rate(
+        "LiNb_MgO",
+        kelvin,
+        10e-3,
+        532e-9,
+        900e-9,
+        (2, 0, 0),
+        (100e-6, 70e-6, 70e-6),
+        1e-12,
+        None,
+        (ref.signal_waist_position_um * 1e-6, ref.idler_waist_position_um * 1e-6),
+        n=1601,
+    )
+    assert 0.6 < rate / reference < 1.3
+
+
+def test_detuned_phase_matching_is_reported_with_its_magnitude():
+    _, ctx = emit(crystal())
+    assert "phase_matching_detuned" not in [i.code for i in ctx.issues]
+    for kwargs, sign in (({"poling_period": "5 um"}, -1), ({"poling_period": "11 um"}, 1)):
+        emission, ctx = emit(crystal(**kwargs))
+        issue = next(i for i in ctx.issues if i.code == "phase_matching_detuned")
+        assert emission is not None
+        shift = float(re.search(r"\), ([+-]\d+\.\d) nm", issue.message).group(1))
+        assert sign * shift > 20.0
+        assert "810" in issue.message
+
+
+def test_temperature_is_physically_bounded():
+    with pytest.raises(SetupError, match="above any physical"):
+        emit(crystal(settings={"temperature": "2000 degC"}))
+    _, ctx = emit(crystal(settings={"temperature": "400 degC"}))
+    assert "temperature_extrapolation" in [i.code for i in ctx.issues]
+    _, ctx = emit(crystal(settings={"temperature": "60 degC"}))
+    assert "temperature_extrapolation" not in [i.code for i in ctx.issues]
+
+
+def test_one_hertz_lattice_is_refused_before_allocation():
+    with pytest.raises(SetupError, match=r"spectral grid needs about .*max_samples"):
+        emit(crystal(dnu="1 Hz"))
+    with pytest.raises(SetupError, match=r"spectral grid needs about"):
+        entangled(bandwidth="1 nm", dnu="1 Hz").emit_pairs({}, Context())
+    with pytest.raises(ValueError, match="raise dnu"):
+        gaussian_pair_source(810e-9, bandwidth=1e11, dnu=1.0)
+
+
+def test_explicit_dnu_above_max_samples_warns_and_max_samples_is_respected():
+    comp = crystal(max_samples=2000, dnu="200 MHz")
+    emission, ctx = emit(comp)
+    assert "pair_grid_exceeds_max_samples" in [i.code for i in ctx.issues]
+    assert len(emission.source.n_signal) < 20000
+    capped, ctx = emit(crystal(max_samples=500))
+    assert len(capped.source.n_signal) <= 520
+
+
+def test_dnu_must_be_positive():
+    with pytest.raises(ValueError, match="dnu"):
+        crystal(dnu="0 Hz")

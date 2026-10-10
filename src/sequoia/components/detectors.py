@@ -14,16 +14,25 @@ from sequoia.components.base import (
     Settings,
     register,
 )
-from sequoia.data import Curve, Duration, Length, Scalar, Surface
+from sequoia.data import (
+    Angle,
+    Current,
+    Curve,
+    Dimensionless,
+    Duration,
+    Length,
+    Rate,
+    Scalar,
+    Surface,
+)
 from sequoia.light.detection import DetectorModel
 from sequoia.light.gaussian import aperture_transmission
-from sequoia.units import unit_dimension
 
 
 class PhotodiodeParams(Params):
     responsivity: Scalar | Curve
     active_diameter: Length | None = None
-    dark_current: Scalar = Scalar(value=0.0, unit="A")
+    dark_current: Current = Scalar(value=0.0, unit="A")
 
 
 @register("detectors", "Photodiode")
@@ -59,19 +68,14 @@ class DetectorConfigWarning(UserWarning):
     pass
 
 
-def _check_dimension(unit: str, reference: str) -> None:
-    if unit_dimension(unit) != unit_dimension(reference):
-        raise ValueError(f"expected a quantity in {reference!r}-compatible units, got {unit!r}")
-
-
 class SinglePhotonDetectorParams(Params):
-    efficiency: Scalar | Curve
-    dark_count_rate: Scalar = Scalar(value=0.0, unit="Hz")
+    efficiency: Dimensionless | Curve
+    dark_count_rate: Rate = Scalar(value=0.0, unit="Hz")
     dead_time: Duration = Scalar(value=0.0, unit="s")
     jitter_fwhm: Duration = Scalar(value=0.0, unit="s")
-    jitter_tail_fraction: Scalar = Scalar(value=0.0)
+    jitter_tail_fraction: Dimensionless = Scalar(value=0.0)
     jitter_tail_tau: Duration = Scalar(value=0.0, unit="s")
-    afterpulse_probability: Scalar = Scalar(value=0.0)
+    afterpulse_probability: Dimensionless = Scalar(value=0.0)
     # kept for the part data; the rate engine models afterpulses as uniform background counts
     afterpulse_tau: Duration = Scalar(value=0.0, unit="s")
     active_diameter: Length | None = None
@@ -81,12 +85,6 @@ class SinglePhotonDetectorParams(Params):
     def _efficiency_range(cls, v: Scalar | Curve) -> Scalar | Curve:
         if isinstance(v, Scalar) and not 0.0 <= v.si <= 1.0:
             raise ValueError("efficiency must be between 0 and 1")
-        return v
-
-    @field_validator("dark_count_rate")
-    @classmethod
-    def _rate(cls, v: Scalar) -> Scalar:
-        _check_dimension(v.unit, "Hz")
         return v
 
     @field_validator("jitter_tail_fraction", "afterpulse_probability")
@@ -177,8 +175,8 @@ class SPAD(_SinglePhotonDetector):
 
 
 class SNSPDParams(SinglePhotonDetectorParams):
-    polarization_extinction: Scalar = Scalar(value=1.0)
-    polarization_axis: Scalar = Scalar(value=0.0, unit="deg")
+    polarization_extinction: Dimensionless = Scalar(value=1.0)
+    polarization_axis: Angle = Scalar(value=0.0, unit="deg")
     efficiency_vs_bias: Surface | None = None
 
     @field_validator("polarization_extinction")
@@ -190,14 +188,7 @@ class SNSPDParams(SinglePhotonDetectorParams):
 
 
 class SNSPDSettings(SinglePhotonDetectorSettings):
-    bias_current: Scalar | None = None
-
-    @field_validator("bias_current")
-    @classmethod
-    def _current(cls, v: Scalar | None) -> Scalar | None:
-        if v is not None:
-            _check_dimension(v.unit, "A")
-        return v
+    bias_current: Current | None = None
 
 
 @register("detectors", "SNSPD")

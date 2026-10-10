@@ -770,7 +770,17 @@ def test_heralded_g2_low_rate_limit(lib):
     rate, w = 2e6, 2e-9
     r = hbt_run(lib, "2 ns", rate)
     x = rate * w
-    expected = (2 * x + x**2) / (1 + x) ** 2
+    # Poisson pairs plus the thermal bunching of the idler photons of different pairs,
+    # int |g1|^2 over the window with |g1| = exp(-2 pi^2 sigma^2 tau^2) for the Gaussian
+    # spectrum of standard deviation SIGMA: B1 = sqrt(pi/a) erf(sqrt(a) W / 2) / W.
+    a = 4 * math.pi**2 * SIGMA**2
+    b1 = math.sqrt(math.pi / a) * erf(math.sqrt(a) * w / 2) / w
+    b2 = (2 / w**2) * (
+        w * math.sqrt(math.pi) / (2 * math.sqrt(a)) * erf(math.sqrt(a) * w)
+        - (1 - math.exp(-a * w**2)) / (2 * a)
+    )
+    assert b1 == pytest.approx(0.0282, abs=5e-4)
+    expected = (2 * x * (1 + b1) + x**2 * (1 + b2)) / (1 + x) ** 2
     assert r.analyses["h"]["g2_heralded"] == pytest.approx(expected, rel=2e-3)
     s_h = r.channels["tag.ch1"]["singles_hz"]
     assert s_h == pytest.approx(rate * 0.5)
@@ -1244,15 +1254,49 @@ def test_same_port_antisymmetric_state_has_no_pairs(lib):
     assert "bosonic_null_state" in codes(r)
 
 
-def test_pulsed_heralded_g2_is_twice_pair_number_per_pulse_and_window_independent(lib):
-    rep, mu = 80e6, 0.01
+def test_pulsed_heralded_g2_is_pair_number_per_pulse_and_window_independent(lib):
+    rep, mu, eta_h = 80e6, 0.01, 0.5
+    pair = cw_pair(mu * rep, rep=rep)
+    k = schmidt_of(pair)
+    assert k > 100
     values = []
     for window in ("0.5 ns", "1 ns", "3 ns"):
-        r = hbt_run(lib, window, pair=cw_pair(mu * rep, rep=rep))
+        r = hbt_run(lib, window, pair=pair, eta=(eta_h, 0.4, 0.3))
         values.append(r.analyses["h"]["g2_heralded"])
+    # Two pairs in one pulse: the herald fires for either of the two signal photons, with
+    # probability 1 - (1 - eta_h)^2 = eta_h (2 - eta_h), but P(H) and P(Ha) only carry eta_h:
+    # g2 = 2 mu (1 - eta_h / 2) (1 + 1/K) = mu (2 - eta_h) (1 + 1/K), here K ~ 177.
     for g in values:
-        assert g == pytest.approx(2 * mu, rel=0.03)
+        assert g == pytest.approx(mu * (2 - eta_h) * (1 + 1 / k), rel=0.03)
     assert max(values) / min(values) < 1.02
+
+
+def tmsv_heralded_g2(mu, eta_h, eta_a, eta_b, nmax=14):
+    def p(n):
+        return mu**n / (1 + mu) ** (n + 1)
+
+    ph = pha = phb = phab = 0.0
+    for n in range(nmax):
+        h = 1 - (1 - eta_h) ** n
+        a = 1 - (1 - eta_a) ** n
+        b = 1 - (1 - eta_b) ** n
+        ab = 1 - (1 - eta_a) ** n - (1 - eta_b) ** n + (1 - eta_a - eta_b) ** n
+        ph += p(n) * h
+        pha += p(n) * h * a
+        phb += p(n) * h * b
+        phab += p(n) * h * ab
+    return phab * ph / (pha * phb)
+
+
+@pytest.mark.parametrize("eta_h", [0.05, 0.5, 0.9])
+def test_pulsed_heralded_g2_includes_herald_saturation(lib, eta_h):
+    rep, mu = 80e6, 1e-3
+    pair, _ = pulsed_pair(mu * rep, rep, 4e9, 4e9)
+    assert schmidt_of(pair) == pytest.approx(1.0, rel=1e-2)
+    r = hbt_run(lib, "1 ns", pair=pair, eta=(eta_h, 0.4, 0.3))
+    expected = tmsv_heralded_g2(mu, eta_h, 0.5 * 0.4, 0.5 * 0.3)
+    assert expected == pytest.approx(2 * mu * (2 - eta_h), rel=1e-2)
+    assert r.analyses["h"]["g2_heralded"] == pytest.approx(expected, rel=0.01)
 
 
 def gaussian_overlap_squared(w1, w2, distance, wavelength=810e-9):
@@ -1321,16 +1365,16 @@ def aliasing_run(lib, idler_delay, center):
     return two_arm(lib, cw_pair(1e5), det(0.5), det(0.5), idl_len=length, analyses=analyses)
 
 
-def test_single_path_delay_beyond_half_period_is_flagged_and_window_fraction_is_physical(lib):
+def test_single_path_delay_beyond_half_period_is_not_flagged_and_window_fraction_is_physical(lib):
     r = aliasing_run(lib, 30e-9, "0 ns")
-    assert "delay_aliasing" in codes(r)
+    assert "delay_aliasing" not in codes(r)
     assert r.analyses["c"]["window_fraction"] < 1e-3
     assert "coincidence_outside_window" in codes(r)
 
 
 def test_auto_centre_reports_the_unwrapped_delay(lib):
     r = aliasing_run(lib, 30e-9, "auto")
-    assert "delay_aliasing" in codes(r)
+    assert "delay_aliasing" not in codes(r)
     assert r.analyses["c"]["center_s"] == pytest.approx(10e-3 / C - 30e-9, abs=2e-12)
     assert r.analyses["c"]["window_fraction"] == pytest.approx(1.0, abs=1e-3)
 
@@ -1711,3 +1755,241 @@ def test_pulsed_heralded_g2_has_multimode_bunching_factor(lib, k):
     assert h["multimode_bunching"] == pytest.approx(1 / k, rel=0.02)
     expected = mu * (2 - eta_h) * (1 + 1 / k)
     assert h["g2_heralded"] == pytest.approx(expected, rel=0.02)
+
+
+@pytest.mark.parametrize("window_ns", [1.0, 3.0])
+def test_cw_heralded_g2_has_thermal_bunching_of_a_narrow_band_source(lib, window_ns):
+    sigma, rate, dnu = 1e8, 2e5, 2e6
+    eta = (0.5, 0.4, 0.3)
+    w = window_ns * 1e-9
+    r = hbt_run(lib, f"{window_ns} ns", pair=cw_pair(rate, sigma=sigma, dnu=dnu), eta=eta)
+    sigma_u = 1.0 / (4 * math.pi * sigma)
+    f_ha = erf(w / (2 * math.sqrt(2) * sigma_u))
+    a = 4 * math.pi**2 * sigma**2
+    b_w = math.sqrt(math.pi / a) * erf(math.sqrt(a) * w / 2) / w
+    assert 0.7 < b_w < 1.0
+    s_h, s_a, s_b = rate * eta[0], rate * 0.5 * eta[1], rate * 0.5 * eta[2]
+    n_a, n_b = s_h * 0.5 * eta[1] * f_ha, s_h * 0.5 * eta[2] * f_ha
+    triples = (n_a * s_b + n_b * s_a) * w * (1 + b_w)
+    b_ww = (2 / w**2) * (
+        w * math.sqrt(math.pi) / (2 * math.sqrt(a)) * erf(math.sqrt(a) * w)
+        - (1 - math.exp(-a * w**2)) / (2 * a)
+    )
+    assert 0.3 < b_ww < b_w
+    triples += s_h * s_a * s_b * w**2 * (1 + b_ww)
+    expected = triples * s_h / ((n_a + s_h * s_a * w) * (n_b + s_h * s_b * w))
+    got = r.analyses["h"]["g2_heralded"]
+    assert got == pytest.approx(expected, rel=0.015)
+    poisson = 2 * rate * w / f_ha
+    assert got / poisson == pytest.approx(1 + b_w, rel=0.015)
+
+
+def aliased_histogram_run(lib, rng="6 ns", bins=12, center="0 ns", kind="histogram", delay=23e-9):
+    length = f"{delay * C * 1e3:.6f} mm"
+    spec = {
+        "name": "hist",
+        "type": kind,
+        "channels": ["tag.ch1", "tag.ch2"],
+        "range": rng,
+        "bins": bins,
+        "center": center,
+    }
+    return two_arm(
+        lib,
+        cw_pair(1e5),
+        det(0.5),
+        det(0.5),
+        idl_len=length,
+        analyses=[coincidence(center=center), spec],
+    )
+
+
+@pytest.mark.parametrize("kind", ["histogram", "g2"])
+def test_histogram_shows_no_aliased_image_of_a_delayed_peak(lib, kind):
+    r = aliased_histogram_run(lib, kind=kind)
+    assert r.analyses["c"]["true_hz"] == pytest.approx(0.0, abs=1e-3)
+    assert float(np.sum(r.analyses["hist"]["true_hz"])) == pytest.approx(0.0, abs=1e-3)
+    assert float(np.sum(r.analyses["hist"]["thermal_hz"])) == pytest.approx(0.0, abs=1e-3)
+
+
+def test_histogram_at_the_unwrapped_peak_holds_the_full_pair_rate_once(lib):
+    r = aliased_histogram_run(lib, rng="14 ns", bins=28, center="auto")
+    assert float(np.sum(r.analyses["hist"]["true_hz"])) == pytest.approx(1e5 * 0.25, rel=1e-3)
+    centre = -(23e-9 - 10e-3 / C)
+    assert r.analyses["hist"]["center_s"] == pytest.approx(centre, abs=2e-12)
+    r = aliased_histogram_run(lib, rng="6 ns", bins=12, center="-22.9667 ns")
+    assert float(np.sum(r.analyses["hist"]["true_hz"])) == pytest.approx(1e5 * 0.25, rel=1e-3)
+
+
+def test_pulsed_accidentals_beyond_the_pulse_period_follow_the_staircase_count(lib):
+    rate, rep = 5e6, 80e6
+    period = 1.0 / rep
+    pa, pb = rate * 0.3, rate * 0.2
+    for factor, count in ((0.5, 1), (1.5, 1), (2.5, 3), (3.2, 3), (4.4, 5)):
+        window = factor * period
+        r = two_arm(
+            lib,
+            cw_pair(rate, flat=10, rep=rep),
+            det(0.3),
+            det(0.2),
+            analyses=[coincidence(window=f"{window * 1e9:.6f} ns")],
+        )
+        assert r.analyses["c"]["accidental_hz"] == pytest.approx(pa * pb * period * count, rel=1e-3)
+
+
+def test_pulsed_same_pulse_accidentals_use_the_jitter_window_fraction(lib):
+    rate, rep, w = 5e6, 80e6, 1e-9
+    fwhm_a, fwhm_b = 1.2e-9, 0.8e-9
+    sigma = math.hypot(fwhm_to_sigma(fwhm_a), fwhm_to_sigma(fwhm_b))
+    r = two_arm(
+        lib,
+        cw_pair(rate, flat=10, rep=rep),
+        det(0.3, jitter_fwhm=fwhm_a),
+        det(0.2, jitter_fwhm=fwhm_b),
+        analyses=[coincidence(window="1 ns")],
+    )
+    fraction = erf(w / (2 * math.sqrt(2) * sigma))
+    assert fraction < 0.7
+    assert r.analyses["c"]["accidental_hz"] == pytest.approx(
+        rate * 0.3 * rate * 0.2 / rep * fraction, rel=5e-3
+    )
+
+
+ENS_DNU, ENS_NC, ENS_SIGMA = 5e8, 760_000, 3.0
+
+
+def ensemble_lattice():
+    n_s = np.arange(ENS_NC - 26, ENS_NC + 27)
+    n_sum = np.arange(2 * ENS_NC - 42, 2 * ENS_NC + 43)
+    idler = (n_sum[None, :] - n_s[:, None]) - ENS_NC
+    return n_s, n_sum, (n_s - ENS_NC)[:, None] * np.ones((1, len(n_sum))), idler
+
+
+def hermite(x, order):
+    g = np.exp(-(x**2) / (2 * ENS_SIGMA**2))
+    return g if order == 0 else x * g
+
+
+def member_amplitude(centre, modes):
+    n_s, n_sum, s, i = ensemble_lattice()
+    amp = np.zeros((2, 2, len(n_s), len(n_sum)), dtype=complex)
+    for order in range(modes):
+        a = hermite(s - centre, order)
+        b = hermite(i - centre, order)
+        support = (np.abs(i - centre) < 30) & (np.abs(s - centre) < 30)
+        a = a / np.sqrt(np.sum(hermite(np.arange(-30, 31), order) ** 2))
+        b = b / np.sqrt(np.sum(hermite(np.arange(-30, 31), order) ** 2))
+        amp[0, 0] += np.where(support, a * b, 0.0)
+    return amp / np.sqrt(np.sum(np.abs(amp) ** 2))
+
+
+def two_member_source(rate, rep, centres=(-14, 14), modes=(1, 2), weights=(0.5, 0.5)):
+    n_s, n_sum, _, _ = ensemble_lattice()
+    members = np.stack(
+        [
+            np.sqrt(w) * member_amplitude(c, m)
+            for w, c, m in zip(weights, centres, modes, strict=True)
+        ]
+    )
+    return PairSource(ENS_DNU, n_s, n_sum, members, rate, mode(), mode(), 405e-9, rep)
+
+
+def herald_band(eta):
+    def efficiency(wl):
+        bins = np.rint(C / np.atleast_1d(wl) / ENS_DNU) - ENS_NC
+        return eta * (bins < 0).astype(float)
+
+    return efficiency
+
+
+def test_pulsed_heralded_bunching_is_conditional_on_the_herald_filter(lib):
+    rep, mu, eta_h = 80e6, 1e-3, 0.3
+    mixed = two_member_source(mu * rep, rep)
+    pure = two_member_source(mu * rep, rep, centres=(-14,), modes=(1,), weights=(1.0,))
+    assert schmidt_of_member(mixed.members[0]) == pytest.approx(1.0, rel=1e-4)
+    assert schmidt_of_member(mixed.members[1]) == pytest.approx(2.0, rel=1e-3)
+    expected = mu * (2 - eta_h) * (1 + 1.0)
+    eta = (herald_band(eta_h), 0.4, 0.3)
+    g_pure = hbt_run(lib, "1 ns", pair=pure, eta=eta).analyses["h"]
+    g_mixed = hbt_run(lib, "1 ns", pair=mixed, eta=eta).analyses["h"]
+    assert g_pure["g2_heralded"] == pytest.approx(expected, rel=0.03)
+    assert g_mixed["g2_heralded"] == pytest.approx(g_pure["g2_heralded"], rel=0.01)
+    assert g_mixed["multimode_bunching"] == pytest.approx(1.0, rel=0.03)
+
+
+def schmidt_of_member(amp):
+    n_s, n_sum, _, _ = ensemble_lattice()
+    pair = PairSource(
+        ENS_DNU, n_s, n_sum, amp / np.sqrt(np.sum(np.abs(amp) ** 2)), 1.0, mode(), mode(), 405e-9
+    )
+    return schmidt_of(pair)
+
+
+def test_ensemble_with_different_member_spectra_reports_its_g2_model(lib):
+    rep = 80e6
+    mixed = two_member_source(1e5, rep)
+    g = pulsed_g2_run(lib, mixed, eta=(0.3, 0.5, 0.4))
+    # Each pulse is entirely in one member: per-pulse g2 averages 1 + 1/K_k over the members
+    # (K = 1 and 2 for the members here), while the reported Schmidt number is that of the
+    # averaged one-body density matrix, eigenvalues (1/2, 1/4, 1/4): K = 1/(1/4 + 1/16 + 1/16).
+    # The two are not interchangeable.
+    assert g["g2_per_pulse"] == pytest.approx(1 + 0.5 * 1.0 + 0.5 * 0.5, rel=1e-4)
+    assert g["by_role"]["signal"]["schmidt_a"] == pytest.approx(8.0 / 3.0, rel=1e-3)
+    spec = {"name": "g", "type": "g2", "channels": ["tag.ch2", "tag.ch3"]}
+    spec |= {"range": "100 ps", "bins": 20}
+    PAIRS["src"] = mixed
+    DETS["ds"], DETS["da"], DETS["db"] = det(0.3), det(0.5), det(0.4)
+    TAGS["tag"] = TaggerModel()
+    r = simulate_rates(signal_arm_hbt_setup([spec]), lib)
+    assert "ensemble_g2_model" in codes(r)
+    issue = next(i for i in r.issues if i.code == "ensemble_g2_model")
+    assert "per pulse" in issue.message and "one-body" in issue.message
+    only_coincidence = [coincidence("c", channels=("tag.ch1", "tag.ch2"))]
+    r = simulate_rates(signal_arm_hbt_setup(only_coincidence), lib)
+    assert "ensemble_g2_model" not in codes(r)
+
+
+def test_ensemble_sharing_one_reduced_state_does_not_report_a_g2_model_issue(lib):
+    PAIRS["src"] = werner_pulsed_source(0.5)
+    DETS["ds"], DETS["da"], DETS["db"] = det(0.3), det(0.5), det(0.4)
+    TAGS["tag"] = TaggerModel()
+    spec = {"name": "g", "type": "g2", "channels": ["tag.ch2", "tag.ch3"]}
+    spec |= {"range": "100 ps", "bins": 20}
+    r = simulate_rates(signal_arm_hbt_setup([spec]), lib)
+    assert "ensemble_g2_model" not in codes(r)
+
+
+def test_cw_ensemble_with_different_member_spectra_reports_its_g2_model(lib):
+    n_s = np.arange(3_700_000 - 40, 3_700_000 + 41)
+    amp = np.zeros((2, 2, 2, len(n_s), 1), dtype=complex)
+    amp[0, 0, 0, :30, 0] = 1.0
+    amp[1, 0, 0, 50:, 0] = 1.0
+    amp /= np.sqrt(np.sum(np.abs(amp) ** 2))
+    pair = PairSource(DNU, n_s, np.array([7_400_000]), amp, 1e5, mode(), mode(), 405e-9)
+    r = hbt_run(lib, "1 ns", pair=pair)
+    assert "ensemble_g2_model" in codes(r)
+    r = hbt_run(lib, "1 ns", pair=werner_cw_source(0.5))
+    assert "ensemble_g2_model" not in codes(r)
+
+
+def test_schmidt_number_docstring_states_the_ensemble_model():
+    from sequoia.analysis import metrics
+
+    doc = metrics.schmidt_number.__doc__
+    assert "one-body" in doc and "per pulse" in doc and "common reduced state" in doc
+
+
+def test_symmetric_beam_splitter_sends_psi_plus_to_coincidences_and_psi_minus_to_bunching(lib):
+    s = 1 / math.sqrt(2)
+    rate, eta = 1e5, 0.5
+
+    def coincidences(state):
+        pair = cw_pair(rate, state=state)
+        return hom_run(lib, 0.0, eta=eta, pair=pair).analyses["c"]["coincidence_rate_hz"]
+
+    full = rate * eta**2
+    assert coincidences({(0, 1): s, (1, 0): s}) == pytest.approx(full, rel=2e-3)
+    assert coincidences({(0, 1): s, (1, 0): -s}) == pytest.approx(0.0, abs=2e-3 * full)
+    assert coincidences({(0, 0): 1.0}) == pytest.approx(0.0, abs=2e-3 * full)
+    d = {(0, 0): 0.5, (0, 1): 0.5, (1, 0): 0.5, (1, 1): 0.5}
+    assert coincidences(d) == pytest.approx(full / 2, rel=2e-3)

@@ -3,7 +3,7 @@ manufacturer: generic
 model: PPKTP type-II (e -> e + o), 10 mm, 405 nm -> 810 nm
 description: Generic placeholder crystal. Poling period is computed by spdcalc for the
   design wavelengths at the design temperature. d_eff is the bulk d24 literature value (spdcalc applies the 2/pi QPM factor), not a
-  measured one; set 'brightness' (pairs/s/mW) to override the computed absolute rate.
+  measured one; set 'brightness' (pairs/s/mW emitted into the collection modes, before any filter or detector loss) to override the computed absolute rate, which is uncertain to about 40% (docs/M3_REPORT.md section 6).
 params:
   material: KTP
   pm_type: Type2_e_eo

@@ -15,7 +15,17 @@ from sequoia.components.base import (
     Settings,
     register,
 )
-from sequoia.data import Curve, Duration, Length, Power, Scalar
+from sequoia.data import (
+    Angle,
+    Current,
+    Curve,
+    Dimensionless,
+    Duration,
+    Frequency,
+    Length,
+    Power,
+    Scalar,
+)
 from sequoia.errors import SetupError
 from sequoia.light.gaussian import GaussianMode
 from sequoia.light.spectrum import Spectrum
@@ -29,21 +39,21 @@ class LaserParams(Params):
     wavelength: Length
     power: Power
     power_vs_current: Curve | None = None
-    linewidth: Scalar | None = None
-    polarization_extinction_ratio: Scalar = Scalar(value=1000.0)
+    linewidth: Length | Frequency | None = None
+    polarization_extinction_ratio: Dimensionless = Scalar(value=1000.0)
     waist_radius: Length | None = None
-    divergence: Scalar | None = None
-    m_squared: Scalar = Scalar(value=1.0)
+    divergence: Angle | None = None
+    m_squared: Dimensionless = Scalar(value=1.0)
     waist_offset: Length = Scalar(value=0.0, unit="m")
-    repetition_rate: Scalar | None = None
+    repetition_rate: Frequency | None = None
     pulse_width: Duration | None = None
     pulse_shape: Literal["gaussian", "sech2"] = "gaussian"
 
 
 class LaserSettings(Settings):
     power: Power | None = None
-    current: Scalar | None = None
-    polarization_angle: Scalar = Scalar(value=0.0, unit="deg")
+    current: Current | None = None
+    polarization_angle: Angle = Scalar(value=0.0, unit="deg")
 
 
 @register("sources", "Laser")
@@ -99,5 +109,6 @@ class Laser(Component):
             repetition_rate=None if p.repetition_rate is None else p.repetition_rate.si,
             pulse_width=None if p.pulse_width is None else p.pulse_width.si,
         )
+        ctx.sources[ctx.instance_id] = source
         beam = Beam.launch(ctx.instance_id, spectrum, self._mode(wavelength))
         return Emission(source, [("out", beam)])

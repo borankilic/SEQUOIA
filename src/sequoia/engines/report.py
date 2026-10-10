@@ -32,8 +32,14 @@ def format_report(result: SimulationResult) -> str:
     if fibers:
         lines += ["", "Fiber links"]
         for s in fibers:
+            light = (
+                f"classical light at {s.end.mean_wavelength * 1e9:.4g} nm"
+                if s.end
+                else ("classical light")
+            )
             lines.append(
-                f"  {s.id}: coupling efficiency {100 * s.info['coupling_efficiency']:.2f}%, "
+                f"  {s.id}: {light}: coupling efficiency "
+                f"{100 * s.info['coupling_efficiency']:.2f}%, "
                 f"transmission {100 * s.info['transmission']:.2f}%"
             )
     if result.readouts:
@@ -63,7 +69,7 @@ def _hz(value: float) -> str:
 
 
 def _ns(value: float) -> str:
-    return f"{value * 1e9:.4g}"
+    return f"{round(value * 1e9, 3) + 0.0:.4g}"
 
 
 def _analysis_lines(name: str, a: dict) -> list[str]:
@@ -74,7 +80,8 @@ def _analysis_lines(name: str, a: dict) -> list[str]:
             f"window {_ns(a['window_s'])} ns at {_ns(a['center_s'])} ns "
             f"(peak {_ns(a['peak_s'])} ns), window fraction {a['window_fraction']:.4g}",
             f"      true {_hz(a['true_hz'])} Hz, accidental {_hz(a['accidental_hz'])} Hz, "
-            f"CAR {_hz(a['car'])}, all-time {_hz(a['coincidence_rate_hz'])} Hz",
+            f"CAR = C_true/ACC {_hz(a['car'])} [(C_true+ACC)/ACC = {_hz(a['car_total'])}], "
+            f"all-time {_hz(a['coincidence_rate_hz'])} Hz",
             f"      heralding efficiency: {a['heralding_a_given_b']:.4g} (first given second), "
             f"{a['heralding_b_given_a']:.4g} (second given first)",
         ]
@@ -84,6 +91,8 @@ def _analysis_lines(name: str, a: dict) -> list[str]:
             f"window {_ns(a['window_s'])} ns",
             f"      R_Ha {_hz(a['rate_ha_hz'])} Hz, R_Hb {_hz(a['rate_hb_hz'])} Hz, "
             f"triples {_hz(a['triples_hz'])} Hz, g2(0) = {a['g2_heralded']:.4g}",
+            f"      multimode bunching {a['multimode_bunching']:.4g}, CW bunching "
+            f"{a['cw_bunching']:.4g}, herald saturation factor {a['herald_saturation']:.4g}",
         ]
     lines = [
         f"  {name} [{kind}] {a['channels'][0]} x {a['channels'][1]}: "
@@ -127,6 +136,15 @@ def format_rates_report(result: RateResult) -> str:
             )
             if d["leakage_hz"]:
                 lines.append(f"{'':<24}classical leakage {_hz(d['leakage_hz'])} Hz")
+    if result.links:
+        lines += ["", "Photon links (photons/s of the pair source(s) at the end of each link)"]
+        for link_id, entry in result.links.items():
+            parts = [f"{_hz(entry['photons_hz']):>10} photons/s"]
+            for role, eta in entry.get("coupling_efficiency", {}).items():
+                wl = entry.get("wavelength_m", {}).get(role)
+                where = f" at {wl * 1e9:.4g} nm" if wl else ""
+                parts.append(f"{role} photon coupling {100 * eta:.2f}%{where}")
+            lines.append(f"  {link_id:<12}" + ", ".join(parts))
     if result.pairs:
         lines += ["", "Coincidence rates (all times, after dead time)"]
         for (a, b), p in result.pairs.items():

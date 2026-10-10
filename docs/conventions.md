@@ -39,6 +39,23 @@ These hold throughout the code. Each one gets a test when the code that depends 
 - An ideal mirror has Jones matrix diag(1, −1), which flips handedness.
 - Coated mirrors add the s–p retardance from coating data. For reflection in the table plane, s = V and p = H.
 - Beam splitters are symmetric: r = i√R, t = √T.
+- Wave plate, polarizer and analyser angles are positive counter-clockwise when looking against the
+  propagation direction (towards the source), i.e. from H towards V in the right-handed (H, V, k)
+  frame. The angle is that of the fast axis of a wave plate (the V component is the slow one) or the
+  transmission axis of a polarizer, measured from H. The Jones matrix of a plate at angle t is
+  `R(t) diag(e^{-iδ/2}, e^{+iδ/2}) R(-t)` with `R(t) = [[cos t, -sin t], [sin t, cos t]]`, so a
+  half-wave plate at angle h maps linear polarization at angle θ to 2h − θ.
+- Reflection is written in each beam's own right-handed (H, V, k) frame: a mirror or the reflected
+  port of a beam splitter is `i·diag(1, −1)` (V changes sign, handedness flips), and transmission is
+  `diag(1, 1)`. Consequences for two photons on a symmetric (50:50) beam splitter, one per input port
+  and arriving together: HH or VV bunch (HOM dip), ψ+ = (HV + VH)/√2 sends the photons to different
+  outputs (all pairs are coincidences), ψ− = (HV − VH)/√2 bunches, and two photons both rotated to
+  D = (H + V)/√2 by the same plate do not show a dip, because the reflected D leaves as A and is
+  distinguishable from the transmitted D (a dip needs D at one input and A at the other).
+  This is the mirror image of the textbook statement, which labels the reflected polarization with
+  the same (H, V) as the incident one and so assigns the coincidences to ψ−. It is the physical
+  behaviour of a dielectric splitter seen in per-beam frames, tested in
+  `tests/test_rates.py::test_symmetric_beam_splitter_sends_psi_plus_to_coincidences_and_psi_minus_to_bunching`.
 
 ## Spatial modes
 
@@ -80,6 +97,61 @@ These hold throughout the code. Each one gets a test when the code that depends 
 - A link's length can be locked to the canvas: the distance between instance positions times the
   grid cell.
 
+## Mixed pair states (ensembles)
+
+A `PairSource` with a member axis is an incoherent mixture of pure pair states. What the engine
+computes from it depends on the statistic, and two models are used.
+
+- Linear statistics (singles, coincidences, windows, correlation functions, HOM, Bell correlations)
+  are sums over members with their weights and are model independent.
+- Pulsed sources, second-order statistics: each pulse is entirely in one member k (probability
+  `w_k`). The per pulse g2 is the weighted average `sum_k w_k (1 + 1/K_k)` of the member values (plus
+  the covariance of the detected intensities over members), and the heralded bunching is built from
+  the same per-member moments. This is the shot-to-shot mixture.
+- CW sources, second-order statistics: the field is the Gaussian field defined by the one-body
+  density matrix `rho = sum_k w_k rho_k` of the mixture (independent pairs drawn at random from the
+  members), g2 follows from its purity.
+- `by_role[...]["schmidt_*"]` and `metrics.schmidt_number` are the participation ratio of the
+  averaged one-body density matrix, the quantity that controls the CW g2.
+
+For members that share a common reduced state (polarization mixing of one JSA, the Werner state)
+the models coincide and `g2 = 1 + 1/K`. For members with different spectral structure they do not:
+two members `f1 g1` and `f2 g2` in disjoint bands give g2 = 2 per pulse but a Schmidt number of 2,
+for which `1 + 1/K` would be 1.5. The engine reports `ensemble_g2_model` when a g2, heralded g2 or
+Schmidt number is requested for such a source. A pure multimode JSA must never be encoded as an
+ensemble of its Schmidt modes (the per pulse g2 would be 2, not `1 + 1/K`); give it as one pure
+amplitude.
+
+## Run-time behaviour (engine API)
+
+- `simulate(setup, library, *, should_cancel, cache, negligible_power_fraction,
+  min_power_for_warnings)` and `simulate_rates(setup, library, classical, *, should_cancel,
+  cache, max_memory_bytes)`. `should_cancel` is a callable polled between stages and inside long
+  loops; when it returns True the run raises `engines.cache.Cancelled`. Results are never
+  partial.
+- `RunCache` (module `engines/cache.py`) keeps parsed parts (keyed by folder and the mtimes and
+  sizes of its files) and `emit_pairs` results. A component enables emission caching with the
+  optional methods `emit_cache_key(lights)` (hashable key of everything the emission depends on
+  that is not in the parameters and settings, or None) and `emit_rate_scale(lights)` (a factor
+  that the pair rate is linear in, such as the pump power; the cached rate is rescaled when only
+  that changed). The cache key always includes the component type, parameters and settings.
+  Components without these methods are never cached.
+- Warnings of the data layer (curve extrapolation, detector configuration) are captured by a
+  thread-local recorder behind a process-wide `warnings.showwarning` hook, so concurrent runs in
+  several threads do not see each other's warnings and no global warning state is toggled per run.
+- Memory: before allocating, the engine estimates the arrays of the lattice, the time-correlation
+  FFT and the second-order moments and raises `ResourceLimitError` (a `SetupError`) naming the
+  stage and the estimate in GiB when it exceeds `max_memory_bytes` (default 3 GiB). Inside an
+  analysis it becomes an error issue `memory_limit` and the analysis is skipped (an unheralded
+  pulsed g2 keeps its histogram and drops the per-pulse number). The per pulse moments are evaluated
+  in the smaller of the arm and partner spaces.
+- Detector saturation: `detector_saturation` when dead time (detector or tagger) removes more than
+  10% of the incident counts of a channel, `leakage_saturation` when classical light alone does,
+  both with the numbers. `no_phase_matched_pairs` when fewer than 1e-6 of the pairs of a source are
+  detected by any detector (the pair spectrum is outside the passbands, or the crystal is detuned).
+- `fiber_multimode` is not reported for light below `negligible_power_fraction` (default 1e-6) of the
+  total source power, nor below `min_power_for_warnings` watts.
+
 ## Fiber links
 
 - The SMF polarization transform defaults to the identity, which is the ideal case.
@@ -99,8 +171,14 @@ These are the approximations a user must know. Details and validation numbers ar
   not modelled.
 - The pair state lives on an integer frequency lattice `nu = n*dnu`. Time structure is periodic
   with period `1/dnu`. The correlation peak is found modulo that period and reported unwrapped
-  using the nominal path delays; the `delay_aliasing` diagnostic fires when a path-delay
-  difference reaches half a period (other paths can then alias). For
+  using the nominal path delays. A single path per detector pair needs no unwrapping care: a long
+  fibre (even tens of periods) shifts the peak, nothing aliases, and window fractions and centres are
+  exact. Aliasing is a property of several interfering paths: `delay_aliasing` fires only when
+  two paths of a detector pair with comparable weight (at least 1e-3 of the strongest) differ in delay
+  by more than half a period, since then their peaks fold onto each other. Histograms and
+  coincidence windows show one copy of the correlation, clipped to the principal period around
+  the peak, so periodic images of the lattice never appear (an explicit centre at an alias of a
+  long delay gives zero counts, as in the lab). For
   `SPDCCrystal` the lattice follows `delay_window` (the parts set 40 ns: fiber length differences
   up to about 4 m are safe), limited by `max_samples`.
 - The spatial mode of each photon is a single Gaussian (the collection mode `signal_waist`,
@@ -133,6 +211,36 @@ These are the approximations a user must know. Details and validation numbers ar
 - Detector dead time is non-paralyzable and applied to singles and coincidences; afterpulsing adds
   to the background; jitter is a Gaussian plus optional exponential tail convolved into the
   correlation function. Dark counts and leakage add incoherently.
-- Accidentals for CW sources use `S_A S_B W` with total singles; CAR is `true / accidental`.
-  The heralded g2 uses the uncorrelated-process model `R_Hab = R_Ha S_b W + R_Hb S_a W + S_H S_a S_b W^2`
-  (no intrinsic multi-pair term and no cross-talk pairs).
+- Accidentals for CW sources use `S_A S_B W` with total singles. For pulsed sources the
+  same-pulse term `f p_A p_B` is multiplied by the number of pulse offsets whose arrival-time
+  difference falls in the window, computed from the jitter distribution of the difference
+  folded onto the repetition period: it is 1 inside one period for sharp timing, reduced by the
+  jitter window fraction when W is comparable to the jitter, and a staircase
+  `2 floor(W / 2T) + 1` for W beyond the pulse period T. The pump pulse width and the time
+  structure of the photon arrival are neglected in this term.
+- CAR is `C_true / ACC` (true coincidences in the window over accidentals in the same window; the
+  value printed in the report as "CAR = C_true/ACC"). Many labs quote `(C_true + ACC) / ACC =
+  C_total / ACC`, which is larger by exactly 1; the analysis dict has it as `car_total` and the report
+  prints both. The two differ materially below CAR of about 10. CAR is NaN when there are no
+  coincidences and no accidentals, and infinite for true coincidences with zero accidentals.
+- Heralded g2 uses the uncorrelated-process model
+  `R_Hab = R_Ha S_b W + R_Hb S_a W + S_H S_a S_b W^2` with three additions that matter when the
+  source is multimode or the herald is efficient (no intrinsic multi-pair term of the source and no
+  cross-talk pairs):
+  - Pulsed: two pairs in one pulse, the herald fires for either of the two signal photons, so the
+    pair-pair terms carry `(1 - eta_H/2)` and the low-mu value is `mu (2 - eta_H) (1 + B)`, B the
+    herald-conditioned bunching `1/K` (exact for a herald efficiency flat over the pair spectrum,
+    which is how eta_H enters). `eta_H` is taken per ensemble member as the herald's incident pair
+    singles over the member's pair rate.
+  - Pulsed: B follows the herald filter. The same-pulse triple moment is built from the filtered
+    one-photon operators with the herald weighting, so for a mixture whose members reach the herald
+    with different spectral weight (a spectral herald filter) B is the bunching of the pairs that
+    actually herald. For a single pure state, or members with a common reduced state, it equals the
+    unconditional `1/K`.
+  - CW: the thermal bunching of a and b photons of different pairs adds `B_W = (1/(S_a S_b W))
+    * integral over the b window of the jitter-convolved |G1|^2 profile` to the pair-pair terms (and
+    the two-window integral to the accidental triples); `B_W -> 1` for W much shorter than the
+    coherence time and `~tau_c/W` otherwise (about 3% for a THz-wide SPDC source and a 2 ns window).
+    The window is centred as the coincidence windows are, and the photon that heralds is assumed
+    to arrive at the window centre; against the exact Gaussian-state triple integral this is within
+    0.5% of the correction for a Gaussian spectrum at W between 0.3 and 5 coherence times.

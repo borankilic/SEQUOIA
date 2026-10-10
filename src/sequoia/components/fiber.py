@@ -14,7 +14,7 @@ from sequoia.components.base import (
     register,
 )
 from sequoia.components.freespace import _Optic
-from sequoia.data import Curve, Length, Scalar
+from sequoia.data import Curve, Dimensionless, Length, Scalar
 from sequoia.light.gaussian import GaussianMode, coupling_efficiency, thin_lens
 
 FREE, FIBER, IN, OUT = PortKind.FREE_SPACE, PortKind.FIBER, PortDirection.IN, PortDirection.OUT
@@ -93,7 +93,11 @@ class OpticalFiber(Component):
         else:
             out_mode = GaussianMode.from_waist(wavelength, radius)
             eta = coupling_efficiency(beam.mode, out_mode, beam.offset)
-            if p.cutoff_wavelength is not None and wavelength < p.cutoff_wavelength.si:
+            if (
+                p.cutoff_wavelength is not None
+                and wavelength < p.cutoff_wavelength.si
+                and ctx.significant(beam)
+            ):
                 ctx.warn(
                     "fiber_multimode",
                     f"link '{link_id}': wavelength {wavelength * 1e9:.1f} nm is below the "
@@ -122,7 +126,7 @@ class OpticalFiber(Component):
 class CouplerParams(Params):
     focal_length: Length
     clear_aperture: Length | None = None
-    transmission: Scalar | Curve = Unity
+    transmission: Dimensionless | Curve = Unity
 
 
 class CouplerSettings(Settings):
@@ -162,8 +166,8 @@ class FiberCoupler(_Optic):
 
 
 class FiberBeamSplitterParams(Params):
-    split_ratio: Scalar | Curve = Scalar(value=0.5)
-    transmission: Scalar | Curve = Unity
+    split_ratio: Dimensionless | Curve = Scalar(value=0.5)
+    transmission: Dimensionless | Curve = Unity
 
 
 @register("fiber", "FiberBeamSplitter")

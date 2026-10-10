@@ -36,9 +36,11 @@ Setup designs:
 
 Pair state (`SPDCCrystal`): spdcalc JSA along the phase-matching ridge for a CW pump (one sum-frequency
 entry on the lattice `nu = n dnu`) or over a pump-bandwidth window (finite linewidth / pulsed).
-Polarization labels come from the PM type (`Type2_e_eo`: signal H, idler V). Absolute rate: spdcalc's
-coincidence rate for the pump waist at the crystal, the collection waists and the incident pump power
-(linear in power and `d_eff^2`).
+Polarization labels come from the PM type (`Type2_e_eo`: signal H, idler V). Absolute rate: the
+integral of spdcalc's joint spectral intensity (pairs/s/(rad/s)^2) for the pump waist at the crystal,
+the collection waists and the incident pump power, linear in power and `d_eff^2`, **without**
+spdcalc's `get_counts_correction` (see section 6; that factor made the rate 4-10x lower than the
+first-principles calculation and was removed in wave 3).
 
 Transport: signal and idler photons are launched as classical beams of the photon's wavelength set
 and collection mode through the same network (`propagate_network`), giving a per-detector Jones
@@ -170,7 +172,9 @@ unwrapped (-9.79 ns, from the nominal path delays) and the counts and CAR are un
 - The collection-mode apparent waist position uses the mean of the three principal refractive
   indices. The effect on the waist position is below 0.02 mm.
 - `d_eff` is a literature value; the absolute brightness is not validated against a measurement
-  (planned, PLAN section 8). Use the part's `brightness` field for a measured number.
+  (planned, PLAN section 8) and carries the uncertainty of section 6. Use the part's `brightness`
+  field (pairs/s/mW emitted into the collection modes, before filters, coupling and detector loss)
+  for a measured number; do not enter a detected coincidence rate there.
 - Heralded g2 is the uncorrelated-process estimate: no intrinsic multi-pair term of the SPDC
   source and no cross-talk pairs from a finite-extinction PBS (27 Hz of true a x b coincidences in
   the HBT example, from the T_s = 0.001 leakage of the idler into the signal arm, visible in the
@@ -179,3 +183,128 @@ unwrapped (-9.79 ns, from the nominal path delays) and the counts and CAR are un
 - `fiber_multimode` diagnostics for the 405 nm pump are de-duplicated (once per link).
 - One setup run builds the crystal once (about 1.5-3 s); the spdcalc evaluation (about 50 us per
   JSA point) dominates. The integration tests cache it.
+
+## 6. Absolute pair rate (wave 3 arbitration)
+
+**Conclusion: the previous absolute rate was too low by 4.9x for the default PPKTP geometry (4-10x
+over the crystals tested) and has been changed.** `SPDCCrystal` now integrates spdcalc's JSI
+directly; spdcalc's `efficiencies()["coincidences_hz"]` multiplies the same integral by
+`get_counts_correction` (0.2035 for ppKTP 405 -> 810 nm, 0.11 for LiNbO3) and the independent
+calculation below does not support that factor. The old behaviour is available as
+`spdcalc_counts_correction: true`. Consequence: every example setup now has 4.9x more pairs per mW
+than in wave 2 (more singles, more dead time, lower CAR, g2 and heralding efficiency unchanged).
+
+Conventions. `d_eff` is the bulk coefficient (d24 about 3.9 pm/V for KTP); the quasi-phase-matched
+coefficient is `(2/pi) d_eff` and is applied once (verified: the spdcalc JSA peak of a poled crystal
+is 2/pi of the bulk one at identical geometry, ratio 0.637). Waists are 1/e^2 intensity radii; the
+collection modes are Gaussian beams whose waists sit at spdcalc's automatic positions.
+
+Derivation (first order, CW pump, Gaussian pump and collection modes). The interaction
+Hamiltonian is `H = 4 eps0 d E_p^+ E_s^- E_i^- + h.c.` (energy density `-(eps0 chi/3) E^3`,
+`chi = 2 d`; it reproduces Boyd's coupled equations `dA_s/dz = 2 i w_s d A_p A_i^* / (n_s c)` for
+`E = A e^{i(kz - wt)} + c.c.`). The mode field of a collection mode `u` (`int |u|^2 d^2r = 1`) is
+`E^+ = i int dw sqrt(hbar w / (4 pi eps0 n c)) u a(w) e^{i(kz - wt)}`. Fermi's golden rule gives
+
+    R = (2 d^2 / (pi c^2)) int dw_s (w_s w_i / (n_s n_i)) |J|^2,
+    J = int d^3r A_p(r) u_s^*(r) u_i^*(r) exp[i (k_p - k_s - k_i - 2 pi/Lambda) z],
+
+with `A_p^2 = P / (pi w_p^2 n_p eps0 c)` the peak pump amplitude. In the plane-wave limit this is
+`R = int dw_s/(2 pi) g^2 L^2 sinc^2(dk L / 2)` with `g^2 = 4 w_s w_i d^2 |A_p|^2 / (n_s n_i c^2)`,
+i.e. one amplified vacuum photon per mode, and the closed form is
+
+    R = 4 d^2 w_s w_i P L I^2 / (c^2 n_s n_i pi w_p^2 n_p eps0 c |1/v_s - 1/v_i|),
+    I = 2 / (w_s w_i (1/w_p^2 + 1/w_s^2 + 1/w_i^2)).
+
+Where the reviews differed. The first review used `H = 2 eps0 d ...`, half the coupling above: that
+is a factor 4 in the rate and exactly what made its estimate look 0.82x of spdcalc's corrected
+figure (its note that spdcalc without the correction would be 4635 Hz was the correct reading: the
+uncorrected integral agrees with the derivation). The second review's coupled-mode calculation is
+this derivation (4.3x spdcalc's corrected value). The `pi^2/2 = 4.93` ratio is not a QPM
+double count: the QPM factor is applied once on both sides, and the ratio to the corrected spdcalc
+rate is `1/kappa`, which varies between 4.9 (ppKTP 405 -> 810) and 9.3 (LiNbO3 532 -> 900), so it is
+close to `pi^2/2` for KTP only by accident.
+
+Numbers (d_bulk = 1 pm/V, 1 mW, 10 mm ppKTP 405 -> 810 nm, values from
+`tests/test_nonlinear.py::test_absolute_pair_rate_first_principles`):
+
+| waists pump/collection | derivation | engine now | ratio | spdcalc corrected |
+|---|---|---|---|---|
+| 400/300 um (plane wave) | 208 Hz | 234 Hz | 1.12 | 47.6 Hz |
+| 100/50 um | 4.11 kHz | 4.73 kHz | 1.15 | 0.96 kHz |
+| 30/30 um | 20.4 kHz | 25.7 kHz | 1.26 | 5.2 kHz |
+
+The plane-wave closed form agrees with the numerical overlap integral to 2% (test). The transverse
+overlap used is checked against a brute-force (r, z) integration of explicit Gaussian beams to
+0.5% (test). Other crystals (bulk non-critically phase-matched LiNbO3:MgO e -> o + o, 532 -> 900 nm;
+periodically poled type-0 LiNbO3:MgO) give engine/derivation of 0.89, 1.0 and 1.8 (775 -> 1550 nm,
+the outlier), i.e. the uncorrected spdcalc integral reproduces the physics within a factor 1.3
+for ppKTP and 1.8 elsewhere, whereas the corrected one is 4-10x low in all cases.
+
+Literature scale. With d24 = 3.9 pm/V the 10 mm ppKTP gives 7e4 pairs/s/mW at 100/50 um and up to
+4e5 pairs/s/mW at the optimum (20-30 um) focus, i.e. 4e-11 to 2e-10 pairs per pump photon. That
+sits inside the range of reported fibre-coupled ppKTP sources (1e4 to 1e6 pairs/s/mW generated,
+depending on focusing and bandwidth); I could not quote a specific publication from memory, so this
+is an order-of-magnitude statement and not a validation.
+
+What remains uncertain. (1) The derivation and the engine disagree by 1.1-1.3 for ppKTP (paraxial
+Gaussian beams without walk-off versus spdcalc's transverse model, which flattens at tight
+focus): treat the model as +-40% for ppKTP; for other crystals or processes up to a factor 2.
+(2) `d_eff` is a literature value good to about 15-20%, and the collection modes are idealised
+(real fibre modes, aberrations and alignment lower it). (3) I could not read spdcalc's source in
+this environment and do not know why its `counts_correction` was introduced; it may encode a
+convention (for example a different definition of the collection mode or of the rate) that I have
+not identified, which is why it is kept as an option. The decisive test is a measured pair rate
+for a known crystal and geometry; until then `brightness` (measured, per mW, in the collection
+modes) is the recommended way to set the absolute scale. The engine's relative quantities (CAR
+scaling, heralding efficiency, window fraction, spectra) do not depend on this choice.
+
+## 7. Engine wave 3 (rates, classical, report, CLI)
+
+Changes to `engines/rates.py`, `engines/classical.py`, `engines/report.py`, `engines/cache.py`
+(new), `cli.py`, `analysis/metrics.py` docstrings, `docs/conventions.md`. Tests:
+`tests/test_rates.py` (new cases at the end) and `tests/test_engine_diagnostics.py`.
+Statements in sections 3.4 and 4 about `delay_aliasing` for a single long path are superseded:
+a single path per detector pair is never flagged, only interfering paths whose delays differ by
+more than half a period are (conventions.md, "Lattice / delays").
+
+- Pulsed heralded g2 includes herald saturation: `mu (2 - eta_H)(1 + B)` against the exact
+  photon-number enumeration of a single-mode two-mode squeezed state (mu = 1e-3, eta_H = 0.05, 0.5,
+  0.9: 1% agreement; the previous engine was 2/(2 - eta_H) too high, +82% at eta_H = 0.9).
+- CW heralded g2 includes the thermal bunching term; for a 100 MHz Gaussian source and W = 1 ns the
+  factor is 1 + B_W = 1.97 (the previous value was the Poisson one), matched to 1.5% by the closed
+  form and to 0.5% in B by a direct double integral of the Gaussian-state triple density.
+- B is conditional on the herald filter (member by member); the 50% K = 1 / 50% K = 2 mixture
+  with a herald passing only the K = 1 member now equals the pure K = 1 value (it was 12.5% low).
+- Histograms are clipped to the principal period like the window fractions; no aliased images.
+- Pulsed accidentals: staircase count for W beyond the pulse period and the jitter window
+  fraction of the same-pulse term.
+- New diagnostics: `detector_saturation`, `leakage_saturation`, `no_phase_matched_pairs`,
+  `ensemble_g2_model`, `memory_limit`, `detector_efficiency_not_psd`, `pair_table_truncated`;
+  `delay_aliasing` only for interfering paths; `fiber_multimode` only for non-negligible light.
+- GUI: `Cancelled`/`should_cancel`, `RunCache` (parts and emissions), thread-local warning capture.
+
+Benchmark (this machine, one process; "rates" is `simulate_rates` with the classical result
+given, wall clock, no emission cache, parts re-parsed each run):
+
+| example | before | after (no cache) | after, warm part cache | after, warm emission cache* |
+|---|---|---|---|---|
+| hbt_heralded | 2.39 s | 1.97 s | 1.97 s | 0.80 s |
+| hom | 1.96 s | 1.71 s | 1.71 s | 0.54 s |
+| bell_test | 0.40 s | 0.25 s | 0.26 s | 0.26 s |
+
+YAML part parses per run (classical + rates + `has_rate_devices`): 58 before, 11 with a cold
+`RunCache`, 0 with a warm one. The gain without cache comes from closed-form 2x2 operator square roots
+(`_psd_sqrt` 0.29 s -> 0.01 s) and matrix products instead of three-operand einsums.
+*The crystal's `emit_pairs` is only cached once `SPDCCrystal` declares `emit_cache_key(lights)`
+and `emit_rate_scale(lights)` (those live in `components/nonlinear.py`, outside this package of
+work). The last column was measured with a stand-in declaration that keys on the pump wavelengths,
+normalised spectrum, polarization and mode, with the pump power as the rate scale: a changed pump
+power or any edit downstream of the crystal then costs 0.5-0.8 s instead of 1.7-2.0 s; the
+remainder is the photon transfer and the analyses.
+
+Pulsed g2 / heralded g2 scaling (single pulsed source, asymmetric 1600 x 800 lattice, same script as
+the review): before 16.7 s and 1.07 GB; now 9.1 s and 1.7 GB RSS (heralded), 7.9 s and 1.9 GB
+(unheralded) including the coincidence analysis; 800 x 400 takes 2.1 s and 0.7 GB; 2400 x 1200
+is refused with a `memory_limit` message (about 5 GiB estimated, limit 3 GiB) instead of running
+for 40 s. The moments are evaluated in the smaller of the arm and partner spaces (one big
+product per matrix).
