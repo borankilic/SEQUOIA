@@ -273,6 +273,33 @@ class ResultsDock(QWidget):
         self.tabs.addTab(self.readouts, "Readouts && probes")
         self.tabs.addTab(self.counts, "Counts")
 
+        from sequoia.gui.analysis_tabs import (
+            BudgetTab,
+            CausticTab,
+            HistogramTab,
+            PolarizationTab,
+            SpectraTab,
+        )
+        from sequoia.gui.sweep_panel import SweepTab
+
+        self.provider = lambda: (None, None)
+        self.caustic = CausticTab()
+        self.polarization = PolarizationTab()
+        self.spectra = SpectraTab()
+        self.histograms = HistogramTab()
+        self.budget = BudgetTab(lambda: self.provider())
+        self.sweeps = SweepTab(lambda: self.provider())
+        self.plot_tabs = {
+            "Caustic": self.caustic,
+            "Polarization": self.polarization,
+            "Spectra": self.spectra,
+            "Histograms": self.histograms,
+            "Budget": self.budget,
+            "Sweeps": self.sweeps,
+        }
+        for title, widget in self.plot_tabs.items():
+            self.tabs.addTab(widget, title)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -299,6 +326,8 @@ class ResultsDock(QWidget):
         self.readouts.clear()
         self.analyses.clear()
         self.tab_errors.clear()
+        for widget in self.plot_tabs.values():
+            widget.set_outcome(None)
         for index, title in enumerate(self.TAB_TITLES):
             self.tabs.setTabText(index, title)
             self.tabs.setTabToolTip(index, "")
@@ -336,7 +365,16 @@ class ResultsDock(QWidget):
                 self.tabs.setTabToolTip(index, "")
                 if index:
                     self.tabs.setTabText(index, self.TAB_TITLES[index])
+        for name, widget in self.plot_tabs.items():
+            try:
+                widget.set_outcome(outcome if outcome.classical is not None else None)
+            except Exception as exc:
+                self.tab_errors[name] = f"{type(exc).__name__}: {exc}"
         self._refresh_status()
+
+    def select_link(self, link_id: str) -> None:
+        for widget in (self.caustic, self.polarization, self.spectra, self.budget):
+            widget.select_link(link_id)
 
     def _tick(self) -> None:
         self._spin = (self._spin + 1) % len(self.SPINNER)

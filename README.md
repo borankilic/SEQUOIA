@@ -24,6 +24,12 @@ One-page overview: [docs/overview.pdf](docs/overview.pdf)
 - **Parts as data.** A part is a `part.yaml` plus CSV curves with provenance per value
   (datasheet, measured, model, ideal default). CSV/XLSX import converts %, OD, dB and
   responsivity to SI curves.
+- **Results and analysis.** Hover a link for its beam card (power, flux, w_x/w_y, R, waist,
+  polarization ellipse, spectrum); link colours follow wavelength. Tabs for beam caustic,
+  polarization (ellipse and Poincaré sphere), spectra, g2 / HOM histograms, power and pair-photon
+  budgets, and 1D/2D parameter sweeps with CSV/PNG export.
+- **Optimizer and budgets.** Maximize or minimize any result by tuning bounded parameters
+  (scipy), and rank which part limits a result by replacing each part with its ideal.
 - **Diagnostics.** Pump leakage, aperture clipping, fiber below cutoff, curve extrapolation,
   coincidence peak outside the window, and more; each links back to the offending component.
 
@@ -77,13 +83,13 @@ docs/                     plan, conventions, M3 report, overview
 
 ## Status
 
-Milestones M0 to M4 are done: data model and library, classical engine, quantum rate engine, and
-the GUI shell with the schematic editor (see [docs/PLAN.md](docs/PLAN.md)). The test suite covers
+Milestones M0 to M5 are done: data model and library, classical engine, quantum rate engine, the
+GUI shell with the schematic editor, and results plots, sweeps, optimizer and budgets (see
+[docs/PLAN.md](docs/PLAN.md)). The test suite covers
 analytic checks (Malus, HWP rotation, thin lens, Gaussian overlap, MZI visibility, CHSH
 S = 2√2·V, HOM against spdcalc, dead time against Monte Carlo).
 
-Planned: results plots, sweeps and optimizer (M5), library manager (M6), Monte Carlo time tags
-(M7), Gaussian multimode engine (M8).
+Planned: library manager (M6), Monte Carlo time tags (M7), Gaussian multimode engine (M8).
 
 Known limits:
 
@@ -166,6 +172,33 @@ from sequoia.analysis import metrics  # car, chsh_s, tomography_settings, mle_de
 result = simulate_rates(setup, library)
 result.analyses["herald_a"]["car"], result.channels["tagger.ch1"]["singles_hz"]
 ```
+
+## Sweeps, optimization and budgets
+
+In the GUI use the Sweeps tab (Run > Sweep parameter... / Optimize parameters...) or the Budget
+tab. From Python:
+
+```python
+from sequoia.analysis.sweep import linspace_axis, run_sweep
+from sequoia.analysis.optimize import Variable, optimize
+from sequoia.analysis.budget import ideal_budget
+
+axis = linspace_axis("settings:hwp_a.angle", 0, 90, 37, "deg")
+fringe = run_sweep(setup, library, [axis], ["analysis:tt.true_hz"])
+
+best = optimize(
+    setup, library,
+    [Variable("link:s2.length", 100, 250, "mm")],
+    "link:f1.coupling_efficiency",
+)
+budget = ideal_budget(setup, library, "analysis:herald_a.true_hz")
+```
+
+Parameter targets are `settings:<id>.<name>`, `overrides:<id>.<name>` or `link:<id>.<field>`
+(`length`, `delay`, `connector_loss_db`); outputs are flat names such as `link:f1.power_W`,
+`readout:pd.photocurrent_A`, `analysis:herald_a.car` (see `sequoia.analysis.sweep.metrics_of`).
+The ideal budget replaces one part at a time with an ideal version (unit transmission, unit
+detector efficiency, no dark counts); it does not touch collection modes or alignment.
 
 ### Units and the meaning of `brightness`
 

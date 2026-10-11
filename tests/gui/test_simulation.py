@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import QTimer
 
 import sequoia.components.builtin  # noqa: F401
-import sequoia.gui.simulation as sim_module
+import sequoia.engines.outcome as outcome_module
 from sequoia.engines.cache import Cancelled
 from sequoia.engines.classical import simulate
 from sequoia.engines.rates import simulate_rates
@@ -146,7 +146,7 @@ def slow_first_call(monkeypatch):
                 time.sleep(0.01)
         return real(setup, library, should_cancel=should_cancel, cache=cache, **kwargs)
 
-    monkeypatch.setattr(sim_module, "simulate", fake)
+    monkeypatch.setattr(outcome_module, "simulate", fake)
     return state
 
 
@@ -178,7 +178,7 @@ def test_stale_result_is_dropped(qtbot, make_controller, real_library, monkeypat
             release.wait(20)
         return real(setup, library, cache=cache, **kwargs)
 
-    monkeypatch.setattr(sim_module, "simulate", fake)
+    monkeypatch.setattr(outcome_module, "simulate", fake)
     doc = open_doc("mzi", real_library)
     ctrl = make_controller(doc, debounce_ms=10)
     counts = Counter(ctrl)
@@ -211,7 +211,7 @@ def test_worker_exception_reports_failed(qtbot, make_controller, real_library, m
     def boom(*args, **kwargs):
         raise RuntimeError("engine exploded")
 
-    monkeypatch.setattr(sim_module, "simulate", boom)
+    monkeypatch.setattr(outcome_module, "simulate", boom)
     doc = open_doc("mzi", real_library)
     ctrl = make_controller(doc)
     with qtbot.waitSignal(ctrl.failed, timeout=WAIT) as blocker:
@@ -228,7 +228,7 @@ def test_ui_thread_stays_responsive(qtbot, make_controller, real_library, monkey
         time.sleep(0.6)
         return real(setup, library, **kwargs)
 
-    monkeypatch.setattr(sim_module, "simulate", slow)
+    monkeypatch.setattr(outcome_module, "simulate", slow)
     doc = open_doc("mzi", real_library)
     ctrl = make_controller(doc)
     ticks = []

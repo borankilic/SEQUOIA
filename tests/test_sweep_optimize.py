@@ -175,3 +175,20 @@ def test_ideal_budget_ranks_the_detectors(library):
     assert gains["spad_a"] > 0 and gains["spad_h"] > 0
     assert budget.entries[0].gain >= budget.entries[-1].gain
     assert gains["pump_lens"] == pytest.approx(0.0, abs=1e-6 * budget.baseline)
+
+
+def test_photon_budget_and_caustic(library):
+    from sequoia.analysis.budget import photon_budget
+    from sequoia.analysis.profile import caustic
+
+    outcome = evaluate(setup_of("hbt_heralded"), library)
+    steps = photon_budget(outcome, "f_a")
+    assert steps and steps[0].element == "s_collect"
+    assert steps[-1].power_out == pytest.approx(outcome.rates.links["f_a"]["photons_hz"])
+    assert all(s.power_out <= s.power_in * (1 + 1e-9) for s in steps)
+    c = caustic(outcome.classical, "s_collect")
+    assert c.links == ["s_pump", "s_focus", "s_collect"]
+    assert c.w_x.min() > 0
+    assert c.w_x.min() < 0.5 * c.w_x[0]
+    fiber = caustic(outcome.classical, "f_a")
+    assert len(fiber.z) == 0

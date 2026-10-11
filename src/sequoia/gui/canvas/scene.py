@@ -52,6 +52,8 @@ class CanvasScene(QGraphicsScene):
         self.document = document
         self.snap = True
         self.highlights: dict[str, str] = {}
+        self.link_infos: dict = {}
+        self._card = None
         self.component_items: dict[str, ComponentItem] = {}
         self.link_items: dict[str, LinkItem] = {}
         self.probe_items: dict[str, ProbeItem] = {}
@@ -249,6 +251,26 @@ class CanvasScene(QGraphicsScene):
         self.blockSignals(False)
         self.update()
         self._on_selection()
+
+    def set_link_infos(self, infos: dict) -> None:
+        self.link_infos = dict(infos)
+        self.hide_link_card()
+        self.update()
+
+    def show_link_card(self, link_id: str, screen_pos) -> None:
+        info = self.link_infos.get(link_id)
+        if info is None:
+            self.hide_link_card()
+            return
+        if self._card is None:
+            from sequoia.gui.beamcard import BeamCard
+
+            self._card = BeamCard()
+        self._card.show_info(info, screen_pos)
+
+    def hide_link_card(self) -> None:
+        if self._card is not None:
+            self._card.hide()
 
     def set_highlight(self, ids, severity: str | None) -> None:
         for item_id in ids:

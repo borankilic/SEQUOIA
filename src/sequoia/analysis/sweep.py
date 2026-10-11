@@ -123,8 +123,9 @@ def metrics_of(outcome: SimulationOutcome) -> dict[str, float]:
             if state.end is not None:
                 out[f"link:{link_id}.power_W"] = state.end.power
                 out[f"link:{link_id}.dop"] = state.end.dop
-                out[f"link:{link_id}.w_x_m"] = state.end.mode.w_x
-                out[f"link:{link_id}.w_y_m"] = state.end.mode.w_y
+                if state.end.mode is not None:
+                    out[f"link:{link_id}.w_x_m"] = state.end.mode.w_x
+                    out[f"link:{link_id}.w_y_m"] = state.end.mode.w_y
             for key, value in state.info.items():
                 if _numeric(value):
                     out[f"link:{link_id}.{key}"] = float(value)
@@ -241,3 +242,79 @@ def run_sweep(
         if progress is not None:
             progress(count + 1, total)
     return SweepResult(axes, data, failures)
+
+
+@dataclass(frozen=True)
+class Candidate:
+    target: str
+    unit: str
+    current: float | None
+
+
+def _unit_of(scalar: Scalar) -> str:
+    return "" if scalar.unit.strip() in ("", "1") else scalar.unit
+
+
+def candidate_targets(setup: Setup, library: Library) -> list[Candidate]:
+    """Numeric parameters of ``setup`` that can be swept or optimised."""
+    from sequoia.components.base import get_component
+
+    out: list[Candidate] = []
+    raw = setup_to_dict(setup)
+    placed = [(i, "instances") for i in setup.instances] + [(p, "probes") for p in setup.probes]
+    for item, _group in placed:
+        try:
+            part = library.load_part(item.part)
+            cls = get_component(part.type)
+        except Exception:
+            continue
+        entry = next(
+            (r for key in ("instances", "probes") for r in raw.get(key, []) if r["id"] == item.id),
+            {},
+        )
+        given = entry.get("settings", {})
+        for name, info in cls.Settings.model_fields.items():
+            default = info.default
+            if isinstance(default, Scalar) and math.isfinite(default.value):
+                out.append(
+                    Candidate(
+                        f"settings:{item.id}.{name}",
+                        _unit_of(default),
+                        get_value(setup, f"settings:{item.id}.{name}", _unit_of(default))
+                        if name in given
+                        else default.value,
+                    )
+                )
+            elif name in given:
+                value = get_value(setup, f"settings:{item.id}.{name}")
+                if value is not None:
+                    out.append(Candidate(f"settings:{item.id}.{name}", "", value))
+        for name in type(part.params).model_fields:
+            value = getattr(part.params, name, None)
+            if name in entry.get("overrides", {}):
+                value = entry["overrides"][name]
+                if isinstance(value, str):
+                    try:
+                        value = Scalar.model_validate(value)
+                    except ValueError:
+                        continue
+            if isinstance(value, Scalar) and math.isfinite(value.value):
+                unit = _unit_of(value)
+                out.append(Candidate(f"overrides:{item.id}.{name}", unit, value.value))
+    for link in setup.links:
+        if link.kind == "cable":
+            out.append(
+                Candidate(
+                    f"link:{link.id}.delay", "ns", get_value(setup, f"link:{link.id}.delay", "ns")
+                )
+            )
+            continue
+        if link.length is not None:
+            out.append(
+                Candidate(
+                    f"link:{link.id}.length", "mm", get_value(setup, f"link:{link.id}.length", "mm")
+                )
+            )
+        if link.kind == "fiber":
+            out.append(Candidate(f"link:{link.id}.connector_loss_db", "", link.connector_loss_db))
+    return out

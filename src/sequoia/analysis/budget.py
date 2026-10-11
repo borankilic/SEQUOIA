@@ -83,6 +83,19 @@ def power_budget(result: SimulationResult, link_id: str) -> list[BudgetStep]:
     return steps
 
 
+def photon_budget(outcome: SimulationOutcome, link_id: str) -> list[BudgetStep]:
+    """Pair-photon flux (photons/s) at the end of each link feeding ``link_id``."""
+    if outcome.classical is None or outcome.rates is None:
+        return []
+    flux = {lid: float(v.get("photons_hz", 0.0)) for lid, v in outcome.rates.links.items()}
+    chain = [lid for lid in upstream_links(outcome.classical, link_id) if flux.get(lid, 0.0) > 0]
+    steps: list[BudgetStep] = []
+    for position, lid in enumerate(chain):
+        previous = flux[chain[position - 1]] if position else flux[lid]
+        steps.append(BudgetStep(lid, "link", previous, flux[lid]))
+    return steps
+
+
 @dataclass(frozen=True)
 class IdealGain:
     instance: str
@@ -162,6 +175,7 @@ __all__ = [
     "IdealGain",
     "idealizable",
     "ideal_budget",
+    "photon_budget",
     "power_budget",
     "upstream_links",
 ]

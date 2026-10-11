@@ -88,6 +88,7 @@ class LinkItem(QGraphicsItem):
         self.path = QPainterPath()
         self.label = LinkLabel(self)
         self.setFlags(QGraphicsItem.ItemIsSelectable)
+        self.setAcceptHoverEvents(True)
         self.setZValue(1)
         self.update_link(link)
 
@@ -142,6 +143,15 @@ class LinkItem(QGraphicsItem):
     def boundingRect(self) -> QRectF:
         return self.shape().boundingRect().adjusted(-6, -6, 6, 6)
 
+    def hoverEnterEvent(self, event) -> None:
+        self.canvas.show_link_card(self.link_id, event.screenPos())
+
+    def hoverMoveEvent(self, event) -> None:
+        self.canvas.show_link_card(self.link_id, event.screenPos())
+
+    def hoverLeaveEvent(self, event) -> None:
+        self.canvas.hide_link_card()
+
     def mouseDoubleClickEvent(self, event) -> None:
         self.canvas.begin_edit_link(self.link_id)
         self.canvas.item_activated.emit(self.link_id)
@@ -152,6 +162,10 @@ class LinkItem(QGraphicsItem):
         painter.setRenderHint(QPainter.Antialiasing)
         pal = QApplication.palette()
         color = LINK_COLORS[self.link.kind]
+        info = self.canvas.link_infos.get(self.link_id)
+        if info is not None and self.link.kind != "cable" and info.color is not None:
+            if info.power_w > 0 or (info.photons_hz or 0) > 0:
+                color = info.color
         severity = self.canvas.highlights.get(self.link_id)
         painter.setBrush(Qt.NoBrush)
         if severity in SEVERITY_COLORS:

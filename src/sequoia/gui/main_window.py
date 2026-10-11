@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 import sequoia.components.builtin  # noqa: F401
 from sequoia.errors import SequoiaError
+from sequoia.gui.beamcard import build_link_infos
 from sequoia.gui.canvas import CanvasScene, CanvasView, plan_layout
 from sequoia.gui.canvas.items import CELL
 from sequoia.gui.document import SetupDocument
@@ -74,6 +75,7 @@ class MainWindow(QMainWindow):
         self.results = ResultsDock()
         self.controller = SimulationController(self.document, self)
         self.results.connect_controller(self.controller)
+        self.results.provider = lambda: (self.document.setup, self.document.library)
 
         self._build_central()
         self._build_docks()
@@ -214,6 +216,8 @@ class MainWindow(QMainWindow):
         self.act_reset_layout = self._action("Reset layout", self.reset_layout)
 
         self.act_run = self._action("Run now", self.controller.run_now, "Ctrl+Return")
+        self.act_sweep = self._action("Sweep parameter...", self.show_sweeps)
+        self.act_optimize = self._action("Optimize parameters...", self.show_optimizer)
         self.act_autorun = self._action(
             "Auto-run", self.set_auto_run, checkable=True, checked=self.controller.auto_run
         )
@@ -260,6 +264,9 @@ class MainWindow(QMainWindow):
         run = bar.addMenu("&Run")
         run.addAction(self.act_run)
         run.addAction(self.act_autorun)
+        run.addSeparator()
+        run.addAction(self.act_sweep)
+        run.addAction(self.act_optimize)
 
     def _build_status_bar(self) -> None:
         self.run_label = QLabel("")
@@ -398,8 +405,41 @@ class MainWindow(QMainWindow):
         self.menu_add_probe.setEnabled(len(ids) == 1 and len(links) == 1)
         self.act_remove_probe.setEnabled(bool(probes))
 
+    def show_sweeps(self) -> None:
+        self.results_dock.show()
+        self.results.tabs.setCurrentWidget(self.results.sweeps)
+        self.results.sweeps.reload_candidates()
+
+    def show_optimizer(self) -> None:
+        self.show_sweeps()
+        self.results.sweeps.open_optimizer()
+        dialog = self.results.sweeps.optimizer
+        if dialog is not None:
+            dialog.on_apply = self.apply_optimization
+
+    def apply_optimization(self, result) -> None:
+        values = result.values
+        units = {}
+        dialog = self.results.sweeps.optimizer
+        if dialog is not None:
+            units = {v.target: v.unit for v in dialog.variables()}
+        with self.document.macro("Optimize parameters"):
+            for target, value in values.items():
+                kind, rest = target.split(":", 1)
+                owner, name = rest.rsplit(".", 1)
+                unit = units.get(target, "")
+                text = f"{value!r} {unit}".strip() if unit else float(value)
+                if kind == "link":
+                    self.document.set_link_field(owner, name, text)
+                elif kind == "settings":
+                    self.document.set_setting(owner, name, text)
+                else:
+                    self.document.set_override(owner, name, text)
+
     def _on_selection(self, ids: list[str]) -> None:
         self._update_selection_actions(ids)
+        if len(ids) == 1 and ids[0] in self.scene.link_items:
+            self.results.select_link(ids[0])
         if len(ids) == 1:
             item_id = ids[0]
             if item_id in self.scene.component_items:
@@ -447,6 +487,7 @@ class MainWindow(QMainWindow):
 
     def _on_outcome(self, outcome: SimulationOutcome) -> None:
         self.apply_highlights(outcome)
+        self.scene.set_link_infos(build_link_infos(outcome))
         self._refresh_run_label()
 
     def _on_failed(self, _message: str) -> None:
