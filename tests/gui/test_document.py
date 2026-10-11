@@ -358,10 +358,11 @@ def test_remove_link_and_probe(doc):
 def test_name_grid_analyses(doc):
     doc.set_name("My setup")
     doc.set_grid_cell("10 mm")
-    doc.set_analyses([{"kind": "g2", "channels": [1, 2]}])
+    spec = {"name": "g", "type": "g2", "channels": ["t.ch1", "t.ch2"], "range": "10 ns"}
+    doc.set_analyses([spec])
     assert doc.setup.name == "My setup"
     assert doc.setup.grid_cell.si == pytest.approx(0.01)
-    assert doc.setup.analyses == [{"kind": "g2", "channels": [1, 2]}]
+    assert doc.setup.analyses == [spec]
     for _ in range(3):
         doc.undo_stack.undo()
     assert doc.setup == Setup()
@@ -473,7 +474,9 @@ def test_save_open_equivalence(doc, tmp_path):
     doc.add_probe("probes/powermeter", "link")
     doc.set_setting(mirror, "angle", "12 deg")
     doc.set_override(laser, "power", "2 mW")
-    doc.set_analyses([{"kind": "g2"}])
+    doc.set_analyses(
+        [{"name": "g", "type": "g2", "channels": ["t.ch1", "t.ch2"], "range": "10 ns", "bins": 50}]
+    )
     rec = Recorder(doc)
     path = tmp_path / "out.yaml"
     doc.save(path)

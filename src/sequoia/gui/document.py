@@ -1,4 +1,5 @@
 import copy
+import math
 import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -10,6 +11,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from sequoia.components.base import Component, PortDirection, PortKind, PortSpec, get_component
+from sequoia.data import Duration
 from sequoia.errors import SequoiaError, format_validation_error
 from sequoia.library.store import Library
 from sequoia.setup.io import load_setup, save_setup
@@ -27,6 +29,12 @@ _KIND_FOR_PORT = {
 _LINK_ADAPTER = TypeAdapter(Link)
 _ENDPOINT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
 _MOVE_ID = 1
+
+MAX_ABS_CELLS = 1e5
+UNDO_LIMIT = 200
+ANALYSIS_TYPES = ("coincidences", "heralded_g2", "g2", "histogram")
+_NUMBER_PREFIX = re.compile(r"^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|[+-]?inf)(?:\s|$)")
+_DURATION = TypeAdapter(Duration)
 
 DEFAULT_FREE_SPACE_LENGTH = "100 mm"
 DEFAULT_FIBER_LENGTH = "1 m"
@@ -61,11 +69,174 @@ def _validation_message(exc: ValidationError) -> str:
     return format_validation_error(exc)
 
 
+def _nonfinite(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, str):
+        match = _NUMBER_PREFIX.match(value)
+        if match is None:
+            return False
+        try:
+            return not math.isfinite(float(match.group(1)))
+        except ValueError:
+            return False
+    if isinstance(value, dict):
+        if "value" in value and isinstance(value["value"], int | float):
+            return _nonfinite(float(value["value"]))
+        return any(_nonfinite(v) for v in value.values())
+    if isinstance(value, list | tuple):
+        return any(_nonfinite(v) for v in value)
+    return False
+
+
+def _inf_allowed(library: Library, part_ref: str, mapping: str, name: str) -> bool:
+    try:
+        cls = get_component(library.load_part(part_ref).type)
+        model = cls.Settings if mapping == "settings" else cls.Params
+        default = model.model_fields[name].default
+    except Exception:
+        return False
+    value = getattr(default, "value", default)
+    return isinstance(value, int | float) and value == math.inf
+
+
+def check_physical(setup: Setup, library: Library | None = None) -> None:
+    """Raise ``ValueError`` for values that make no physical or drawing sense.
+
+    Positions must be finite and within ``MAX_ABS_CELLS``; rotations finite; link lengths, delays,
+    losses and the grid cell finite. Setting and override values may be infinite only where the
+    component's own default is (an iris diameter).
+    """
+    for inst in setup.instances:
+        for axis, value in zip("xy", inst.position, strict=True):
+            if not math.isfinite(value):
+                raise ValueError(f"instance '{inst.id}': position {axis} must be a finite number")
+            if abs(value) > MAX_ABS_CELLS:
+                raise ValueError(
+                    f"instance '{inst.id}': position {axis}={value:g} cells is outside "
+                    f"+-{MAX_ABS_CELLS:g} cells"
+                )
+        if not math.isfinite(inst.rotation):
+            raise ValueError(f"instance '{inst.id}': rotation must be a finite number")
+    if not math.isfinite(setup.grid_cell.si):
+        raise ValueError("the grid cell must be finite")
+    for link in setup.links:
+        for name in ("length", "delay"):
+            scalar = getattr(link, name, None)
+            if scalar is not None and not math.isfinite(scalar.si):
+                raise ValueError(f"link '{link.id}': {name} must be finite")
+        loss = getattr(link, "connector_loss_db", 0.0)
+        if not math.isfinite(loss):
+            raise ValueError(f"link '{link.id}': connector_loss_db must be finite")
+        pol = getattr(link, "polarization", None)
+        if pol is not None and pol.rotation_vector is not None:
+            if not all(math.isfinite(v) for v in pol.rotation_vector):
+                raise ValueError(f"link '{link.id}': polarization rotation must be finite")
+    for placed in (*setup.instances, *setup.probes):
+        for mapping in ("settings", "overrides"):
+            for name, value in getattr(placed, mapping).items():
+                if not _nonfinite(value):
+                    continue
+                if library is not None and _inf_allowed(library, placed.part, mapping, name):
+                    continue
+                raise ValueError(f"'{placed.id}': {mapping[:-1]} '{name}' must be a finite number")
+
+
+def check_unique_ids(setup: Setup) -> None:
+    for what, items in (
+        ("instance", setup.instances),
+        ("link", setup.links),
+        ("probe", setup.probes),
+    ):
+        seen: set[str] = set()
+        for item in items:
+            if item.id in seen:
+                raise ValueError(f"the setup defines the {what} id '{item.id}' more than once")
+            seen.add(item.id)
+    both = {i.id for i in setup.instances} & {p.id for p in setup.probes}
+    if both:
+        raise ValueError(f"'{sorted(both)[0]}' is used by both an instance and a probe")
+
+
+def check_analysis(spec: Any, index: int | None = None) -> None:
+    """Raise ``ValueError`` when an analysis spec cannot be run (type, channels, numbers)."""
+    where = "analysis" if index is None else f"analysis #{index + 1}"
+    if not isinstance(spec, dict):
+        raise ValueError(f"{where} must be a mapping")
+    name = spec.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"{where} needs a non-empty name")
+    where = f"analysis '{name}'"
+    kind = spec.get("type")
+    if kind not in ANALYSIS_TYPES:
+        raise ValueError(
+            f"{where}: unknown type {kind!r}; choose one of {', '.join(ANALYSIS_TYPES)}"
+        )
+
+    def duration(key: str, required: bool = True) -> float | None:
+        if spec.get(key) is None:
+            if required:
+                raise ValueError(f"{where}: '{key}' is required (a duration such as '1 ns')")
+            return None
+        value = spec[key]
+        if isinstance(value, bool):
+            raise ValueError(f"{where}: '{key}' must be a duration such as '1 ns'")
+        try:
+            if isinstance(value, int | float):
+                seconds = float(value)
+            else:
+                seconds = _DURATION.validate_python(value).si
+        except ValidationError as exc:
+            raise ValueError(f"{where}: '{key}': {_validation_message(exc)}") from exc
+        if not math.isfinite(seconds):
+            raise ValueError(f"{where}: '{key}' must be finite")
+        return seconds
+
+    def channel(key: str, value: Any) -> str:
+        if not isinstance(value, str) or not _ENDPOINT.match(value):
+            raise ValueError(f"{where}: {key} must be a channel such as 'tagger.ch1'")
+        return value
+
+    if kind == "heralded_g2":
+        chans = [channel(k, spec.get(k)) for k in ("herald", "a", "b")]
+    else:
+        raw = spec.get("channels")
+        if not isinstance(raw, list) or len(raw) != 2:
+            raise ValueError(f"{where}: 'channels' must list exactly two channels")
+        chans = [channel("channels", c) for c in raw]
+    if len(set(chans)) != len(chans):
+        raise ValueError(f"{where}: the channels must all differ")
+    if kind in ("coincidences", "heralded_g2"):
+        if duration("window") <= 0:
+            raise ValueError(f"{where}: window must be positive")
+    else:
+        if duration("range") <= 0:
+            raise ValueError(f"{where}: range must be positive")
+        bins = spec.get("bins", 200)
+        if isinstance(bins, bool) or not isinstance(bins, int) or bins < 1:
+            raise ValueError(f"{where}: bins must be a positive integer")
+    center = spec.get("center", "auto")
+    if not (isinstance(center, str) and center.strip().lower() == "auto"):
+        duration("center", required=False)
+
+
+def check_analyses(analyses: list) -> None:
+    names: set[str] = set()
+    for index, spec in enumerate(analyses):
+        check_analysis(spec, index)
+        if spec["name"] in names:
+            raise ValueError(f"analysis name '{spec['name']}' is used twice")
+        names.add(spec["name"])
+
+
 class SetupDocument(QObject):
     changed = Signal()
     structure_changed = Signal()
     dirty_changed = Signal(bool)
     path_changed = Signal()
+    ids_renamed = Signal(object)
 
     def __init__(
         self,
@@ -80,15 +251,20 @@ class SetupDocument(QObject):
         self.path = Path(path) if path is not None else None
         self._components: dict[tuple[str, str], tuple[Any, Component | None, str | None]] = {}
         self._macro_stack: list[Setup] = []
+        self._renames: list[tuple[str, str]] = []
         self._structure = self._structure_key()
         self.undo_stack = QUndoStack(self)
+        self.undo_stack.setUndoLimit(UNDO_LIMIT)
         self.undo_stack.indexChanged.connect(self._on_index_changed)
         self.undo_stack.cleanChanged.connect(self._on_clean_changed)
 
     @classmethod
     def open(cls, path: Path | str, library: Library) -> "SetupDocument":
         path = Path(path)
-        return cls(library, load_setup(path), path)
+        setup = load_setup(path)
+        check_unique_ids(setup)
+        check_physical(setup, library)
+        return cls(library, setup, path)
 
     def save(self, path: Path | str | None = None) -> None:
         target = Path(path) if path is not None else self.path
@@ -127,6 +303,9 @@ class SetupDocument(QObject):
         key = self._structure_key()
         structural = key != self._structure
         self._structure = key
+        if self._renames:
+            renames, self._renames = dict(self._renames), []
+            self.ids_renamed.emit(renames)
         self.changed.emit()
         if structural:
             self.structure_changed.emit()
@@ -134,13 +313,25 @@ class SetupDocument(QObject):
     def _raw(self) -> dict[str, Any]:
         return self._setup.model_dump(by_alias=True)
 
+    def _share(self, new: Setup) -> None:
+        old = self._setup
+        for field in ("instances", "links", "probes"):
+            previous = {x.id: x for x in getattr(old, field)}
+            items = getattr(new, field)
+            for i, item in enumerate(items):
+                same = previous.get(item.id)
+                if same is not None and same == item:
+                    items[i] = same
+
     def _commit(self, text: str, raw: dict[str, Any], merge_key=None) -> bool:
         try:
             new = Setup.model_validate(raw)
         except ValidationError as exc:
             raise ValueError(_validation_message(exc)) from exc
+        check_physical(new, self.library)
         if new == self._setup:
             return False
+        self._share(new)
         if self._macro_stack:
             self._setup = new
         else:
@@ -148,7 +339,7 @@ class SetupDocument(QObject):
         return True
 
     @contextmanager
-    def macro(self, text: str) -> Iterator[None]:
+    def macro(self, text: str, merge_key: Any = None) -> Iterator[None]:
         snapshot = self._setup
         self._macro_stack.append(snapshot)
         try:
@@ -161,7 +352,7 @@ class SetupDocument(QObject):
         if not self._macro_stack and self._setup != snapshot:
             after = self._setup
             self._setup = snapshot
-            self.undo_stack.push(_SetupCommand(self, text, snapshot, after))
+            self.undo_stack.push(_SetupCommand(self, text, snapshot, after, merge_key))
 
     def _try_component(self, placed) -> tuple[Component | None, str | None]:
         try:
@@ -290,11 +481,13 @@ class SetupDocument(QObject):
         self._find(raw["instances"], instance_id, "instance").update(fields)
         self._commit(text, raw, merge_key)
 
-    def move_instance(self, instance_id: str, position: Sequence[float]) -> None:
+    def move_instance(
+        self, instance_id: str, position: Sequence[float], gesture: Any = None
+    ) -> None:
         self._edit_instance(
             instance_id,
             f"Move {instance_id}",
-            merge_key=("move", instance_id),
+            merge_key=("move", instance_id, gesture),
             position=list(position),
         )
 
@@ -511,7 +704,62 @@ class SetupDocument(QObject):
         raw["grid_cell"] = scalar
         self._commit("Set grid cell", raw)
 
+    def rename_instance(self, old_id: str, new_id: str) -> str:
+        if new_id == old_id:
+            return old_id
+        raw = self._raw()
+        item = self._find_placed(raw, old_id)
+        if new_id in self._all_ids():
+            raise ValueError(f"the id '{new_id}' is already used")
+        item["id"] = new_id
+        prefix = f"{old_id}."
+        for link in raw["links"]:
+            for end in ("from", "to"):
+                if link[end].startswith(prefix):
+                    link[end] = f"{new_id}.{link[end][len(prefix) :]}"
+        for spec in raw["analyses"]:
+            for key, value in list(spec.items()):
+                if isinstance(value, str) and value.startswith(prefix):
+                    spec[key] = f"{new_id}.{value[len(prefix) :]}"
+                elif isinstance(value, list):
+                    spec[key] = [
+                        f"{new_id}.{v[len(prefix) :]}"
+                        if isinstance(v, str) and v.startswith(prefix)
+                        else v
+                        for v in value
+                    ]
+        self._renames.append((old_id, new_id))
+        try:
+            self._commit(f"Rename {old_id} to {new_id}", raw)
+        except BaseException:
+            self._renames.pop()
+            raise
+        return new_id
+
+    def rename_link(self, old_id: str, new_id: str) -> str:
+        if new_id == old_id:
+            return old_id
+        raw = self._raw()
+        link = self._find(raw["links"], old_id, "link")
+        if new_id in self._all_ids():
+            raise ValueError(f"the id '{new_id}' is already used")
+        link["id"] = new_id
+        for probe in raw["probes"]:
+            if probe["link"] == old_id:
+                probe["link"] = new_id
+        self._renames.append((old_id, new_id))
+        try:
+            self._commit(f"Rename link {old_id} to {new_id}", raw)
+        except BaseException:
+            self._renames.pop()
+            raise
+        return new_id
+
+    def fiber_parts(self) -> list[str]:
+        return sorted(info.ref for info in self.library.index() if info.type == FIBER_TYPE)
+
     def set_analyses(self, analyses: list[dict[str, Any]]) -> None:
+        check_analyses(list(analyses))
         raw = self._raw()
         raw["analyses"] = copy.deepcopy(list(analyses))
         self._commit("Edit analyses", raw)

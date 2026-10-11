@@ -232,6 +232,7 @@ class ResultsDock(QWidget):
     issue_activated = Signal(str)
 
     SPINNER = "|/-\\"
+    TAB_TITLES = ("Diagnostics", "Links", "Readouts && probes", "Counts")
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -239,6 +240,7 @@ class ResultsDock(QWidget):
         self._busy = False
         self._spin = 0
         self._failure: str | None = None
+        self.tab_errors: dict[str, str] = {}
         self._spinner = QTimer(self)
         self._spinner.setInterval(120)
         self._spinner.timeout.connect(self._tick)
@@ -296,7 +298,10 @@ class ResultsDock(QWidget):
         _fill(self.channels, [])
         self.readouts.clear()
         self.analyses.clear()
-        self.tabs.setTabText(0, "Diagnostics")
+        self.tab_errors.clear()
+        for index, title in enumerate(self.TAB_TITLES):
+            self.tabs.setTabText(index, title)
+            self.tabs.setTabToolTip(index, "")
         self._refresh_status()
 
     def set_busy(self, busy: bool) -> None:
@@ -314,10 +319,23 @@ class ResultsDock(QWidget):
     def set_outcome(self, outcome: SimulationOutcome) -> None:
         self._outcome = outcome
         self._failure = None
-        self._fill_diagnostics(outcome)
-        self._fill_links(outcome)
-        self._fill_readouts(outcome)
-        self._fill_counts(outcome)
+        self.tab_errors.clear()
+        for index, name, fill in (
+            (0, "Diagnostics", self._fill_diagnostics),
+            (1, "Links", self._fill_links),
+            (2, "Readouts", self._fill_readouts),
+            (3, "Counts", self._fill_counts),
+        ):
+            try:
+                fill(outcome)
+            except Exception as exc:
+                self.tab_errors[name] = f"{type(exc).__name__}: {exc}"
+                self.tabs.setTabText(index, f"{self.TAB_TITLES[index]} (!)")
+                self.tabs.setTabToolTip(index, f"{name} tab could not be filled: {exc}")
+            else:
+                self.tabs.setTabToolTip(index, "")
+                if index:
+                    self.tabs.setTabText(index, self.TAB_TITLES[index])
         self._refresh_status()
 
     def _tick(self) -> None:
@@ -341,6 +359,8 @@ class ResultsDock(QWidget):
             )
         elif self._failure is None and not self._busy:
             parts.append("No results yet")
+        for name, message in self.tab_errors.items():
+            parts.append(f"{name} tab failed: {message}")
         self.status.setText("  -  ".join(parts))
 
     def _fill_diagnostics(self, outcome: SimulationOutcome) -> None:
@@ -406,13 +426,16 @@ class ResultsDock(QWidget):
                     row += [_NumItem("no light", -1.0)] + [_NumItem("") for _ in range(4)]
                 else:
                     m = light.mode
-                    row += [
-                        _NumItem(plain(light.power * 1e3), light.power * 1e3),
-                        _NumItem(plain(m.w_x * 1e3), m.w_x * 1e3),
-                        _NumItem(plain(m.w_y * 1e3), m.w_y * 1e3),
-                        _NumItem(plain(m.radius_x), m.radius_x),
-                        _NumItem(f"{light.dop:.3f}", light.dop),
-                    ]
+                    row.append(_NumItem(plain(light.power * 1e3), light.power * 1e3))
+                    if m is None:
+                        row += [_NumItem("n/a") for _ in range(3)]
+                    else:
+                        row += [
+                            _NumItem(plain(m.w_x * 1e3), m.w_x * 1e3),
+                            _NumItem(plain(m.w_y * 1e3), m.w_y * 1e3),
+                            _NumItem(plain(m.radius_x), m.radius_x),
+                        ]
+                    row.append(_NumItem(f"{light.dop:.3f}", light.dop))
                 if has_coupling:
                     eta = state.info.get("coupling_efficiency")
                     row.append(_NumItem("" if eta is None else percent(eta), eta))

@@ -1,3 +1,5 @@
+import math
+
 from PySide6.QtCore import QLineF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsView
@@ -7,6 +9,7 @@ from sequoia.gui.canvas.scene import CanvasScene
 
 PART_MIME = "application/x-sequoia-part"
 MIN_ZOOM, MAX_ZOOM = 0.1, 4.0
+MAX_GRID_LINES = 300
 
 
 class CanvasView(QGraphicsView):
@@ -23,7 +26,28 @@ class CanvasView(QGraphicsView):
         self.setAcceptDrops(True)
         self._space = False
         self._pan_last = None
-        scene.status_message.connect(self.status_message)
+        self._bound_scene: CanvasScene | None = None
+        self._bind_scene(scene)
+
+    def _bind_scene(self, scene) -> None:
+        if self._bound_scene is not None:
+            try:
+                self._bound_scene.status_message.disconnect(self.status_message)
+            except (RuntimeError, TypeError):
+                pass
+        self._bound_scene = scene
+        if scene is not None:
+            scene.status_message.connect(self.status_message)
+            scene.set_zoom(self.zoom_level)
+
+    def setScene(self, scene) -> None:
+        super().setScene(scene)
+        self._bind_scene(scene)
+
+    def _notify_zoom(self) -> None:
+        scene = self.scene()
+        if scene is not None:
+            scene.set_zoom(self.zoom_level)
 
     def set_snap(self, enabled: bool) -> None:
         self.scene().set_snap(enabled)
@@ -36,6 +60,7 @@ class CanvasView(QGraphicsView):
         target = min(MAX_ZOOM, max(MIN_ZOOM, self.zoom_level * factor))
         factor = target / self.zoom_level
         self.scale(factor, factor)
+        self._notify_zoom()
 
     def wheelEvent(self, event) -> None:
         dy = event.angleDelta().y()
@@ -48,10 +73,17 @@ class CanvasView(QGraphicsView):
         if rect.isNull():
             self.resetTransform()
             self.centerOn(0, 0)
+            self._notify_zoom()
             return
-        self.fitInView(rect.adjusted(-CELL, -CELL, CELL, CELL), Qt.KeepAspectRatio)
+        padded = rect.adjusted(-CELL, -CELL, CELL, CELL)
+        self.fitInView(padded, Qt.KeepAspectRatio)
         if self.zoom_level > 2.0:
             self.zoom_by(2.0 / self.zoom_level)
+        elif self.zoom_level < MIN_ZOOM:
+            self.resetTransform()
+            self.scale(MIN_ZOOM, MIN_ZOOM)
+            self.centerOn(padded.center())
+        self._notify_zoom()
 
     def view_center_cells(self) -> tuple[float, float]:
         c = self.mapToScene(self.viewport().rect().center())
@@ -63,14 +95,20 @@ class CanvasView(QGraphicsView):
         dark = base.lightness() < 128
         minor = QColor(255, 255, 255, 18) if dark else QColor(0, 0, 0, 20)
         major = QColor(255, 255, 255, 40) if dark else QColor(0, 0, 0, 45)
+        if not all(map(math.isfinite, (rect.left(), rect.right(), rect.top(), rect.bottom()))):
+            return
         left, right = int(rect.left() // CELL) - 1, int(rect.right() // CELL) + 1
         top, bottom = int(rect.top() // CELL) - 1, int(rect.bottom() // CELL) + 1
+        span = max(right - left, bottom - top)
+        step = 1
+        while span // step > MAX_GRID_LINES:
+            step *= 5
+        draw_minor = step == 1 and self.zoom_level * CELL >= 8
         minor_lines, major_lines = [], []
-        draw_minor = self.zoom_level * CELL >= 8
-        for i in range(left, right + 1):
+        for i in range(left - left % step, right + 1, step):
             line = QLineF(i * CELL, rect.top(), i * CELL, rect.bottom())
             (major_lines if i % 5 == 0 else minor_lines).append(line)
-        for j in range(top, bottom + 1):
+        for j in range(top - top % step, bottom + 1, step):
             line = QLineF(rect.left(), j * CELL, rect.right(), j * CELL)
             (major_lines if j % 5 == 0 else minor_lines).append(line)
         if draw_minor:

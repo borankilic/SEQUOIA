@@ -250,6 +250,10 @@ def restyle(widget: QWidget, state: str) -> None:
         widget.style().polish(widget)
 
 
+def _axis_text(label: str, unit: str) -> str:
+    return label if unit.strip() in ("", "1") else f"{label} ({unit})"
+
+
 def curve_from_raw(raw: Any) -> Curve | None:
     if isinstance(raw, Curve):
         return raw
@@ -360,6 +364,10 @@ class ScalarEditor(Editor):
             self._example = text
             self._refresh_placeholder()
 
+    def force_example(self, text: str) -> None:
+        self._example = text
+        self._refresh_placeholder()
+
     def parse(self, text: str) -> tuple[Any, str]:
         stripped = text.strip()
         if not stripped:
@@ -388,6 +396,9 @@ class ScalarEditor(Editor):
         if message:
             if text.strip():
                 self.problem.emit(message)
+            else:
+                self.edit.setText(self._shown)
+                self.problem.emit("a value is required; the previous value was kept")
             return
         self.committed.emit(raw)
 
@@ -733,8 +744,11 @@ class CurveEditor(Editor):
         plot = self.holder.plot
         plot.clear()
         plot.plot(curve.x, curve.y, pen="#2a7ab0")
-        plot.setLabel("bottom", f"{curve.x_label} ({curve.x_unit})")
-        plot.setLabel("left", f"{curve.y_label} ({curve.y_unit})")
+        for side in ("bottom", "left"):
+            plot.getAxis(side).enableAutoSIPrefix(False)
+        plot.getAxis("left").setWidth(56)
+        plot.setLabel("bottom", _axis_text(curve.x_label, curve.x_unit))
+        plot.setLabel("left", _axis_text(curve.y_label, curve.y_unit))
         self.holder.setVisible(True)
 
     def clear_value(self) -> None:
@@ -899,10 +913,12 @@ class FieldRow(QWidget):
         track_default: bool = True,
         can_unset: bool = True,
         override_mode: bool = False,
+        label: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.name = name
+        self._explicit: Any = MISSING
         self.spec = spec
         self.editor = editor
         self._commit = commit
@@ -914,7 +930,7 @@ class FieldRow(QWidget):
         self._committing = False
         self.is_set = False
 
-        self.label = QLabel(name)
+        self.label = QLabel(label or name)
         if description:
             self.label.setToolTip(description)
             editor.setToolTip(description)
@@ -960,6 +976,9 @@ class FieldRow(QWidget):
         try:
             self._commit(self.name, value)
         except ValueError as exc:
+            self._committing = False
+            self._key = None
+            self._render(self._explicit)
             self._show_error(str(exc))
             return False
         finally:
@@ -1000,6 +1019,7 @@ class FieldRow(QWidget):
 
     def _render(self, explicit: Any) -> None:
         fallback = self._fallback
+        self._explicit = explicit
         is_set = explicit is not MISSING and explicit is not None
         shown = explicit if is_set else fallback
         present = shown is not None and shown is not MISSING
@@ -1041,6 +1061,9 @@ class ModelForm(QWidget):
         editors: Mapping[str, Callable[[FieldSpec], Editor]] | None = None,
         specs: Mapping[str, FieldSpec] | None = None,
         override_mode: bool = False,
+        labels: Mapping[str, str] | None = None,
+        descriptions: Mapping[str, str] | None = None,
+        required: tuple[str, ...] = (),
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1063,9 +1086,11 @@ class ModelForm(QWidget):
                 spec,
                 factory(spec),
                 commit,
-                description=info.description or "",
+                description=(descriptions or {}).get(name) or info.description or "",
                 track_default=track_defaults,
                 override_mode=override_mode,
+                can_unset=name not in required,
+                label=(labels or {}).get(name),
             )
             layout.addWidget(row)
             self.rows[name] = row

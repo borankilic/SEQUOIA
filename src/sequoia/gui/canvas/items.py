@@ -39,28 +39,52 @@ VALID_COLOR = QColor("#2ecc71")
 INVALID_COLOR = QColor("#e74c3c")
 
 
-def _font(pixels: float, bold: bool = False, italic: bool = False) -> QFont:
-    font = QFont(QApplication.font())
-    font.setPixelSize(int(pixels))
-    font.setBold(bold)
-    font.setItalic(italic)
-    return font
+MIN_SCREEN_FONT = 8.0
 
-
+_FONT_SPECS = {
+    "type": (9, False, False),
+    "id": (11, True, False),
+    "port": (8, False, False),
+    "label": (10, False, False),
+    "label_italic": (10, False, True),
+}
 _FONTS: dict = {}
 
 
-def font(name: str) -> QFont:
-    if name not in _FONTS:
-        spec = {
-            "type": (9, False, False),
-            "id": (11, True, False),
-            "port": (8, False, False),
-            "label": (10, False, False),
-            "label_italic": (10, False, True),
-        }[name]
-        _FONTS[name] = _font(*spec)
-    return _FONTS[name]
+def font_scale(name: str, zoom: float) -> float:
+    base = _FONT_SPECS[name][0]
+    if zoom <= 0:
+        return 1.0
+    needed = MIN_SCREEN_FONT / (base * zoom)
+    return max(1.0, math.ceil(needed * 4) / 4)
+
+
+def font(name: str, zoom: float = 1.0) -> QFont:
+    pixels, bold, italic = _FONT_SPECS[name]
+    size = int(round(pixels * font_scale(name, zoom)))
+    key = (name, size)
+    if key not in _FONTS:
+        f = QFont(QApplication.font())
+        f.setPixelSize(size)
+        f.setBold(bold)
+        f.setItalic(italic)
+        _FONTS[key] = f
+    return _FONTS[key]
+
+
+def body_size(instance_id: str, type_label: str, ports) -> tuple[float, float]:
+    ins = [p for p in ports if p.direction == PortDirection.IN]
+    outs = [p for p in ports if p.direction == PortDirection.OUT]
+    n = max(len(ins), len(outs), 1)
+    height = max(1.5, 0.5 * (n + 1)) * CELL
+    text_w = max(
+        QFontMetricsF(font("id")).horizontalAdvance(instance_id),
+        QFontMetricsF(font("type")).horizontalAdvance(type_label),
+    )
+    fm = QFontMetricsF(font("port"))
+    side = max([fm.horizontalAdvance(p.name) for p in ports if p.name not in ("in", "out")] or [0])
+    need = text_w + 2 * side + 24
+    return max(2, math.ceil(need / CELL)) * CELL, height
 
 
 def snap_value(value: float, step: float) -> float:
@@ -131,18 +155,7 @@ class ComponentItem(QGraphicsItem):
     def _layout(self) -> None:
         ins = [p for p in self.ports if p.direction == PortDirection.IN]
         outs = [p for p in self.ports if p.direction == PortDirection.OUT]
-        n = max(len(ins), len(outs), 1)
-        self._h = max(1.5, 0.5 * (n + 1)) * CELL
-        text_w = max(
-            QFontMetricsF(font("id")).horizontalAdvance(self.instance_id),
-            QFontMetricsF(font("type")).horizontalAdvance(self.type_label),
-        )
-        fm = QFontMetricsF(font("port"))
-        side = max(
-            [fm.horizontalAdvance(p.name) for p in self.ports if self._shows_label(p.name)] or [0]
-        )
-        need = text_w + 2 * side + 24
-        self._w = max(2, math.ceil(need / CELL)) * CELL
+        self._w, self._h = body_size(self.instance_id, self.type_label, self.ports)
         self._local = {}
         for group, x, inward in ((ins, -self._w / 2, 1.0), (outs, self._w / 2, -1.0)):
             for i, port in enumerate(group):
@@ -269,9 +282,20 @@ class ComponentItem(QGraphicsItem):
         painter.save()
         painter.rotate(self._text_angle())
         painter.setPen(text_color)
-        avail = self._w - 8 if abs(self._text_angle()) < 1e-6 or True else self._w
-        fm_t, fm_i = QFontMetricsF(font("type")), QFontMetricsF(font("id"))
-        painter.setFont(font("type"))
+        zoom = self.canvas.zoom
+        f_type, f_id, f_port = font("type", zoom), font("id", zoom), font("port", zoom)
+        fm_p = QFontMetricsF(f_port)
+        shown = [
+            p.name
+            for p in self.ports
+            if p.name in self._local
+            and self._shows_label(p.name)
+            and fm_p.horizontalAdvance(p.name) <= self._w / 2 - 6
+        ]
+        side = max([fm_p.horizontalAdvance(n) for n in shown] or [0.0])
+        avail = max(self._w - 2 * side - 10, min(self._w - 8, 36.0))
+        fm_t, fm_i = QFontMetricsF(f_type), QFontMetricsF(f_id)
+        painter.setFont(f_type)
         gray = QColor(text_color)
         gray.setAlpha(150)
         painter.setPen(gray)
@@ -280,7 +304,7 @@ class ComponentItem(QGraphicsItem):
             Qt.AlignCenter,
             fm_t.elidedText(self.type_label, Qt.ElideRight, avail),
         )
-        painter.setFont(font("id"))
+        painter.setFont(f_id)
         painter.setPen(text_color)
         painter.drawText(
             QRectF(-avail / 2, 1, avail, fm_i.height()),
@@ -291,7 +315,6 @@ class ComponentItem(QGraphicsItem):
 
         ang = self._text_angle()
         t = (math.cos(math.radians(ang)), math.sin(math.radians(ang)))
-        fm_p = QFontMetricsF(font("port"))
         for port in self.ports:
             name = port.name
             if name not in self._local:
@@ -315,12 +338,12 @@ class ComponentItem(QGraphicsItem):
             painter.setBrush(color)
             painter.drawPath(marker_path(port.kind))
             painter.restore()
-            if self._shows_label(name):
+            if name in shown:
                 d = self.port_inward(name)
                 painter.save()
                 painter.translate(p + d * 7)
                 painter.rotate(ang)
-                painter.setFont(font("port"))
+                painter.setFont(f_port)
                 painter.setPen(gray)
                 tw = fm_p.horizontalAdvance(name)
                 forward = t[0] * d.x() + t[1] * d.y() >= 0
@@ -343,8 +366,14 @@ class ProbeItem(QGraphicsItem):
         self.setToolTip(f"{probe_id} ({part}) on {link_id}")
 
     def boundingRect(self) -> QRectF:
-        w = QFontMetricsF(font("port")).horizontalAdvance(self.probe_id)
-        return QRectF(-9, -22, max(18.0, w + 8), 32)
+        f = font("port", self.canvas.zoom)
+        w = QFontMetricsF(f).horizontalAdvance(self.probe_id)
+        return QRectF(
+            -9,
+            -14 - QFontMetricsF(f).height() - 4,
+            max(18.0, w + 8),
+            18 + QFontMetricsF(f).height() + 14,
+        )
 
     def shape(self) -> QPainterPath:
         path = QPainterPath()
@@ -369,6 +398,6 @@ class ProbeItem(QGraphicsItem):
         painter.setPen(QPen(pal.windowText().color(), 1))
         painter.setBrush(color)
         painter.drawPath(tri)
-        painter.setFont(font("port"))
+        painter.setFont(font("port", self.canvas.zoom))
         painter.setPen(pal.windowText().color())
         painter.drawText(QPointF(-8, -14), self.probe_id)

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QScrollArea,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -14,7 +15,8 @@ from PySide6.QtWidgets import (
 from sequoia.components.base import get_component
 from sequoia.data import Length
 from sequoia.errors import SequoiaError
-from sequoia.gui.document import SetupDocument
+from sequoia.gui.document import MAX_ABS_CELLS, SetupDocument
+from sequoia.gui.inspector.analyses import AnalysesEditor
 from sequoia.gui.inspector.fields import (
     MISSING,
     STYLE,
@@ -25,6 +27,8 @@ from sequoia.gui.inspector.fields import (
     LiteralEditor,
     ModelForm,
     NumberEditor,
+    ScalarEditor,
+    StrEditor,
     analyze,
     error_message,
     make_editor,
@@ -34,6 +38,27 @@ from sequoia.setup.validate import FIBER_TYPE
 
 LINK_MODELS = {"free_space": FreeSpaceLink, "fiber": FiberLink, "cable": CableLink}
 _LINK_SKIP = ("id", "kind", "src", "dst")
+MEDIA = ("air", "vacuum")
+LINK_LABELS = {
+    "length": "Length",
+    "lock_to_canvas": "Lock length to canvas distance",
+    "medium": "Medium",
+    "fiber": "Fiber part",
+    "connector_loss_db": "Connector loss (dB)",
+    "polarization": "Polarization transform",
+    "delay": "Cable delay",
+}
+LINK_HINTS = {
+    "length": "Physical path length of the link, e.g. 100 mm or 0.5 m.",
+    "lock_to_canvas": "Use the distance between the two ports on the canvas "
+    "(one grid cell is the setup's grid cell size) instead of a typed length.",
+    "medium": "Propagation medium of the free-space path.",
+    "fiber": "Library fiber part this link is made of.",
+    "connector_loss_db": "Insertion loss of the connectors in dB (0 or more).",
+    "polarization": "Fixed polarization rotation of the fiber.",
+    "delay": "Signal delay of the cable, e.g. 5 ns.",
+}
+LINK_EXAMPLES = {"length": "100 mm", "delay": "5 ns"}
 
 
 def _label(text: str, role: str = "", wrap: bool = True) -> QLabel:
@@ -211,6 +236,16 @@ class InstanceForm(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.header)
+        spec = FieldSpec("str")
+        self.id_row = FieldRow(
+            "id",
+            spec,
+            StrEditor(spec),
+            self._rename,
+            description="The identifier used in links, probes and analyses; renaming updates them.",
+            track_default=False,
+        )
+        layout.addWidget(self.id_row)
         if tag == "i":
             layout.addWidget(self._build_placement())
         part = self.header.part
@@ -237,6 +272,11 @@ class InstanceForm(QWidget):
             if item.id == self.item_id:
                 return item
         raise KeyError(self.item_id)
+
+    def _rename(self, _name: str, value: Any) -> None:
+        new_id = str(value).strip()
+        if new_id and new_id != self.item_id:
+            self.document.rename_instance(self.item_id, new_id)
 
     def _set_setting(self, name: str, value: Any) -> None:
         self.document.set_setting(self.item_id, name, value)
@@ -272,15 +312,15 @@ class InstanceForm(QWidget):
         rows = {
             "x": FieldRow(
                 "x (cells)",
-                float_spec(),
-                NumberEditor(float_spec()),
+                float_spec(-MAX_ABS_CELLS, MAX_ABS_CELLS),
+                NumberEditor(float_spec(-MAX_ABS_CELLS, MAX_ABS_CELLS)),
                 commit_pos(0),
                 track_default=False,
             ),
             "y": FieldRow(
                 "y (cells)",
-                float_spec(),
-                NumberEditor(float_spec()),
+                float_spec(-MAX_ABS_CELLS, MAX_ABS_CELLS),
+                NumberEditor(float_spec(-MAX_ABS_CELLS, MAX_ABS_CELLS)),
                 commit_pos(1),
                 track_default=False,
             ),
@@ -301,19 +341,42 @@ class InstanceForm(QWidget):
         }
         rows["rotation"].editor.spin.setSingleStep(15.0)
         self.placement = rows
+        self.rotation_slider = QSlider(Qt.Orientation.Horizontal)
+        self.rotation_slider.setRange(0, 23)
+        self.rotation_slider.setPageStep(6)
+        self.rotation_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.rotation_slider.setTickInterval(6)
+        self.rotation_slider.setToolTip("Rotation in 15 degree steps")
+        self._slider_loading = False
+
+        def slide(value: int) -> None:
+            if self._slider_loading:
+                return
+            try:
+                doc.rotate_instance(iid, float(value * 15))
+            except ValueError:
+                pass
+
+        self.rotation_slider.valueChanged.connect(slide)
         layout.addWidget(_label("<b>Placement</b>"))
-        for row in rows.values():
+        for name, row in rows.items():
             layout.addWidget(row)
+            if name == "rotation":
+                layout.addWidget(self.rotation_slider)
         return box
 
     def refresh(self) -> None:
         placed = self._placed()
+        self.id_row.refresh(placed.id)
         if self.tag == "i":
             x, y = placed.position
             self.placement["x"].refresh(x)
             self.placement["y"].refresh(y)
             self.placement["rotation"].refresh(placed.rotation)
             self.placement["flipped"].refresh(placed.flipped)
+            self._slider_loading = True
+            self.rotation_slider.setValue(int(round(placed.rotation / 15.0)) % 24)
+            self._slider_loading = False
         error = self.document.component_error(self.item_id)
         self.header.set_issue(f"Invalid: {error}" if error else None)
         part = self.header.part
@@ -339,6 +402,16 @@ class LinkForm(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(_label(f"<b>Link {link.id}</b>"))
         layout.addWidget(_label(f"{link.kind}: {link.src} -> {link.dst}", "muted"))
+        id_spec = FieldSpec("str")
+        self.id_row = FieldRow(
+            "id",
+            id_spec,
+            StrEditor(id_spec),
+            self._rename,
+            description="The identifier used by probes and diagnostics; renaming updates them.",
+            track_default=False,
+        )
+        layout.addWidget(self.id_row)
         editors: dict = {}
         specs: dict = {}
         self.fiber_editor: LiteralEditor | None = None
@@ -347,6 +420,8 @@ class LinkForm(QWidget):
             specs["polarization"] = FieldSpec("json")
             editors["fiber"] = self._fiber_editor
             editors["polarization"] = lambda spec: PolarizationEditor(spec)
+        if link.kind == "free_space":
+            specs["medium"] = FieldSpec("literal", literals=MEDIA)
         self.form = ModelForm(
             LINK_MODELS[link.kind],
             self._commit,
@@ -354,7 +429,14 @@ class LinkForm(QWidget):
             skip=_LINK_SKIP,
             editors=editors,
             specs=specs,
+            labels=LINK_LABELS,
+            descriptions=LINK_HINTS,
+            required=("length", "delay", "fiber"),
         )
+        for name, text in LINK_EXAMPLES.items():
+            row = self.form.rows.get(name)
+            if row is not None and isinstance(row.editor, ScalarEditor):
+                row.editor.force_example(text)
         layout.addWidget(self.form)
         layout.addStretch(1)
         self.refresh()
@@ -379,7 +461,13 @@ class LinkForm(QWidget):
     def _commit(self, name: str, value: Any) -> None:
         self.document.set_link_field(self.link_id, name, value)
 
+    def _rename(self, _name: str, value: Any) -> None:
+        new_id = str(value).strip()
+        if new_id and new_id != self.link_id:
+            self.document.rename_link(self.link_id, new_id)
+
     def refresh(self) -> None:
+        self.id_row.refresh(self.link_id)
         raw = self._link().model_dump(by_alias=True)
         explicit = {k: v for k, v in raw.items() if k not in _LINK_SKIP}
         if "polarization" in explicit and isinstance(explicit["polarization"], dict):
@@ -424,6 +512,9 @@ class SetupForm(QWidget):
         }
         for row in self.rows.values():
             layout.addWidget(row)
+        layout.addWidget(_label("<b>Analyses</b>"))
+        self.analyses = AnalysesEditor(document)
+        layout.addWidget(self.analyses)
         self.summary = _label("", "muted")
         layout.addWidget(self.summary)
         layout.addStretch(1)
@@ -443,6 +534,8 @@ class SetupForm(QWidget):
         self.rows["name"].refresh(s.name)
         self.rows["description"].refresh(s.description)
         self.rows["grid_cell"].refresh(s.grid_cell.model_dump())
+        if self.analyses.form is None:
+            self.analyses.refresh()
         self.summary.setText(
             f"{len(s.instances)} instances, {len(s.links)} links, {len(s.probes)} probes"
         )
@@ -520,7 +613,11 @@ class InspectorPanel(QWidget):
         box.setContentsMargins(8, 8, 8, 8)
         box.addWidget(form)
         self.form = form
+        previous = self.scroll.takeWidget()
         self.scroll.setWidget(holder)
+        if previous is not None:
+            previous.hide()
+            previous.deleteLater()
 
     def _on_changed(self) -> None:
         sig = self._current_signature()

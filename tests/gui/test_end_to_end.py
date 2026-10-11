@@ -1,16 +1,20 @@
-import re
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QMimeData, QPointF, QSettings, Qt
+from PySide6.QtGui import QDropEvent
 
 from sequoia.engines.cache import RunCache
 from sequoia.engines.classical import simulate
 from sequoia.engines.rates import has_rate_devices, simulate_rates
 from sequoia.engines.report import format_rates_report, format_report
+from sequoia.gui.canvas import PART_MIME
+from sequoia.gui.canvas.items import CELL
 from sequoia.gui.main_window import MainWindow
+from sequoia.gui.palette import part_label
 from sequoia.library.store import Library
-from sequoia.setup.io import load_setup
+from sequoia.setup.io import load_setup, save_setup
+from sequoia.setup.model import Setup
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "setups" / "hbt_heralded.yaml"
@@ -35,66 +39,113 @@ def drag_link(scene, src, dst):
     return scene.finish_link(end)
 
 
-def build_hbt_from_scratch(window, target_example):
-    doc, scene = window.document, window.scene
-    example = load_setup(target_example)
-    assert not doc.setup.instances
+def commit_text(editor, text):
+    editor = getattr(editor, "value_editor", editor)
+    editor.edit.setText(text)
+    editor.commit()
 
-    with doc.macro("Place parts"):
-        for inst in example.instances:
-            if inst.id == "pump":
-                continue
-            doc.add_instance(inst.part, inst.position, instance_id=inst.id)
-    new_id = scene.add_part("sources/laser_405_cw", example.instances[0].position)
-    assert new_id == "laser_405_cw"
-    assert not window.hint.isVisible()
-    doc.remove_instance(new_id)
-    doc.add_instance("sources/laser_405_cw", example.instances[0].position, instance_id="pump")
+
+def drop_part(window, ref, position):
+    mime = QMimeData()
+    mime.setData(PART_MIME, ref.encode("utf-8"))
+    point = window.view.mapFromScene(QPointF(position[0] * CELL, position[1] * CELL))
+    event = QDropEvent(QPointF(point), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    window.view.dropEvent(event)
+    selected = window.scene.selected_ids()
+    assert len(selected) == 1
+    return selected[0]
+
+
+def augmented_example(tmp_path):
+    raw = load_setup(EXAMPLE).model_dump(by_alias=True)
+    for inst in raw["instances"]:
+        if inst["id"] == "cpl_signal":
+            inst["settings"] = {"defocus": "0.5 mm"}
+        if inst["id"] == "spad_a":
+            inst["overrides"] = {"dark_count_rate": "250 Hz"}
+    raw["probes"] = [{"id": "pm_signal", "part": "probes/power_meter", "link": "s_signal"}]
+    setup = Setup.model_validate(raw)
+    path = tmp_path / "hbt_augmented.yaml"
+    save_setup(setup, path)
+    return path
+
+
+def build_with_gui(window, target_path):
+    doc, scene = window.document, window.scene
+    example = load_setup(target_path)
+    assert not doc.setup.instances
+    scene.choose_fiber = lambda refs: "fiber/smf_810"
 
     for inst in example.instances:
+        new_id = drop_part(window, inst.part, inst.position)
+        form = window.inspector.form
+        commit_text(form.id_row.editor, inst.id)
+        assert window.scene.selected_ids() == [inst.id], (new_id, inst.id)
+        form = window.inspector.form
         if inst.rotation:
-            doc.rotate_instance(inst.id, inst.rotation)
+            form.placement["rotation"].editor.spin.setValue(inst.rotation)
+        for name, value in inst.settings.items():
+            commit_text(form.settings_form.rows[name].editor, value)
+        for name, value in inst.overrides.items():
+            form.overrides_group.set_expanded(True)
+            commit_text(form.overrides_form.rows[name].editor, value)
+    assert not window.hint.isVisible()
 
     for link in example.links:
-        if link.kind == "free_space":
-            link_id = drag_link(scene, link.src, link.dst)
-            assert link_id is not None
-            doc.set_link_field(link_id, "length", link.length.model_dump(by_alias=True))
+        link_id = drag_link(window.scene, link.src, link.dst)
+        assert link_id is not None, (link.src, link.dst)
+        window.scene.select(link_id)
+        form = window.inspector.form
+        assert form.link_kind == link.kind
+        field = "delay" if link.kind == "cable" else "length"
+        target = getattr(link, field)
+        if link.kind == "fiber":
+            assert doc.setup.links[-1].fiber == link.fiber
+        if link.id == "s_focus":
+            window.scene.begin_edit_link(link_id)
+            window.scene.link_editor.setText(f"{target.value:g} {target.unit}")
+            window.scene.link_editor.editingFinished.emit()
         else:
-            kind, reason = doc.can_connect(link.src, link.dst)
-            assert kind == link.kind, reason
-            fields = {}
-            if link.kind == "fiber":
-                fields = {"fiber": link.fiber, "length": link.length.model_dump(by_alias=True)}
-            else:
-                fields = {"delay": link.delay.model_dump(by_alias=True)}
-            doc.add_link(kind, link.src, link.dst, **fields)
+            commit_text(form.form.rows[field].editor, f"{target.value:g} {target.unit}")
+        window.scene.select(link_id)
+        commit_text(window.inspector.form.id_row.editor, link.id)
+        assert window.scene.selected_ids() == [link.id]
 
-    raw = example.model_dump(by_alias=True)
-    doc.set_name(raw["name"])
-    doc.set_description(raw["description"])
-    doc.set_analyses(raw["analyses"])
+    for probe in example.probes:
+        point = window.scene.link_items[probe.link].point_at(0.5)
+        menu = window.scene.build_context_menu(point)
+        info = next(i for i in doc.library.index() if i.ref == probe.part)
+        add = next(a for a in menu.actions() if a.text() == "Add probe")
+        next(a for a in add.menu().actions() if a.text() == part_label(info)).trigger()
+        (new_id,) = window.scene.selected_ids()
+        assert new_id in window.scene.probe_items
+        commit_text(window.inspector.form.id_row.editor, probe.id)
+
+    window.scene.select_many([])
+    form = window.inspector.form
+    commit_text(form.rows["name"].editor, example.name)
+    form.rows["description"].editor.text.setPlainText(example.description)
+    form.rows["description"].editor.commit()
+    editor = window.inspector.form.analyses
+    for spec in example.analyses:
+        editor.add_button.click()
+        analysis = editor.form
+        analysis.kind.setCurrentIndex(analysis.kind.findData(spec["type"]))
+        analysis.name.setText(spec["name"])
+        roles = (
+            [spec["herald"], spec["a"], spec["b"]]
+            if spec["type"] == "heralded_g2"
+            else spec["channels"]
+        )
+        for combo, channel in zip(analysis.channel_combos, roles, strict=False):
+            combo.setCurrentIndex(combo.findData(channel))
+        if "window" in spec:
+            analysis.window.edit.setText(spec["window"])
+        if "range" in spec:
+            analysis.range.edit.setText(spec["range"])
+            analysis.bins.setValue(spec["bins"])
+        assert analysis.apply(), analysis.error.text()
     return example
-
-
-def normalized(setup):
-    raw = setup.model_dump(by_alias=True)
-    instances = {i["id"]: {k: v for k, v in i.items() if k != "position"} for i in raw["instances"]}
-    links = {}
-    for link in raw["links"]:
-        link = dict(link)
-        link.pop("id")
-        links[(link.get("from"), link.get("to"))] = link
-    probes = {p["id"]: p for p in raw["probes"]}
-    return {
-        "name": raw["name"],
-        "description": raw["description"],
-        "grid_cell": raw["grid_cell"],
-        "instances": instances,
-        "links": links,
-        "probes": probes,
-        "analyses": raw["analyses"],
-    }
 
 
 def report(path):
@@ -109,8 +160,13 @@ def report(path):
     return text
 
 
-def test_build_hbt_from_scratch(window, tmp_path, qtbot):
-    example = build_hbt_from_scratch(window, EXAMPLE)
+@pytest.fixture
+def augmented(tmp_path):
+    return augmented_example(tmp_path)
+
+
+def test_build_hbt_from_scratch(window, tmp_path, qtbot, augmented):
+    example = build_with_gui(window, augmented)
     assert window.isWindowModified()
     saved = tmp_path / "hbt_built.yaml"
     window.ask_save_path = lambda: str(saved)
@@ -119,41 +175,28 @@ def test_build_hbt_from_scratch(window, tmp_path, qtbot):
 
     reloaded = load_setup(saved)
     assert len(reloaded.instances) == 14 and len(reloaded.links) == 15
-    assert normalized(reloaded) == normalized(example)
-    assert normalized(reloaded) == normalized(load_setup(EXAMPLE))
-    for link in reloaded.links:
-        assert link.id
-    assert {i.id for i in reloaded.instances} == {i.id for i in example.instances}
-
-    by_ends = {(link.src, link.dst): link.id for link in load_setup(EXAMPLE).links}
-    rename = {link.id: by_ends[(link.src, link.dst)] for link in reloaded.links}
-    pattern = re.compile(r"\b(" + "|".join(sorted(rename, key=len, reverse=True)) + r")\b")
-
-    def squeeze(text):
-        return [" ".join(line.split()) for line in text.splitlines()]
-
-    def rename_line(line):
-        head, _, tail = line.partition(" ")
-        bare = head.rstrip(":")
-        if bare in rename and tail.split()[:1] != ["kind"]:
-            head = rename[bare] + head[len(bare) :]
-        tail = pattern.sub(
-            lambda m: m.group(1) if m.group(1) == "link" else rename[m.group(1)], tail
-        )
-        return f"{head} {tail}".strip()
-
-    renamed = [rename_line(line) for line in squeeze(report(saved))]
-    assert renamed == squeeze(report(EXAMPLE))
+    assert len(reloaded.probes) == 1 and len(reloaded.analyses) == 4
+    built = reloaded.model_dump(by_alias=True)
+    wanted = example.model_dump(by_alias=True)
+    assert any(i["settings"] for i in wanted["instances"])
+    assert any(i["overrides"] for i in wanted["instances"])
+    assert built["probes"] == wanted["probes"] != []
+    assert built["analyses"] == wanted["analyses"]
+    assert built["instances"] == wanted["instances"]
+    assert built["links"] == wanted["links"]
+    assert built == wanted
+    assert report(saved) == report(augmented)
 
     qtbot.waitUntil(lambda: window.results.outcome is not None, timeout=WAIT)
     qtbot.waitUntil(lambda: not window.controller.busy, timeout=WAIT)
     outcome = window.results.outcome
     assert outcome.ok and outcome.rates is not None
     assert outcome.revision == window.controller.revision
+    assert outcome.classical.probes and "pm_signal" in outcome.classical.probes
 
 
-def test_undo_everything_gives_empty_setup(window):
-    build_hbt_from_scratch(window, EXAMPLE)
+def test_undo_everything_gives_empty_setup(window, augmented):
+    build_with_gui(window, augmented)
     stack = window.document.undo_stack
     assert stack.count() > 10
     while stack.canUndo():
@@ -167,6 +210,7 @@ def test_undo_everything_gives_empty_setup(window):
     while stack.canRedo():
         stack.redo()
     assert len(window.document.setup.instances) == 14
+    assert len(window.document.setup.probes) == 1
 
 
 def test_example_open_shows_overlap_offer_and_results(window, qtbot):

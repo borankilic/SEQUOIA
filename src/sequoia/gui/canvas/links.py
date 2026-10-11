@@ -56,7 +56,8 @@ class LinkLabel(QGraphicsItem):
             self.update()
 
     def _font(self):
-        return font("label_italic" if self.italic else "label")
+        zoom = getattr(self.parentItem().canvas, "zoom", 1.0)
+        return font("label_italic" if self.italic else "label", zoom)
 
     def boundingRect(self) -> QRectF:
         fm = QFontMetricsF(self._font())

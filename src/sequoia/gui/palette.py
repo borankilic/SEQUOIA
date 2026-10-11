@@ -22,7 +22,7 @@ class _PartTree(QTreeWidget):
         return [PART_MIME]
 
 
-def _part_label(info: PartInfo) -> str:
+def part_label(info: PartInfo) -> str:
     pieces = [p for p in (info.manufacturer, info.model) if p]
     return " ".join(pieces) if pieces else info.ref.rsplit("/", 1)[-1]
 
@@ -99,7 +99,7 @@ class Palette(QWidget):
 
     def _part(self, info: PartInfo, parent: QTreeWidgetItem) -> QTreeWidgetItem:
         item = QTreeWidgetItem(parent)
-        item.setText(0, _part_label(info))
+        item.setText(0, part_label(info))
         item.setData(0, _REF_ROLE, info.ref)
         item.setFlags(
             Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled

@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
+from PySide6.QtCore import QEvent, QPointF, QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QToolButton,
@@ -19,7 +20,8 @@ from PySide6.QtWidgets import (
 
 import sequoia.components.builtin  # noqa: F401
 from sequoia.errors import SequoiaError
-from sequoia.gui.canvas import CanvasScene, CanvasView, auto_layout
+from sequoia.gui.canvas import CanvasScene, CanvasView, plan_layout
+from sequoia.gui.canvas.items import CELL
 from sequoia.gui.document import SetupDocument
 from sequoia.gui.inspector import InspectorPanel
 from sequoia.gui.palette import Palette
@@ -30,6 +32,7 @@ from sequoia.library.store import Library
 ORGANIZATION = "SEQUOIA"
 APPLICATION = "SEQUOIA"
 MAX_RECENT = 8
+OVERLAP_PX = 10.0
 FILE_FILTER = "Setup files (*.yaml *.yml);;All files (*)"
 
 HINT = (
@@ -175,16 +178,29 @@ class MainWindow(QMainWindow):
 
         self.act_undo = self._action("Undo", self.undo, S.StandardKey.Undo)
         self.act_redo = self._action("Redo", self.redo, [S("Ctrl+Shift+Z"), S("Ctrl+Y")])
-        self.act_delete = self._canvas_action("Delete", self.scene.delete_selected, S("Delete"))
-        self.act_copy = self._canvas_action("Copy", self.scene.copy_selection, S.StandardKey.Copy)
-        self.act_paste = self._canvas_action("Paste", self.scene.paste, S.StandardKey.Paste)
+        self.act_delete = self._canvas_action(
+            "Delete", lambda: self.scene.delete_selected(), S("Delete")
+        )
+        self.act_copy = self._canvas_action(
+            "Copy", lambda: self.scene.copy_selection(), S.StandardKey.Copy
+        )
+        self.act_paste = self._canvas_action(
+            "Paste", lambda: self.scene.paste(), S.StandardKey.Paste
+        )
         self.act_rotate = self._canvas_action(
             "Rotate", lambda: self.scene.rotate_selected(90.0), "R"
         )
         self.act_rotate_back = self._canvas_action(
             "Rotate counter-clockwise", lambda: self.scene.rotate_selected(-90.0), "Shift+R"
         )
-        self.act_flip = self._canvas_action("Flip", self.scene.flip_selected, "F")
+        self.act_flip = self._canvas_action("Flip", lambda: self.scene.flip_selected(), "F")
+        self.act_remove_probe = self._action("Remove probe", self.remove_selected_probes)
+        self.act_remove_probe.setEnabled(False)
+        self.menu_add_probe = QMenu("Add probe", self)
+        self.menu_add_probe.setEnabled(False)
+        self.menu_add_probe.aboutToShow.connect(self._fill_probe_menu)
+        self.menu_add_instance = QMenu("Add instance", self)
+        self.menu_add_instance.aboutToShow.connect(self._fill_instance_menu)
         self.act_layout = self._action("Auto layout", self.auto_layout, "Ctrl+L")
         self.act_snap = self._action(
             "Snap to grid", self.view.set_snap, "Ctrl+G", checkable=True, checked=True
@@ -224,6 +240,10 @@ class MainWindow(QMainWindow):
         edit.addSeparator()
         for action in (self.act_rotate, self.act_rotate_back, self.act_flip):
             edit.addAction(action)
+        edit.addSeparator()
+        edit.addMenu(self.menu_add_probe)
+        edit.addAction(self.act_remove_probe)
+        edit.addMenu(self.menu_add_instance)
         edit.addSeparator()
         edit.addAction(self.act_layout)
         edit.addAction(self.act_snap)
@@ -356,7 +376,30 @@ class MainWindow(QMainWindow):
         s = self.scene
         return {*s.component_items, *s.link_items, *s.probe_items}
 
+    def _fill_probe_menu(self) -> None:
+        self.scene.populate_probe_menu(self.menu_add_probe)
+
+    def _fill_instance_menu(self) -> None:
+        x, y = self.view.view_center_cells()
+        point = QPointF(self.scene.snap_cells(x) * CELL, self.scene.snap_cells(y) * CELL)
+        self.scene.populate_instance_menu(self.menu_add_instance, point)
+
+    def remove_selected_probes(self) -> None:
+        probes = [i for i in self.scene.selected_ids() if i in self.scene.probe_items]
+        if not probes:
+            return
+        with self.document.macro("Remove probes"):
+            for probe_id in probes:
+                self.document.remove_probe(probe_id)
+
+    def _update_selection_actions(self, ids: list[str]) -> None:
+        links = [i for i in ids if i in self.scene.link_items]
+        probes = [i for i in ids if i in self.scene.probe_items]
+        self.menu_add_probe.setEnabled(len(ids) == 1 and len(links) == 1)
+        self.act_remove_probe.setEnabled(bool(probes))
+
     def _on_selection(self, ids: list[str]) -> None:
+        self._update_selection_actions(ids)
         if len(ids) == 1:
             item_id = ids[0]
             if item_id in self.scene.component_items:
@@ -436,7 +479,7 @@ class MainWindow(QMainWindow):
         for i, a in enumerate(rects):
             for b in rects[i + 1 :]:
                 box = a.intersected(b)
-                if box.width() > 1.0 and box.height() > 1.0:
+                if box.width() > OVERLAP_PX and box.height() > OVERLAP_PX:
                     return True
         return False
 
@@ -450,7 +493,9 @@ class MainWindow(QMainWindow):
     def auto_layout(self) -> None:
         if not self.document.setup.instances:
             return
-        self.scene.apply_layout(auto_layout(self.document))
+        viewport = self.view.viewport()
+        plan = plan_layout(self.document, (float(viewport.width()), float(viewport.height())))
+        self.scene.apply_layout(plan.positions, plan.rotations)
         self.overlap_bar.hide()
         self.view.fit_to_content()
 
@@ -532,11 +577,12 @@ class MainWindow(QMainWindow):
         return True
 
     def _install_document(self, document: SetupDocument) -> None:
+        new_scene = CanvasScene(document)
         self._unbind_document()
         old_doc, old_scene = self.document, self.scene
         self.controller.stop()
         self.document = document
-        self.scene = CanvasScene(document)
+        self.scene = new_scene
         self.view.setScene(self.scene)
         self.scene.set_snap(self.act_snap.isChecked())
         self.inspector.set_document(document)
@@ -572,10 +618,13 @@ class MainWindow(QMainWindow):
     def _load(self, path: Path | str) -> bool:
         try:
             document = SetupDocument.open(path, self.library)
+            self._install_document(document)
         except (SequoiaError, OSError, ValueError) as exc:
             self.show_error("Cannot open", f"{path}\n\n{exc}")
             return False
-        self._install_document(document)
+        except Exception as exc:
+            self.show_error("Cannot open", f"{path}\n\n{type(exc).__name__}: {exc}")
+            return False
         self._add_recent(Path(path))
         self.view.fit_to_content()
         self._check_overlap()

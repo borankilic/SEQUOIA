@@ -71,7 +71,8 @@ Python access:
 
 ```python
 from sequoia.engines.rates import simulate_rates
-from sequoia.analysis import metrics          # car, chsh_s, tomography_settings, mle_density_matrix, ...
+from sequoia.analysis import metrics  # car, chsh_s, tomography_settings, mle_density_matrix, ...
+
 result = simulate_rates(setup, library)
 result.analyses["herald_a"]["car"], result.channels["tagger.ch1"]["singles_hz"]
 ```
