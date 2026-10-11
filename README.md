@@ -32,6 +32,9 @@ One-page overview: [docs/overview.pdf](docs/overview.pdf)
   polarization ellipse, spectrum); link colours follow wavelength. Tabs for beam caustic,
   polarization (ellipse and Poincaré sphere), spectra, g2 / HOM histograms, power and pair-photon
   budgets, and 1D/2D parameter sweeps with CSV/PNG export.
+- **Monte Carlo time tags.** Event-level simulation of every detector and tagger channel with
+  dead time, jitter tails, afterpulsing and dark counts; the same correlation analysis runs on
+  recorded tag files.
 - **Optimizer and budgets.** Maximize or minimize any result by tuning bounded parameters
   (scipy), and rank which part limits a result by replacing each part with its ideal.
 - **Diagnostics.** Pump leakage, aperture clipping, fiber below cutoff, curve extrapolation,
@@ -89,13 +92,13 @@ docs/                     plan, conventions, M3 report, overview
 
 ## Status
 
-Milestones M0 to M6 are done: data model and library, classical engine, quantum rate engine, the
-GUI shell with the schematic editor, results plots, sweeps, optimizer and budgets, and the Library
-Manager (see [docs/PLAN.md](docs/PLAN.md)). The test suite covers
+Milestones M0 to M7 are done: data model and library, classical engine, quantum rate engine, the
+GUI shell with the schematic editor, results plots, sweeps, optimizer and budgets, the Library
+Manager, and the Monte Carlo time-tag engine (see [docs/PLAN.md](docs/PLAN.md)). The test suite covers
 analytic checks (Malus, HWP rotation, thin lens, Gaussian overlap, MZI visibility, CHSH
 S = 2√2·V, HOM against spdcalc, dead time against Monte Carlo).
 
-Planned: Monte Carlo time tags (M7), Gaussian multimode engine (M8).
+Planned: Gaussian multimode engine (M8).
 
 Known limits:
 
@@ -178,6 +181,31 @@ from sequoia.analysis import metrics  # car, chsh_s, tomography_settings, mle_de
 result = simulate_rates(setup, library)
 result.analyses["herald_a"]["car"], result.channels["tagger.ch1"]["singles_hz"]
 ```
+
+## Monte Carlo time tags
+
+`sequoia run SETUP --engine mc --duration 10 --seed 1 [--tags out.npz]` simulates time-tag
+streams for every tagger channel and analyses them with the setup's `analyses`, side by side with
+the rate engine (z-scores in sigma). In the GUI use Run > Monte Carlo time tags... (Monte Carlo
+tab). `sequoia analyze-tags FILE --setup SETUP` runs the same analyses on a recorded `.npz` or
+`channel,time_s` CSV file.
+
+The pair detection patterns and delay distributions come from the same pair amplitudes as the
+rate engine (interference and polarization correlations included); the Monte Carlo then adds
+Poisson emission, dark counts, classical leakage, afterpulsing, jitter with exponential tail and
+detector and tagger dead times event by event. What to expect:
+
+- At low rates it agrees with the rate engine within statistical errors (tested for HBT, Bell
+  and HOM setups).
+- The engine's singles are photon detection rates; the Monte Carlo counts clicks, so it is lower
+  by the rate of pairs with both photons on one detector (a few percent for a leaky PBS, about
+  10% in a HOM dip). The comparison table accounts for this.
+- Dead times of different detectors are correlated for coincident pairs; the rate engine treats
+  them independently, so coincidences differ by about 0.5% at 50 ns and 600 kHz.
+- Pair numbers are Poissonian. Pulsed sources accept `schmidt_number` for thermal
+  (negative-binomial) pairs per pulse; thermal bunching of continuous sources on the
+  coherence-time scale is not modelled (the rate engine includes it, so heralded g2 differs
+  slightly). Exact multi-pair statistics are the job of the planned Gaussian engine (M8).
 
 ## Sweeps, optimization and budgets
 

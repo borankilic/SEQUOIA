@@ -947,9 +947,9 @@ class _Engine:
         return n
 
     def pair_profile(
-        self, chan_a: _Channel, chan_b: _Channel, window: float | None
+        self, chan_a: _Channel, chan_b: _Channel, window: float | None, jitter: bool = True
     ) -> dict[str, Any]:
-        key = (chan_a.name, chan_b.name)
+        key = (chan_a.name, chan_b.name) if jitter else (chan_a.name, chan_b.name, "intrinsic")
         target = self.dtau_target(chan_a, chan_b, window)
         cached = self._pair_cache.get(key)
         if cached is not None and cached["target"] <= target * (1 + 1e-9):
@@ -976,7 +976,8 @@ class _Engine:
                             x = np.fft.fft(arr[p, q, :, start : start + chunk], n=n, axis=0)
                             g += np.sum(np.abs(x) ** 2, axis=1) / n
             dtau = period / n
-            g = self.apply_kernel(g, dtau, chan_a, chan_b)
+            if jitter:
+                g = self.apply_kernel(g, dtau, chan_a, chan_b)
             if rate_all > 0:
                 delay = self.strongest_delay(src, chan_a.detector, chan_b.detector)
                 terms.append(_Term(rate_all, _Profile(g, dtau), "pair", src.inst, delay))

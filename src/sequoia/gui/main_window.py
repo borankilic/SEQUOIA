@@ -223,6 +223,7 @@ class MainWindow(QMainWindow):
         self.act_run = self._action("Run now", self.controller.run_now, "Ctrl+Return")
         self.act_sweep = self._action("Sweep parameter...", self.show_sweeps)
         self.act_optimize = self._action("Optimize parameters...", self.show_optimizer)
+        self.act_montecarlo = self._action("Monte Carlo time tags...", self.show_montecarlo)
         self.act_autorun = self._action(
             "Auto-run", self.set_auto_run, checkable=True, checked=self.controller.auto_run
         )
@@ -273,6 +274,7 @@ class MainWindow(QMainWindow):
         run.addSeparator()
         run.addAction(self.act_sweep)
         run.addAction(self.act_optimize)
+        run.addAction(self.act_montecarlo)
 
     def _build_status_bar(self) -> None:
         self.run_label = QLabel("")
@@ -416,6 +418,10 @@ class MainWindow(QMainWindow):
         self.results_dock.show()
         self.results.tabs.setCurrentWidget(self.results.sweeps)
         self.results.sweeps.reload_candidates()
+
+    def show_montecarlo(self) -> None:
+        self.results_dock.show()
+        self.results.tabs.setCurrentWidget(self.results.montecarlo)
 
     def show_optimizer(self) -> None:
         self.show_sweeps()

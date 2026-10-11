@@ -93,3 +93,16 @@ def test_optimize_apply_edits_document(window, qtbot):
     length = window.document.setup.links[1].length.si
     assert length == pytest.approx(0.150, abs=0.005)
     assert window.document.undo_stack.count() >= 1
+
+
+def test_monte_carlo_tab_runs_and_compares(window, qtbot):
+    window.open_path(ROOT / "setups" / "bell_test.yaml")
+    qtbot.waitUntil(lambda: window.controller.last_outcome is not None, timeout=WAIT)
+    mc = window.results.montecarlo
+    mc.duration.setValue(2.0)
+    mc.seed.setValue(3)
+    mc.run()
+    qtbot.waitUntil(lambda: mc.outcome is not None, timeout=WAIT)
+    assert mc.table.rowCount() >= 8
+    assert sum(mc.outcome.tags.counts().values()) > 10000
+    assert all(abs(c.z) < 5 for c in mc.outcome.comparisons)

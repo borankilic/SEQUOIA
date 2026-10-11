@@ -159,3 +159,44 @@ def format_rates_report(result: RateResult) -> str:
         for issue in own:
             lines.append(f"  [{issue.severity}] {issue.code}: {issue.subject}: {issue.message}")
     return "\n".join(lines)
+
+
+def format_mc_report(tags, analyses, comparisons=None) -> str:
+    lines = [f"Monte Carlo time tags: {tags.duration:g} s, seed {tags.seed}", ""]
+    lines.append(f"{'channel':<14}{'events':>12}{'rate [Hz]':>14}")
+    for name, n in tags.counts().items():
+        lines.append(f"{name:<14}{n:>12d}{n / tags.duration:>14.5g}")
+    for name, a in analyses.items():
+        lines.append("")
+        kind = a["type"]
+        if kind == "coincidences":
+            lines.append(f"{name} [coincidences] {' x '.join(a['channels'])}")
+            lines.append(
+                f"  window {a['window_s'] * 1e9:.3g} ns at {a['center_s'] * 1e9:.4g} ns; "
+                f"{a['counts']} counts"
+            )
+            lines.append(
+                f"  true {a['true_hz']:.5g} +- {a['true_sigma_hz']:.2g} Hz, accidental "
+                f"{a['accidental_hz']:.4g} Hz, CAR {a['car']:.4g}"
+            )
+        elif kind == "heralded_g2":
+            lines.append(f"{name} [heralded_g2]")
+            lines.append(
+                f"  triples {a['triples']} ({a['triples_hz']:.4g} Hz), g2(0) = "
+                f"{a['g2_heralded']:.4g} +- {a['g2_sigma']:.2g}"
+            )
+        else:
+            lines.append(f"{name} [{kind}] {' x '.join(a['channels'])}")
+            lines.append(f"  {len(a['tau_s'])} bins, g2 peak {a['g2_peak']:.4g}")
+    if comparisons:
+        lines += ["", "Against the rate engine"]
+        lines.append(
+            f"{'':<2}{'item':<18}{'quantity':<12}{'Monte Carlo':>14}{'engine':>14}{'z':>8}"
+        )
+        for c in comparisons:
+            flag = " " if c.ok else "!"
+            lines.append(
+                f"{flag} {c.name:<18}{c.quantity:<12}{c.monte_carlo:>14.5g}"
+                f"{c.expected:>14.5g}{c.z:>8.2f}"
+            )
+    return "\n".join(lines)

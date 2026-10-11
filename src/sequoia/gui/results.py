@@ -280,6 +280,7 @@ class ResultsDock(QWidget):
             PolarizationTab,
             SpectraTab,
         )
+        from sequoia.gui.montecarlo_panel import MonteCarloTab
         from sequoia.gui.sweep_panel import SweepTab
 
         self.provider = lambda: (None, None)
@@ -289,6 +290,7 @@ class ResultsDock(QWidget):
         self.histograms = HistogramTab()
         self.budget = BudgetTab(lambda: self.provider())
         self.sweeps = SweepTab(lambda: self.provider())
+        self.montecarlo = MonteCarloTab(lambda: self.provider())
         self.plot_tabs = {
             "Caustic": self.caustic,
             "Polarization": self.polarization,
@@ -296,6 +298,7 @@ class ResultsDock(QWidget):
             "Histograms": self.histograms,
             "Budget": self.budget,
             "Sweeps": self.sweeps,
+            "Monte Carlo": self.montecarlo,
         }
         for title, widget in self.plot_tabs.items():
             self.tabs.addTab(widget, title)
