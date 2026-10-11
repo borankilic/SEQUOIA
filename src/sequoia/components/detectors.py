@@ -22,6 +22,7 @@ from sequoia.data import (
     Duration,
     Length,
     Rate,
+    Responsivity,
     Scalar,
     Surface,
 )
@@ -30,7 +31,7 @@ from sequoia.light.gaussian import aperture_transmission
 
 
 class PhotodiodeParams(Params):
-    responsivity: Scalar | Curve
+    responsivity: Responsivity | Curve
     active_diameter: Length | None = None
     dark_current: Current = Scalar(value=0.0, unit="A")
 

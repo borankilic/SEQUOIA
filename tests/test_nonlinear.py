@@ -671,7 +671,18 @@ def _gaussian_beam_overlap(
 
 
 def coupled_mode_pair_rate(
-    material, kelvin, length, lam_p, lam_s0, axes, waists, d, period=None, zpos=(0.0, 0.0), n=801
+    material,
+    kelvin,
+    length,
+    lam_p,
+    lam_s0,
+    axes,
+    waists,
+    d,
+    period=None,
+    zpos=(0.0, 0.0),
+    n=801,
+    span=0.03,
 ):
     """Pairs/s per mW of the first-order perturbation theory described in
     ``test_absolute_pair_rate_first_principles`` (signal wavelength scanned +-3%)."""
@@ -680,7 +691,7 @@ def coupled_mode_pair_rate(
     n_p = _index(material, lam_p, ip, kelvin)
     a0_sq = 1e-3 / (np.pi * w_p**2 * n_p * _EPS0 * C)
     z = np.linspace(-length / 2, length / 2, n)
-    lam = np.linspace(0.97 * lam_s0, 1.03 * lam_s0, n)
+    lam = np.linspace((1.0 - span) * lam_s0, (1.0 + span) * lam_s0, n)
     rate = np.zeros(n)
     for k, ls in enumerate(lam):
         li = 1.0 / (1.0 / lam_p - 1.0 / ls)
@@ -966,3 +977,117 @@ def test_explicit_dnu_above_max_samples_warns_and_max_samples_is_respected():
 def test_dnu_must_be_positive():
     with pytest.raises(ValueError, match="dnu"):
         crystal(dnu="0 Hz")
+
+
+def _ppln_type0(pump_nm, signal_nm, w_p=100e-6, w_s=70e-6, **options):
+    cfg = spdcalc.SPDC.from_yaml(
+        _config(
+            kind="LiNb_MgO",
+            pm_type="Type0_e_ee",
+            theta_deg=90.0,
+            length_um=10e3,
+            temperature_c=25.0,
+            pump_nm=pump_nm,
+            bandwidth_nm=pump_nm * 1e-4,
+            pump_waist_um=w_p * 1e6,
+            signal_nm=signal_nm,
+            signal_waist_um=w_s * 1e6,
+            idler_waist_um=w_s * 1e6,
+            period_um="auto",
+            deff=1.0,
+        )
+    )
+    return cfg, crystal(
+        material="LiNb_MgO",
+        pm_type="Type0_e_ee",
+        signal_wavelength=f"{signal_nm} nm",
+        signal_waist=f"{w_s * 1e6} um",
+        idler_waist=f"{w_s * 1e6} um",
+        spectral_cutoff=1e-3,
+        max_samples=100000,
+        delay_window="100 ns",
+        **options,
+    )
+
+
+def _photon_flux(cfg, pump_nm, signal_nm, span, w_p=100e-6, w_s=70e-6):
+    """Photons per second per mW emitted in the signal-wavelength window (first principles,
+    every photon counted once whichever of the two roles it plays)."""
+    return coupled_mode_pair_rate(
+        "LiNb_MgO",
+        298.15,
+        10e-3,
+        pump_nm * 1e-9,
+        signal_nm * 1e-9,
+        (2, 2, 2),
+        (w_p, w_s, w_s),
+        2.0 / np.pi * 1e-12,
+        cfg.poling_period_um * 1e-6,
+        (cfg.signal_waist_position_um * 1e-6, cfg.idler_waist_position_um * 1e-6),
+        n=2401,
+        span=span,
+    )
+
+
+def test_degenerate_same_polarisation_rate_counts_each_pair_once():
+    """Type-0 775 -> 1550 + 1550 nm: signal and idler are the same mode set, so the plane-wave
+    photon flux N(w) dw / 2 pi integrated over the whole ridge counts both photons of a pair;
+    the pair rate is half of it. A non-degenerate type-0 (775 -> 1300 + 1918 nm, only one ridge
+    inside the signal band) is not halved."""
+    cfg, comp = _ppln_type0(775.0, 1550.0)
+    flux = _photon_flux(cfg, 775.0, 1550.0, span=0.1)
+    rate = emit(comp, pump_light(power=1e-3, wavelength=775e-9, waist=100e-6))[0].source.rate
+    assert rate / flux == pytest.approx(0.5, rel=0.1)
+
+    cfg, comp = _ppln_type0(775.0, 1300.0)
+    flux = _photon_flux(cfg, 775.0, 1300.0, span=0.05)
+    rate = emit(comp, pump_light(power=1e-3, wavelength=775e-9, waist=100e-6))[0].source.rate
+    assert rate / flux == pytest.approx(1.0, rel=0.1)
+
+
+def test_distinct_collection_modes_keep_ordered_counting():
+    """With different signal and idler collection waists the two roles are different spatial
+    modes: (w, w') and (w', w) are different pairs, both are counted and nothing is halved."""
+    cfg = spdcalc.SPDC.from_yaml(
+        _config(
+            kind="LiNb_MgO",
+            pm_type="Type0_e_ee",
+            theta_deg=90.0,
+            length_um=10e3,
+            temperature_c=25.0,
+            pump_nm=775.0,
+            bandwidth_nm=0.0775,
+            pump_waist_um=100.0,
+            signal_nm=1550.0,
+            signal_waist_um=50.0,
+            idler_waist_um=90.0,
+            period_um="auto",
+            deff=1.0,
+        )
+    )
+    reference = coupled_mode_pair_rate(
+        "LiNb_MgO",
+        298.15,
+        10e-3,
+        775e-9,
+        1550e-9,
+        (2, 2, 2),
+        (100e-6, 50e-6, 90e-6),
+        2.0 / np.pi * 1e-12,
+        cfg.poling_period_um * 1e-6,
+        (cfg.signal_waist_position_um * 1e-6, cfg.idler_waist_position_um * 1e-6),
+        n=2401,
+        span=0.1,
+    )
+    comp = crystal(
+        material="LiNb_MgO",
+        pm_type="Type0_e_ee",
+        signal_wavelength="1550 nm",
+        signal_waist="50 um",
+        idler_waist="90 um",
+        spectral_cutoff=1e-3,
+        max_samples=100000,
+        delay_window="100 ns",
+    )
+    rate = emit(comp, pump_light(power=1e-3, wavelength=775e-9, waist=100e-6))[0].source.rate
+    assert rate / reference == pytest.approx(1.0, rel=0.25)

@@ -598,3 +598,240 @@ def test_part_cache_parses_each_part_once_and_notices_edits(lib, monkeypatch):
     put(lib, "bs", "BeamSplitter", reflectance=0.3)
     simulate_rates(setup, lib, cache=cache)
     assert loads == ["bs"]
+
+
+@pytest.fixture
+def crystal_calls(monkeypatch):
+    from sequoia.components import nonlinear
+
+    calls = []
+    original = nonlinear.SPDCCrystal.emit_pairs
+
+    def counting(self, lights, ctx):
+        calls.append(1)
+        return original(self, lights, ctx)
+
+    monkeypatch.setattr(nonlinear.SPDCCrystal, "emit_pairs", counting)
+    return calls
+
+
+def _hbt(power=None, temperature=None, waist=None):
+    from m3_helpers import load_example, set_overrides, set_settings
+
+    setup = load_example("hbt_heralded")
+    if power is not None:
+        set_overrides(setup, "pump", power=power)
+    if waist is not None:
+        set_overrides(setup, "pump", waist_radius=waist)
+    if temperature is not None:
+        set_settings(setup, "crystal", temperature=temperature)
+    return setup
+
+
+def _signature(result):
+    return (
+        result.sources["crystal"]["rate_hz"],
+        result.channels["tagger.ch1"]["singles_hz"],
+        result.analyses["herald_a"]["true_hz"],
+        result.analyses["herald_a"]["accidental_hz"],
+    )
+
+
+def test_spdc_crystal_emission_is_reused_when_only_the_pump_power_changes(crystal_calls):
+    from m3_helpers import LIBRARY
+
+    cache = RunCache()
+    first = simulate_rates(_hbt(), LIBRARY, cache=cache)
+    assert len(crystal_calls) == 1
+    doubled = simulate_rates(_hbt(power="20 mW"), LIBRARY, cache=cache)
+    assert len(crystal_calls) == 1
+    assert cache.emission_hits == 1 and cache.emission_misses == 1
+    fresh = simulate_rates(_hbt(power="20 mW"), LIBRARY)
+    assert len(crystal_calls) == 2
+    ratio = doubled.sources["crystal"]["rate_hz"] / first.sources["crystal"]["rate_hz"]
+    assert ratio == pytest.approx(2.0, rel=1e-12)
+    for got, want in zip(_signature(doubled), _signature(fresh), strict=True):
+        assert got == pytest.approx(want, rel=1e-9)
+    assert [i.code for i in doubled.issues] == [i.code for i in fresh.issues]
+
+
+def test_spdc_crystal_cache_misses_when_temperature_or_waist_changes(crystal_calls):
+    from m3_helpers import LIBRARY
+
+    cache = RunCache()
+    base = simulate_rates(_hbt(), LIBRARY, cache=cache)
+    hot = simulate_rates(_hbt(temperature="40 degC"), LIBRARY, cache=cache)
+    assert len(crystal_calls) == 2 and cache.emission_hits == 0
+    tight = simulate_rates(_hbt(waist="0.2 mm"), LIBRARY, cache=cache)
+    assert len(crystal_calls) == 3 and cache.emission_hits == 0
+    fresh_tight = simulate_rates(_hbt(waist="0.2 mm"), LIBRARY)
+    assert tight.sources["crystal"]["rate_hz"] == pytest.approx(
+        fresh_tight.sources["crystal"]["rate_hz"], rel=1e-12
+    )
+    assert hot.sources["crystal"]["signal_wavelength_m"] != pytest.approx(
+        base.sources["crystal"]["signal_wavelength_m"], rel=1e-5
+    )
+    assert tight.sources["crystal"]["rate_hz"] != pytest.approx(
+        base.sources["crystal"]["rate_hz"], rel=1e-3
+    )
+
+
+def test_entangled_source_cache_key_ignores_the_pump_power_setting_and_rescales_exactly():
+    from sequoia.components.base import Context, get_component
+    from sequoia.engines.cache import emit_with_cache
+
+    cls = get_component("EntangledPairSource")
+
+    def comp(power, **params):
+        return cls(
+            cls.Params(
+                **{
+                    "center_wavelength": "810 nm",
+                    "bandwidth": "1 nm",
+                    "max_samples": 2000,
+                    "brightness": 2e4,
+                    **params,
+                }
+            ),
+            cls.Settings(pump_power=power),
+        )
+
+    cache = RunCache()
+    first, _ = emit_with_cache(cache, comp("1 mW"), {}, Context(subject="'a'"))
+    second, _ = emit_with_cache(cache, comp("3 mW"), {}, Context(subject="'a'"))
+    fresh, _ = emit_with_cache(None, comp("3 mW"), {}, Context(subject="'a'"))
+    assert cache.emission_hits == 1 and cache.emission_misses == 1
+    assert first.source.rate == pytest.approx(2e4 * 1.0)
+    assert second.source.rate == pytest.approx(fresh.source.rate, rel=1e-12)
+    assert np.array_equal(second.source.amplitude, first.source.amplitude)
+    emit_with_cache(cache, comp("1 mW", bandwidth="2 nm"), {}, Context(subject="'a'"))
+    assert cache.emission_misses == 2
+    fixed, _ = emit_with_cache(
+        cache, comp("5 mW", pair_rate="7 kcps", brightness=None), {}, Context()
+    )
+    again, _ = emit_with_cache(
+        cache, comp("9 mW", pair_rate="7 kcps", brightness=None), {}, Context()
+    )
+    assert fixed.source.rate == pytest.approx(7e3) == pytest.approx(again.source.rate)
+
+
+def test_cached_issues_are_relabelled_and_keyed_on_the_current_thresholds():
+    from sequoia.components.base import Context
+    from sequoia.engines.cache import emit_with_cache
+
+    calls = []
+
+    class Warner(Component):
+        Params = PumpedParams
+
+        def emit_cache_key(self, lights):
+            return ("w",)
+
+        def emit_pairs(self, lights, ctx):
+            from sequoia.light.pairs import PairEmission
+
+            calls.append(1)
+            ctx.warn("demo", f"{ctx.subject} warns at {ctx.min_power_for_warnings:g} W")
+            return PairEmission(cw_pair(1.0, flat=5), "signal", "idler")
+
+    cache = RunCache()
+    comp = Warner(PumpedParams())
+    a = Context(subject="'a'", min_power_for_warnings=1e-9)
+    emit_with_cache(cache, comp, {}, a)
+    b = Context(subject="'b'", min_power_for_warnings=1e-9)
+    emit_with_cache(cache, comp, {}, b)
+    assert len(calls) == 1 and cache.emission_hits == 1
+    assert [i.subject for i in b.issues] == ["'b'"]
+    c = Context(subject="'c'", min_power_for_warnings=1e-3)
+    emit_with_cache(cache, comp, {}, c)
+    assert len(calls) == 2
+    assert c.issues[0].message == "'c' warns at 0.001 W"
+
+
+def _extrapolating_setup(lib, tag):
+    from sequoia.data import Curve
+
+    narrow = Curve(
+        x=[700.0, 750.0], y=[0.5, 0.6], x_unit="nm", x_label="wavelength", y_label=f"curve_{tag}"
+    )
+    put(lib, f"narrow_{tag}", "SpectralFilter", transmission=narrow)
+    return setup_from_dict(
+        {
+            "instances": [
+                inst("src", "pairbox"),
+                inst("f", f"narrow_{tag}"),
+                inst("ds", "det_s"),
+                inst("di", "det_i"),
+                inst("tag", "tagger"),
+            ],
+            "links": [
+                fs("a", "src.signal", "f.in", "10 mm"),
+                fs("b", "f.out", "ds.in", "10 mm"),
+                fs("c", "src.idler", "di.in", "10 mm"),
+                cable("c1", "ds", "ch1"),
+                cable("c2", "di", "ch2"),
+            ],
+            "analyses": [coincidence()],
+        }
+    )
+
+
+def test_concurrent_engine_runs_each_report_only_their_own_extrapolation(lib):
+    PAIRS["src"] = cw_pair(1e5, flat=10)
+    DETS["ds"], DETS["di"] = det(0.5), det(0.5)
+    TAGS["tag"] = TaggerModel()
+    setups = {tag: _extrapolating_setup(lib, tag) for tag in ("alpha", "beta")}
+    barrier = threading.Barrier(2)
+    seen: dict[str, list[list[str]]] = {"alpha": [], "beta": []}
+    errors = []
+
+    def worker(tag):
+        try:
+            for _ in range(4):
+                barrier.wait(timeout=60)
+                result = simulate_rates(setups[tag], lib)
+                seen[tag].append(
+                    [i.message for i in result.issues if i.code == "curve_extrapolation"]
+                )
+        except Exception as exc:
+            errors.append(exc)
+            barrier.abort()
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in setups]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    for tag, other in (("alpha", "beta"), ("beta", "alpha")):
+        assert len(seen[tag]) == 4
+        for messages in seen[tag]:
+            assert messages
+            assert all(f"curve_{tag}" in m for m in messages)
+            assert not any(f"curve_{other}" in m for m in messages)
+
+
+def test_recorder_survives_an_outer_catch_warnings_and_documents_the_nested_limit():
+    import warnings
+
+    from sequoia.engines.cache import record_warnings as record
+
+    with record() as warm:
+        warnings.warn("warm up", ExtrapolationWarning, stacklevel=1)
+    assert [w.message for w in warm] == ["warm up"]
+    with warnings.catch_warnings(record=True) as outer:
+        warnings.simplefilter("ignore")
+        with record() as inner:
+            warnings.warn("inside outer", ExtrapolationWarning, stacklevel=1)
+            warnings.warn("not recorded", UserWarning, stacklevel=1)
+    assert [w.message for w in inner] == ["inside outer"]
+    assert [str(w.message) for w in outer] == []
+    with record() as bucket:
+        with warnings.catch_warnings(record=True) as nested:
+            warnings.simplefilter("always")
+            warnings.warn("nested", ExtrapolationWarning, stacklevel=1)
+    assert [str(w.message) for w in nested] == ["nested"]
+    assert list(bucket) == []
+    with record() as after:
+        warnings.warn("after", ExtrapolationWarning, stacklevel=1)
+    assert [w.message for w in after] == ["after"]

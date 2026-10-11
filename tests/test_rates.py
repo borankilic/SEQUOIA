@@ -1993,3 +1993,20 @@ def test_symmetric_beam_splitter_sends_psi_plus_to_coincidences_and_psi_minus_to
     assert coincidences({(0, 0): 1.0}) == pytest.approx(0.0, abs=2e-3 * full)
     d = {(0, 0): 0.5, (0, 1): 0.5, (1, 0): 0.5, (1, 1): 0.5}
     assert coincidences(d) == pytest.approx(full / 2, rel=2e-3)
+
+
+def test_degenerate_type0_crystal_singles_are_twice_the_pair_rate_and_match_photon_flux(lib):
+    """A type-0 crystal emitting into one port: two ideal detectors behind a 50/50 splitter
+    register 2 x rate singles in total, and the first-principles photon flux of the same
+    crystal (which counts every photon of the ridge, i.e. both members of each pair) is the
+    same number: the emitted rate is pairs per second, each pair counted once."""
+    from test_nonlinear import _photon_flux, _ppln_type0, emit, pump_light
+
+    cfg, comp = _ppln_type0(775.0, 1550.0)
+    emission, _ = emit(comp, pump_light(power=1e-3, wavelength=775e-9, waist=100e-6))
+    pair = emission.source
+    r = collinear_bs_run(lib, pair, 1.0, 1.0)
+    singles = r.channels["tag.ch1"]["pair_singles_hz"] + r.channels["tag.ch2"]["pair_singles_hz"]
+    assert singles == pytest.approx(2.0 * pair.rate, rel=1e-6)
+    flux = _photon_flux(cfg, 775.0, 1550.0, span=0.1)
+    assert singles == pytest.approx(flux, rel=0.1)

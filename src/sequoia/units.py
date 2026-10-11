@@ -22,6 +22,13 @@ _DIMENSIONS = {
     "nonlinear_coefficient": ureg.Quantity(1.0, "m/V").dimensionality,
 }
 
+_EXTENDED_DIMENSIONS = {
+    "responsivity": ureg.Quantity(1.0, "A/W").dimensionality,
+    "per_energy": ureg.Quantity(1.0, "1/J").dimensionality,
+}
+
+_ANGLE_UNIT_ROOTS = ("radian", "degree", "arcminute", "arcsecond")
+
 
 def _norm(unit: str) -> str:
     u = unit.strip()
@@ -64,14 +71,27 @@ def from_si(value, unit: str):
     return _magnitude(ureg.Quantity(_as_input(value), _base_units(unit)).to(_unit(unit)))
 
 
-def unit_dimension(unit: str) -> str:
+def unit_dimension(unit: str, *, extended: bool = False) -> str:
+    """Name of the dimension of ``unit``; ``extended`` also names the responsivity (A/W) and
+    the rate per power (1/J) used by typed fields, which are otherwise 'other'."""
     if _base_units(unit) == ureg.radian:
         return "angle"
     dim = ureg.Quantity(1.0, _unit(unit)).dimensionality
-    for name, reference in _DIMENSIONS.items():
+    references = {**_DIMENSIONS, **_EXTENDED_DIMENSIONS} if extended else _DIMENSIONS
+    for name, reference in references.items():
         if dim == reference:
             return name
     return "other"
+
+
+def is_plane_angle_unit(unit: str) -> bool:
+    """True for radian, degree, arcminute and arcsecond (with SI prefixes, e.g. mrad, mdeg);
+    a full 'turn' or a 'grad' (gradian) has the dimension of an angle but is refused."""
+    container = getattr(_unit(unit), "_units", None)
+    if container is None or len(container) != 1:
+        return False
+    ((name, exponent),) = container.items()
+    return exponent == 1 and str(name).endswith(_ANGLE_UNIT_ROOTS)
 
 
 def to_wavelength(x_si, dimension: str):

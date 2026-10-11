@@ -11,9 +11,15 @@
   except the parameters and settings (which are always part of the key), or None to disable
   caching; ``emit_rate_scale(lights)`` (default 1.0) returns the factor by which the emitted pair
   rate scales linearly (for example the pump power), so a cached emission is reused when only that
-  factor changed.
+  factor changed. A component whose rate scale is one of its settings lists that setting in
+  ``emit_scale_settings`` so that it is left out of the key. The key also contains the context's
+  ``min_power_for_warnings``; issues replayed from a cached emission are re-labelled with the
+  subject of the current instance, and their text must not depend on the scale (the issues of
+  the first run are kept, so a diagnostic that depends on the scale itself must not be emitted
+  by a component that declares ``emit_rate_scale``).
 """
 
+import math
 import threading
 import warnings
 from collections.abc import Callable, Iterator
@@ -79,10 +85,11 @@ def _ensure_hook() -> None:
         if warnings.showwarning is not _dispatch:
             _original_showwarning = warnings.showwarning
             warnings.showwarning = _dispatch
-        for category in RECORDED:
-            if not any(
-                f[0] == "always" and f[1] is None and f[2] is category for f in warnings.filters
-            ):
+        front = warnings.filters[: len(RECORDED)]
+        if not all(
+            f[0] == "always" and f[1] is None and f[2] in RECORDED and f[3] is None for f in front
+        ) or {f[2] for f in front} != set(RECORDED):
+            for category in RECORDED:
                 warnings.filterwarnings("always", category=category)
 
 
@@ -116,6 +123,7 @@ class _Emission:
     scale: float
     issues: list[Issue]
     warnings: list[CapturedWarning]
+    subject: str = ""
 
 
 @dataclass
@@ -149,42 +157,54 @@ class RunCache:
             self.parts[key] = (stamp, part)
         return part
 
-    def emit_key(self, comp: Component, lights) -> tuple | None:
+    def emit_key(self, comp: Component, lights, ctx: Context | None = None) -> tuple | None:
         hook = getattr(comp, "emit_cache_key", None)
         if hook is None:
             return None
         extra = hook(lights)
         if extra is None:
             return None
+        left_out = set(getattr(comp, "emit_scale_settings", ()))
+        threshold = None if ctx is None else ctx.min_power_for_warnings
         return (
             type(comp).__qualname__,
             comp.params.model_dump_json(),
-            comp.settings.model_dump_json(),
+            comp.settings.model_dump_json(exclude=left_out),
             extra,
+            threshold,
         )
 
     def lookup_emission(self, key, comp, lights) -> _Emission | None:
         with self._lock:
             entry = self.emissions.get(key)
-            if entry is None:
-                return None
-            self.emission_hits += 1
+        if entry is None:
+            return None
         scale_hook = getattr(comp, "emit_rate_scale", None)
         now = float(scale_hook(lights)) if scale_hook is not None else 1.0
         if now == entry.scale:
+            with self._lock:
+                self.emission_hits += 1
             return entry
-        factor = now / entry.scale if entry.scale else 1.0
+        if not entry.scale or not math.isfinite(entry.scale) or not math.isfinite(now):
+            return None
+        with self._lock:
+            self.emission_hits += 1
+        factor = now / entry.scale
         source = replace(entry.emission.source, rate=entry.emission.source.rate * factor)
-        return _Emission(replace(entry.emission, source=source), now, entry.issues, entry.warnings)
+        return _Emission(
+            replace(entry.emission, source=source), now, entry.issues, entry.warnings, entry.subject
+        )
 
-    def store_emission(self, key, comp, lights, emission, issues, caught) -> None:
+    def store_emission(
+        self, key, comp, lights, emission, issues, caught, subject: str = ""
+    ) -> None:
         scale_hook = getattr(comp, "emit_rate_scale", None)
         scale = float(scale_hook(lights)) if scale_hook is not None else 1.0
         with self._lock:
             self.emission_misses += 1
             if len(self.emissions) >= self.max_emissions:
                 self.emissions.pop(next(iter(self.emissions)))
-            self.emissions[key] = _Emission(emission, scale, list(issues), list(caught))
+            self.emissions[key] = _Emission(emission, scale, list(issues), list(caught), subject)
 
 
 class CachedLibrary(Library):
@@ -205,15 +225,18 @@ def emit_with_cache(
     cache: RunCache | None, comp: Component, lights, ctx: Context
 ) -> tuple[PairEmission | None, list[CapturedWarning]]:
     """Call ``comp.emit_pairs`` through the cache; returns the emission and captured warnings."""
-    key = cache.emit_key(comp, lights) if cache is not None else None
+    key = cache.emit_key(comp, lights, ctx) if cache is not None else None
     if key is not None:
         entry = cache.lookup_emission(key, comp, lights)
         if entry is not None:
-            ctx.issues.extend(entry.issues)
+            ctx.issues.extend(
+                replace(i, subject=ctx.subject) if i.subject == entry.subject else i
+                for i in entry.issues
+            )
             return entry.emission, list(entry.warnings)
     before = len(ctx.issues)
     with record_warnings() as caught:
         emission = comp.emit_pairs(lights, ctx)
     if key is not None and emission is not None:
-        cache.store_emission(key, comp, lights, emission, ctx.issues[before:], caught)
+        cache.store_emission(key, comp, lights, emission, ctx.issues[before:], caught, ctx.subject)
     return emission, list(caught)

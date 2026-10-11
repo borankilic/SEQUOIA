@@ -236,15 +236,61 @@ Numbers (d_bulk = 1 pm/V, 1 mW, 10 mm ppKTP 405 -> 810 nm, values from
 The plane-wave closed form agrees with the numerical overlap integral to 2% (test). The transverse
 overlap used is checked against a brute-force (r, z) integration of explicit Gaussian beams to
 0.5% (test). Other crystals (bulk non-critically phase-matched LiNbO3:MgO e -> o + o, 532 -> 900 nm;
-periodically poled type-0 LiNbO3:MgO) give engine/derivation of 0.89, 1.0 and 1.8 (775 -> 1550 nm,
-the outlier), i.e. the uncorrected spdcalc integral reproduces the physics within a factor 1.3
-for ppKTP and 1.8 elsewhere, whereas the corrected one is 4-10x low in all cases.
+periodically poled type-0 LiNbO3:MgO) gave engine/derivation of 0.89, 1.0 and 1.8 in wave 3. The
+1.8 (775 -> 1550 nm, degenerate type-0) was not a model difference: it was the ordered-pair
+double count of item "pair counting" below (a factor 2) on top of a +-3% scan window that clips
+the broad degenerate ridge. Re-evaluated with a +-10% scan, the plain (ordered) integral is 0.99
+of the first-principles photon flux (36.7 kHz vs 37.1 kHz per mW, d_bulk = 1 pm/V, 10 mm,
+100/70/70 um), and the pair rate is half of it. So the uncorrected spdcalc integral reproduces
+the first-principles flux within 1.12-1.26 for ppKTP and 0.9-1.0 for the other cases tried,
+whereas the corrected one is 4-10x low in all cases.
+
+Pair counting (same-polarisation sources). spdcalc's JSI is a density of ordered (signal,
+idler) pairs. For type II the two roles are different polarizations, so the plane integral counts
+every pair once. For type 0 and type I (signal and idler of the same polarization) in the same
+collection mode, (w_s, w_i) and (w_i, w_s) are the same pair, and the full-plane integral counts
+each pair twice: it equals the photon flux of the first-principles calculation (every photon of
+the ridge), which is twice the pair rate. `SPDCCrystal` now gives lattice points whose mirror
+point (w_i <-> w_s, at the same sum frequency) is also on the lattice weight 1/2 when the
+polarizations and the collection modes of signal and idler coincide; `rate` is pairs per second,
+each pair counted once. A non-degenerate type-0 source (775 -> 1300 + 1918 nm, only one ridge in
+the signal band) is not halved; different collection waists (50/90 um) are different spatial
+modes and are not halved either. Tests: `test_degenerate_same_polarisation_rate_counts_each_pair_once`
+(rate / flux = 0.49 degenerate, 0.99 non-degenerate), `test_distinct_collection_modes_keep_ordered_counting`
+and, through the rate engine with a 50/50 splitter and ideal detectors,
+`tests/test_rates.py::test_degenerate_type0_crystal_singles_are_twice_the_pair_rate_and_match_photon_flux`
+(summed singles = 2 x rate = the first-principles photon flux).
+
+External cross-check (order of magnitude, noted by the reviewer; reproduced here with the repo's
+model). Schneeloch et al., J. Opt. 21, 043501 (2019), arXiv:1807.10885, experiment 1: free-space
+focus, 40 mm PPLN type 0, 782.09 -> 1564.18 nm, pump/collection waists quoted as 52.6/55.1 um,
+measured raw pair rate 9.56e7 pairs/s/mW (their formula 9.49e7, d_eff = 23.95 pm/V). With
+d_eff = 23.95 pm/V entered as the bulk coefficient (the QPM factor 2/pi is applied by spdcalc):
+quoted waists read as 1/e^2 intensity radii give 1.57e8 pairs/s/mW (1.6x the measurement); the
+quoted numbers read as sigma with w = 2 sigma (their xi = L / (4 k_p sigma_p^2) implies this)
+give 5.5e7 (0.58x). The measurement lies between the two conventions, so the check supports the
+absolute scale to about a factor 1.5-2 and nothing sharper, because I could not establish which
+convention the quoted waists follow. Before the pair-counting fix the engine would have reported
+3.1e8 (1/e^2 reading), 3.3x the measurement. spdcalc's corrected value would be about 9 times
+lower than the uncorrected one for this crystal (kappa 0.109 as measured by the reviewer), i.e.
+1.7e7 or 6e6, below the
+measurement under both conventions. The same table's BiBO (type I, multimode, large-area
+detectors) and PPKTP waveguide entries are not geometry-comparable to the Gaussian-focus model
+and are not used.
 
 Literature scale. With d24 = 3.9 pm/V the 10 mm ppKTP gives 7e4 pairs/s/mW at 100/50 um and up to
 4e5 pairs/s/mW at the optimum (20-30 um) focus, i.e. 4e-11 to 2e-10 pairs per pump photon. That
 sits inside the range of reported fibre-coupled ppKTP sources (1e4 to 1e6 pairs/s/mW generated,
-depending on focusing and bandwidth); I could not quote a specific publication from memory, so this
-is an order-of-magnitude statement and not a validation.
+depending on focusing and bandwidth); this is an order-of-magnitude statement and not a
+validation (see the Schneeloch et al. cross-check above for the one quantitative comparison).
+
+Main band only. The rate is the integral over the main phase-matching band of the JSA (the
+signal band where |JSA|^2 along the ridge exceeds `spectral_cutoff` of its peak). The reviewer
+found that spdcalc's JSA has secondary structure far from the main peak (for example 2.8% of the
+peak height near 850 nm in the reviewer's case) that would add a large amount to an integral over
++-15% of the signal wavelength; those regions lie outside any realistic band-pass, I have not
+established whether they are physical, and they are not counted. `brightness` is therefore
+defined as pairs emitted into the collection modes within the main phase-matching band.
 
 What remains uncertain. (1) The derivation and the engine disagree by 1.1-1.3 for ppKTP (paraxial
 Gaussian beams without walk-off versus spdcalc's transverse model, which flattens at tight
@@ -283,24 +329,51 @@ more than half a period are (conventions.md, "Lattice / delays").
   `delay_aliasing` only for interfering paths; `fiber_multimode` only for non-negligible light.
 - GUI: `Cancelled`/`should_cancel`, `RunCache` (parts and emissions), thread-local warning capture.
 
-Benchmark (this machine, one process; "rates" is `simulate_rates` with the classical result
-given, wall clock, no emission cache, parts re-parsed each run):
+Emission cache. `SPDCCrystal` and `EntangledPairSource` declare `emit_cache_key(lights)` and
+`emit_rate_scale(lights)` (`components/nonlinear.py`), so `RunCache` now reuses `emit_pairs`.
+The key is the component type, parameters JSON, settings JSON, the component's own part (pump
+wavelengths and normalised spectrum, repetition rate, pump mode q parameters and M^2, fraction
+of the power along the pump axis; rounded to 9 digits) and the context's
+`min_power_for_warnings`. The rate scale is the pump power along the pump axis
+(`EntangledPairSource`: `pump_power` when the rate comes from `brightness`, 1 for `pair_rate`;
+the `pump_power` setting is left out of its key). A change of pump power therefore reuses the
+joint spectrum and rescales `rate` exactly; a change of temperature, waist, wavelength, pump
+polarization, `d_eff`, geometry or any part parameter misses (tests in
+`tests/test_engine_diagnostics.py`: power change equals a fresh run to 1e-9 with the same issue
+codes; temperature and waist changes miss). Issues replayed from a cached emission are
+re-labelled with the subject of the current instance and cached entries are not shared between
+runs with different warning thresholds (they were stale in the first implementation, which
+replayed the first run's subject and threshold). A zero-scale entry is never rescaled. The cache
+holds at most 16 emissions (FIFO), each lattice-sized, so a long GUI session can keep a few
+hundred MB.
 
-| example | before | after (no cache) | after, warm part cache | after, warm emission cache* |
-|---|---|---|---|---|
-| hbt_heralded | 2.39 s | 1.97 s | 1.97 s | 0.80 s |
-| hom | 1.96 s | 1.71 s | 1.71 s | 0.54 s |
-| bell_test | 0.40 s | 0.25 s | 0.26 s | 0.26 s |
+Benchmark. Reproduce with `uv run python scripts/benchmark_m3.py` (median of 3, wall clock of
+`simulate_rates` including the classical pass, this machine, one process, otherwise idle):
+
+| example | no cache | cold RunCache | warm parts only | warm emission | pump power x2, warm cache |
+|---|---|---|---|---|---|
+| hbt_heralded | 2.13 s | 2.07 s | 2.10 s | 0.86 s | 0.88 s |
+| hom | 1.82 s | 1.76 s | 1.74 s | 0.55 s | 0.57 s |
+| bell_test | 0.38 s | 0.32 s | 0.29 s | 0.29 s | 0.29 s |
+
+(The "before wave 3" timings of earlier drafts, 2.39 / 1.96 / 0.40 s, came from the previous
+commit and are not reproduced by the script.) A power change or any edit downstream of the
+crystal costs the transfer and the analyses only (0.9 s for the HBT example instead of 2.1 s);
+the part cache alone saves about 0.0-0.1 s here because the library is small.
 
 YAML part parses per run (classical + rates + `has_rate_devices`): 58 before, 11 with a cold
-`RunCache`, 0 with a warm one. The gain without cache comes from closed-form 2x2 operator square roots
-(`_psd_sqrt` 0.29 s -> 0.01 s) and matrix products instead of three-operand einsums.
-*The crystal's `emit_pairs` is only cached once `SPDCCrystal` declares `emit_cache_key(lights)`
-and `emit_rate_scale(lights)` (those live in `components/nonlinear.py`, outside this package of
-work). The last column was measured with a stand-in declaration that keys on the pump wavelengths,
-normalised spectrum, polarization and mode, with the pump power as the rate scale: a changed pump
-power or any edit downstream of the crystal then costs 0.5-0.8 s instead of 1.7-2.0 s; the
-remainder is the photon transfer and the analyses.
+`RunCache`, 0 with a warm one. The gain without cache comes from closed-form 2x2 operator square
+roots (`_psd_sqrt` 0.29 s -> 0.01 s) and matrix products instead of three-operand einsums.
+
+Warning recorder. `record_warnings` installs one process-wide `showwarning` hook and routes the
+recorded categories to the recorder of the thread that raised them. It is re-installed at every
+entry, so a `warnings.catch_warnings(record=True)` (or `pytest.warns`) entered before the run no
+longer bypasses it, and its own "always" filter is moved in front of filters added since; a test
+runs two threads through `simulate_rates` and checks that each sees only its own
+`curve_extrapolation` issue. Known limit: a `catch_warnings(record=True)` entered inside a
+recorded region in the same thread takes the warnings itself (they are not recorded as issues);
+`catch_warnings` is not thread-safe, so concurrent use of it by user code in other threads is
+likewise outside the guarantee.
 
 Pulsed g2 / heralded g2 scaling (single pulsed source, asymmetric 1600 x 800 lattice, same script as
 the review): before 16.7 s and 1.07 GB; now 9.1 s and 1.7 GB RSS (heralded), 7.9 s and 1.9 GB
@@ -308,3 +381,12 @@ the review): before 16.7 s and 1.07 GB; now 9.1 s and 1.7 GB RSS (heralded), 7.9
 is refused with a `memory_limit` message (about 5 GiB estimated, limit 3 GiB) instead of running
 for 40 s. The moments are evaluated in the smaller of the arm and partner spaces (one big
 product per matrix).
+
+Unit-type tightening (`data.py`, `units.py`). A NaN is never a quantity; `inf` is refused for
+every typed quantity except a Length (an iris diameter is infinite by default). `Angle` accepts
+only radian, degree, arcminute and arcsecond (with SI prefixes, so `mrad` and `mdeg` work) and
+refuses `turn`, `grad` and `revolution`, which are dimensionally angles but easily mistaken for
+degrees. U+2212 is normalised to '-' before parsing. `brightness` is a `Brightness` (a float in
+pairs/s/mW as before, so library parts load unchanged; a quantity such as `1e5 Hz/mW` or
+`1e8 1/(s W)` is dimension-checked and converted; negative and non-finite values are refused).
+`Photodiode.responsivity` as a scalar must be in A/W (curves are not unit-checked).

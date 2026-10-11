@@ -258,3 +258,80 @@ def test_yaml_shorthand_still_works():
     s = settings_of("WavePlate", angle="45 deg")
     assert s.angle.si == pytest.approx(math.pi / 4)
     assert isinstance(s.angle, Scalar)
+
+
+@pytest.mark.parametrize("value", ["inf K", "-inf degC", "+inf K"])
+def test_non_finite_temperatures_are_rejected(value):
+    with pytest.raises(ValidationError, match="finite"):
+        parse(Temperature, value)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "value"),
+    [
+        (Angle, "inf deg"),
+        (Voltage, "inf V"),
+        (Current, "-inf mA"),
+        (Frequency, "inf Hz"),
+        (Dimensionless, "inf"),
+    ],
+)
+def test_non_finite_physical_quantities_are_rejected(annotation, value):
+    with pytest.raises(ValidationError, match="finite"):
+        parse(annotation, value)
+
+
+def test_nan_is_never_a_quantity():
+    for value in ("nan K", float("nan")):
+        with pytest.raises(ValidationError):
+            parse(Temperature, value)
+    with pytest.raises(ValidationError, match="NaN"):
+        Scalar(value=float("nan"), unit="W")
+
+
+def test_an_infinite_aperture_diameter_remains_valid():
+    from sequoia.data import Length
+
+    assert parse(Length, "inf m").si == float("inf")
+    assert settings_of("Iris").diameter.si == float("inf")
+
+
+@pytest.mark.parametrize("value", ["45 turn", "0.25 turns", "50 grad", "1 revolution"])
+def test_angle_refuses_turns_and_gradians(value):
+    with pytest.raises(ValidationError, match="not supported"):
+        parse(Angle, value)
+
+
+@pytest.mark.parametrize("value", ["45 deg", "45 °", "0.5 rad", "3 mrad", "30 arcmin", "5 arcsec"])
+def test_angle_still_accepts_the_documented_units(value):
+    assert parse(Angle, value).si != 0.0
+
+
+def test_unicode_minus_is_normalised():
+    assert parse(Angle, "−45 deg").si == pytest.approx(-math.pi / 4)
+    assert parse(Temperature, "−20 degC").si == pytest.approx(253.15)
+    assert parse(Scalar, "−1.5e-3 mm").value == -1.5e-3
+
+
+def test_brightness_dimension_is_checked_and_bare_numbers_stay_per_mw():
+    ok = dict(center_wavelength="810 nm", bandwidth="1 nm")
+    assert params_of("EntangledPairSource", brightness=1e5, **ok).brightness == 1e5
+    assert params_of("EntangledPairSource", brightness="1e5 Hz/mW", **ok).brightness == (
+        pytest.approx(1e5)
+    )
+    assert params_of("EntangledPairSource", brightness="1e8 1/(s W)", **ok).brightness == (
+        pytest.approx(1e5)
+    )
+    for bad in ("1e5 mm", "1e5 mW", "1e5 Hz", -1, "inf"):
+        with pytest.raises(ValidationError, match="brightness"):
+            params_of("EntangledPairSource", brightness=bad, **ok)
+    with pytest.raises(ValidationError, match="brightness"):
+        params_of("SPDCCrystal", length="10 mm", brightness=-5.0)
+
+
+def test_responsivity_needs_amperes_per_watt():
+    assert params_of("Photodiode", responsivity="0.5 A/W").responsivity.si == pytest.approx(0.5)
+    assert params_of("Photodiode", responsivity="500 mA/W").responsivity.si == pytest.approx(0.5)
+    for bad in (0.5, "0.5 W", "0.5 A", "0.5 mm"):
+        with pytest.raises(ValidationError, match="responsivity"):
+            params_of("Photodiode", responsivity=bad)

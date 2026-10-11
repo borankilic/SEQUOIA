@@ -21,6 +21,7 @@ from sequoia.components.base import (
 )
 from sequoia.data import (
     Angle,
+    Brightness,
     Curve,
     Dimensionless,
     Duration,
@@ -33,7 +34,7 @@ from sequoia.data import (
     Temperature,
 )
 from sequoia.errors import SetupError
-from sequoia.light.gaussian import GaussianMode
+from sequoia.light.gaussian import GaussianMode, overlap
 from sequoia.light.pairs import PairEmission, PairSource
 
 FREE, IN, OUT = PortKind.FREE_SPACE, PortDirection.IN, PortDirection.OUT
@@ -233,12 +234,14 @@ class SPDCCrystalParams(Params):
     idler_waist: Length = Scalar(value=50e-6, unit="m")
     extraordinary_axis: Literal["H", "V"] = "H"
     pump_transmission: Dimensionless | Curve = Unity
-    brightness: float | None = Field(
+    brightness: Brightness | None = Field(
         default=None,
         description=(
-            "pairs per second per mW of pump emitted into the collection modes, before any "
-            "filter, coupling or detector loss (not a detected coincidence rate: entering one "
-            "double-counts the losses). Overrides the computed rate when given"
+            "pairs per second (each pair counted once) per mW of pump emitted into the "
+            "collection modes within the main phase-matching band, before any filter, coupling "
+            "or detector loss (not a detected coincidence rate: entering one double-counts "
+            "the losses). A bare number is pairs/s/mW; a quantity needs a rate-per-power unit "
+            "such as '1e5 Hz/mW'. Overrides the computed rate when given"
         ),
     )
     delay_window: Duration = Scalar(value=10e-9, unit="s")
@@ -258,10 +261,11 @@ class SPDCCrystalParams(Params):
         description=(
             "multiply the pair rate by spdcalc's get_counts_correction (about 0.2 for ppKTP "
             "405 -> 810 nm, 0.1 for LiNbO3). Off by default: the uncorrected spectral integral "
-            "of spdcalc's JSI agrees with an independent first-principles coupled-mode "
-            "calculation to 0.8-0.9 (ppKTP) and 0.6-1.1 (other crystals, bulk and poled), "
-            "while the corrected figure is 4-10 times lower (see docs/M3_REPORT.md section "
-            "'Absolute pair rate')"
+            "of spdcalc's JSI is 1.12-1.26 times an independent first-principles "
+            "coupled-mode calculation for ppKTP (engine / derivation, 400/300 to 30/30 um "
+            "waists; 0.9-1.0 for the other crystals tested), while the corrected figure is "
+            "4-10 times below that derivation (see docs/M3_REPORT.md section 'Absolute pair "
+            "rate')"
         ),
     )
 
@@ -337,6 +341,15 @@ def _kappa(config: str) -> float:
     return float(rate / (jsi.sum() * (x[1] - x[0]) * (y[1] - y[0])))
 
 
+def _sig(x: float) -> float:
+    return float(f"{x:.9g}")
+
+
+def _same_mode(a: GaussianMode, b: GaussianMode) -> bool:
+    den = math.sqrt(abs(overlap(a, a) * overlap(b, b)))
+    return den > 0.0 and abs(overlap(a, b)) >= 0.99 * den
+
+
 def _jsa(js, w_s: np.ndarray, w_i: np.ndarray) -> np.ndarray:
     w_s, w_i = np.broadcast_arrays(w_s, w_i)
     out = np.fromiter(
@@ -387,7 +400,20 @@ class SPDCCrystal(Component):
     second (time averaged) into the two Gaussian collection modes, per mW of pump polarized
     along the pump axis. It scales as d_eff^2 and linearly with power. Only the spectral
     window covered by the JSA grid is counted (spectral_cutoff of the phase-matching peak),
-    so the rate is the pair rate within that band (the default cutoff of 1% costs about 2.3%).
+    so the rate is the pair rate within that band (the default cutoff of 1% costs about 2.3%);
+    secondary structure of spdcalc's JSA far outside the main phase-matching band is not
+    included.
+
+    The emitted ``rate`` is pairs per second, each pair counted once. spdcalc's JSI is the
+    density of ordered (signal, idler) pairs. For distinguishable photons (type II, or signal
+    and idler in different collection modes) every ordered pair is a different pair and the
+    full plane is integrated. When both photons have the same polarization and the same
+    collection mode (type 0, type I, degenerate), (w_s, w_i) and (w_i, w_s) are the same pair:
+    a lattice point whose mirror point w_i <-> w_s is also on the lattice carries weight 1/2,
+    so a degenerate source is half of the full-plane integral, which is the photon flux (both
+    members of each pair) of the first-principles calculation divided by two. A non-degenerate
+    type-0 source whose mirror ridge lies outside the signal band is not halved. Singles are
+    then 2 x rate x efficiency in total, as for any pair source.
 
     The absolute scale was checked against an independent first-principles calculation (first
     order perturbation theory, H = 4 eps0 d E_p^+ E_s^- E_i^-, Gaussian pump and collection
@@ -401,6 +427,12 @@ class SPDCCrystal(Component):
 
     ``d_eff`` is the bulk coefficient: spdcalc multiplies by the 2/pi quasi-phase-matching
     factor itself. It is required unless a measured ``brightness`` is given.
+
+    Emission cache: ``emit_cache_key`` (pump wavelengths and normalised spectrum, repetition
+    rate, pump mode, polarization fraction; the parameters and the temperature setting are
+    keyed by the cache itself) and ``emit_rate_scale`` (pump power along the pump axis) let a
+    ``RunCache`` reuse the joint spectrum when only the pump power or anything downstream of
+    the crystal changes.
 
     The pump waist handed to spdcalc is the waist of the incident Gaussian mode (not its
     radius at the crystal port). spdcalc places the pump waist at the crystal centre; a
@@ -502,6 +534,44 @@ class SPDCCrystal(Component):
                 "spdcalc assumes the waist at the centre, so the rate is overestimated",
             )
         return waist
+
+    def _pump_fraction(self, light) -> float:
+        p = self.params
+        axis = 0 if p.extraordinary_axis == "H" else 1
+        letter = p.pm_type.split("_")[1]
+        idx = axis if letter == "e" else 1 - axis
+        w = light.coherency.sum(axis=0)
+        total = float(np.real(w[0, 0] + w[1, 1]))
+        return float(np.real(w[idx, idx])) / total if total > 0.0 else 0.0
+
+    def emit_cache_key(self, lights):
+        """Everything but the parameters, the temperature setting and the pump power that the
+        emission depends on: pump wavelengths, normalised pump spectrum, repetition rate, the
+        pump mode at the crystal (q parameters and M^2), and the fraction of the power along
+        the pump axis (it selects the ``pump_polarization`` diagnostic)."""
+        light = lights.get("in")
+        if light is None or light.power <= 0.0:
+            return None
+        spectrum = np.asarray(light.power_spectrum, dtype=float)
+        mode = light.mode
+        rep = light.repetition_rate
+        return (
+            tuple(_sig(x) for x in np.asarray(light.wavelengths, dtype=float)),
+            tuple(_sig(x) for x in spectrum / spectrum.sum()),
+            None if rep is None else _sig(rep),
+            _sig(mode.wavelength),
+            tuple(_sig(v) for v in (mode.q_x.real, mode.q_x.imag, mode.q_y.real, mode.q_y.imag)),
+            _sig(mode.m2_x),
+            _sig(mode.m2_y),
+            _sig(self._pump_fraction(light)),
+        )
+
+    def emit_rate_scale(self, lights):
+        """Pump power polarized along the pump axis (W): the emitted rate is linear in it."""
+        light = lights.get("in")
+        if light is None:
+            return 1.0
+        return light.power * self._pump_fraction(light)
 
     def emit_pairs(self, lights, ctx):
         light = lights.get("in")
@@ -680,17 +750,6 @@ class SPDCCrystal(Component):
         amplitude = np.zeros((2, 2, len(n_signal), len(n_sum)), dtype=complex)
         amplitude[idx_s, idx_i] = jsa / math.sqrt(total)
 
-        if p.brightness is not None:
-            rate = p.brightness * power_mw
-        else:
-            kappa = _kappa(config) if p.spdcalc_counts_correction else 1.0
-            rate = power_mw * kappa * weight * total
-        if not math.isfinite(rate) or rate < 0.0:
-            raise SetupError(
-                "spdcalc returned a non-finite pair rate: the pump, signal or idler wavelength "
-                "is probably outside the range where the crystal model is valid"
-            )
-
         lam_s = _TWO_PI * c / peak
         lam_i = _TWO_PI * c / (w_p0 - peak)
         reference = spdcalc.SPDC.from_yaml(_config(**base))
@@ -704,6 +763,25 @@ class SPDCCrystal(Component):
             z = (p.length.si / 2.0 - position * 1e-6) / n_index
             modes.append(GaussianMode.from_waist(lam, waist, z=z))
         signal_mode, idler_mode = modes
+
+        ordered_weight = 1.0
+        if idx_s == idx_i and _same_mode(signal_mode, idler_mode):
+            partner = n_sum[None, :] - n_signal[:, None]
+            mirrored = (partner >= n_signal[0]) & (partner <= n_signal[-1])
+            ordered_weight = np.where(mirrored, 0.5, 1.0)
+        pair_total = float(np.sum(intensity * ordered_weight))
+
+        if p.brightness is not None:
+            rate = p.brightness * power_mw
+        else:
+            kappa = _kappa(config) if p.spdcalc_counts_correction else 1.0
+            rate = power_mw * kappa * weight * pair_total
+        if not math.isfinite(rate) or rate < 0.0:
+            raise SetupError(
+                "spdcalc returned a non-finite pair rate: the pump, signal or idler wavelength "
+                "is probably outside the range where the crystal model is valid"
+            )
+
         rep = light.repetition_rate if pulsed_used else None
         try:
             source = PairSource(
@@ -724,7 +802,7 @@ class SPDCCrystal(Component):
 
 class EntangledPairSourceParams(Params):
     pair_rate: Rate | None = None
-    brightness: float | None = Field(
+    brightness: Brightness | None = Field(
         default=None,
         description=(
             "pairs per second per mW of pump emitted into the collection modes, before any "
@@ -775,9 +853,11 @@ class EntangledPairSource(Component):
     ``bandwidth`` is the wavelength FWHM of each photon's spectrum (Gaussian), centred on
     ``center_wavelength`` (signal) and ``idler_wavelength`` (default: degenerate).
     ``pump_bandwidth`` (wavelength FWHM at the pump wavelength, None = CW) sets the sum-frequency
-    spread. The rate is ``pair_rate`` or ``brightness`` (pairs/s/mW) times the ``pump_power``
-    setting. A visibility below 1 gives the Werner state v|B><B| + (1-v) I/4, represented as
-    an incoherent ensemble of the four Bell states (weights v + (1-v)/4 and (1-v)/4) sharing
+    spread. The rate (pairs per second, each pair counted once) is ``pair_rate`` or
+    ``brightness`` (pairs/s/mW) times the ``pump_power`` setting; ``pump_power`` is the rate
+    scale of the emission cache and not part of its key. A visibility below 1 gives the
+    Werner state v|B><B| + (1-v) I/4, represented as an incoherent ensemble of the four
+    Bell states (weights v + (1-v)/4 and (1-v)/4) sharing
     one spectral amplitude, on one contiguous lattice. The rate engine sums members at the
     level of density matrices, so singles, coincidences, windows, HOM, CW and pulsed
     unheralded g2 and the Schmidt number are those of the mixed state; the one-photon
@@ -795,6 +875,17 @@ class EntangledPairSource(Component):
 
     def ports(self):
         return (PortSpec("signal", FREE, OUT), PortSpec("idler", FREE, OUT))
+
+    emit_scale_settings = ("pump_power",)
+
+    def emit_cache_key(self, lights):
+        return ()
+
+    def emit_rate_scale(self, lights):
+        p = self.params
+        if p.pair_rate is not None or p.brightness is None:
+            return 1.0
+        return self.settings.pump_power.si
 
     def _rate(self) -> float:
         p = self.params

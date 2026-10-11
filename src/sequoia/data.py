@@ -1,4 +1,5 @@
 import datetime
+import math
 import re
 import warnings
 from typing import Annotated, Any, Literal
@@ -7,6 +8,7 @@ import numpy as np
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     PrivateAttr,
     field_validator,
@@ -15,7 +17,7 @@ from pydantic import (
 )
 from scipy.interpolate import RegularGridInterpolator
 
-from sequoia.units import check_unit, to_si, unit_dimension
+from sequoia.units import check_unit, is_plane_angle_unit, to_si, unit_dimension
 
 Source = Literal["datasheet", "raw-data", "measured", "model", "ideal-default"]
 Extrapolation = Literal["warn_clamp", "clamp", "zero", "error"]
@@ -66,11 +68,19 @@ class Scalar(BaseModel):
         if isinstance(data, int | float):
             return {"value": float(data)}
         if isinstance(data, str):
+            data = data.replace("\u2212", "-")
             match = _SCALAR_RE.match(data)
             if not match:
                 raise ValueError(f"cannot parse quantity {data!r}; expected '<number> <unit>'")
             return {"value": float(match[1]), "unit": match[2] or "1"}
         return data
+
+    @field_validator("value")
+    @classmethod
+    def _not_nan(cls, value: float) -> float:
+        if math.isnan(value):
+            raise ValueError("a quantity cannot be NaN")
+        return value
 
     @field_validator("unit")
     @classmethod
@@ -104,6 +114,7 @@ _BARE_HINTS = {
     "time": "write the unit, e.g. '50 ns'",
     "power": "write the unit, e.g. '10 mW'",
     "nonlinear_coefficient": "write the unit, e.g. '3.9 pm/V'",
+    "responsivity": "write the unit, e.g. '0.5 A/W'",
 }
 
 
@@ -111,7 +122,7 @@ def _require_dimension(dimension: str, *, label: str | None = None, allow_bare_z
     name = label or dimension
 
     def check(scalar: Scalar) -> Scalar:
-        if unit_dimension(scalar.unit) != dimension:
+        if unit_dimension(scalar.unit, extended=True) != dimension:
             if dimension != "dimensionless" and scalar.unit.strip() in ("", "1"):
                 if allow_bare_zero and scalar.value == 0.0:
                     return scalar
@@ -127,6 +138,18 @@ def _require_dimension(dimension: str, *, label: str | None = None, allow_bare_z
                     if dimension in _UNIT_EXAMPLES
                     else ""
                 )
+            )
+        if not math.isfinite(scalar.value) and not (
+            dimension == "length" and scalar.value == math.inf
+        ):
+            raise ValueError(
+                f"a {name} quantity must be finite, got {_format_number(scalar.value)} "
+                f"{scalar.unit}".rstrip()
+            )
+        if dimension == "angle" and not is_plane_angle_unit(scalar.unit):
+            raise ValueError(
+                f"angle unit {scalar.unit!r} is not supported; use deg, rad, mrad, arcmin or "
+                "arcsec (a full turn or a gradian is easily mistaken for degrees)"
             )
         if dimension == "temperature" and scalar.si < 0.0:
             raise ValueError(
@@ -145,6 +168,7 @@ _UNIT_EXAMPLES = {
     "current": "A, mA or uA",
     "voltage": "V or mV",
     "nonlinear_coefficient": "pm/V",
+    "responsivity": "A/W",
 }
 
 Length = Annotated[Scalar, AfterValidator(_require_dimension("length"))]
@@ -161,6 +185,31 @@ NonlinearCoefficient = Annotated[
     AfterValidator(_require_dimension("nonlinear_coefficient", label="nonlinear coefficient")),
 ]
 Dimensionless = Annotated[Scalar, AfterValidator(_require_dimension("dimensionless"))]
+Responsivity = Annotated[Scalar, AfterValidator(_require_dimension("responsivity"))]
+
+
+def _brightness(value: Any) -> float:
+    """Pairs per second per mW of pump. A bare number is taken in these units (the form of the
+    library parts); a quantity must have the dimension of a rate per power, e.g. '1e5 Hz/mW' or
+    '1e8 1/(s W)'."""
+    if isinstance(value, bool):
+        raise ValueError("expected a number or '<number> <unit>', got a boolean")
+    scalar = value if isinstance(value, Scalar) else Scalar.model_validate(value)
+    if scalar.unit.strip() in ("", "1"):
+        number = scalar.value
+    else:
+        if unit_dimension(scalar.unit, extended=True) != "per_energy":
+            raise ValueError(
+                f"brightness must be pairs per second per pump power (e.g. '1e5 Hz/mW'), got "
+                f"unit {scalar.unit!r}"
+            )
+        number = scalar.si * 1e-3
+    if not math.isfinite(number) or number < 0.0:
+        raise ValueError(f"brightness must be a finite non-negative number, got {number}")
+    return float(number)
+
+
+Brightness = Annotated[float, BeforeValidator(_brightness)]
 
 
 def parse_axis(text: str) -> tuple[str, str]:
