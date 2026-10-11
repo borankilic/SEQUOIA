@@ -26,6 +26,21 @@ rm -rf .venv && UV_PROJECT_ENVIRONMENT=venv uv sync --all-extras && ln -s venv .
 uv run sequoia
 ```
 
+Open a setup file in the editor (parts come from `./library`, or from a `library/` folder next to the
+file or in one of its parents; override with `--library DIR`, or use File > Open Library...):
+
+```bash
+uv run sequoia setups/hbt_heralded.yaml
+```
+
+Drag parts from the palette onto the canvas (or double-click them), drag from a port to another
+port to link them, and edit values in the inspector. The setup is re-simulated in the background
+after every edit (Run > Auto-run) and the results dock shows diagnostics, links, readouts and
+counts; clicking a diagnostic selects the offending component or link. Shortcuts: `R`/`Shift+R`
+rotate, `F` flip, `Delete`, `Ctrl+C`/`Ctrl+V`, `Ctrl+Z`/`Ctrl+Shift+Z`, `Ctrl+L` auto layout,
+`Ctrl+G` snap to grid, `Ctrl+=`/`Ctrl+-`/`Ctrl+0` zoom, `Ctrl+Return` run now, `Space`+drag or middle
+mouse to pan. Window layout and recent files are remembered between sessions.
+
 Simulate a setup from the command line:
 
 ```bash

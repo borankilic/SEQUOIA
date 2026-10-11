@@ -56,14 +56,15 @@ def _run(setup_path: str, library_path: str) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="sequoia")
-    sub = parser.add_subparsers(dest="command")
-    run = sub.add_parser("run", help="simulate a setup file and print the results")
-    run.add_argument("setup")
-    run.add_argument("--library", default="library")
-    args = parser.parse_args()
-    if args.command == "run":
+    argv = sys.argv[1:]
+    if argv and argv[0] == "run":
+        parser = argparse.ArgumentParser(
+            prog="sequoia run", description="simulate a setup file and print the results"
+        )
+        parser.add_argument("setup")
+        parser.add_argument("--library", default="library")
+        args = parser.parse_args(argv[1:])
         sys.exit(_run(args.setup, args.library))
     from sequoia.gui.app import run as run_gui
 
-    sys.exit(run_gui())
+    sys.exit(run_gui(argv))

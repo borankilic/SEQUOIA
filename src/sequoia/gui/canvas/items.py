@@ -1,0 +1,374 @@
+import math
+
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QFontMetricsF,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QTransform,
+)
+from PySide6.QtWidgets import QApplication, QGraphicsItem
+
+from sequoia.components.base import PortDirection, PortKind
+
+CELL = 40.0
+SNAP_CELLS = 0.5
+PORT_RADIUS = 4.0
+PORT_HIT = 9.0
+
+KIND_COLORS = {
+    PortKind.FREE_SPACE: QColor("#e67e22"),
+    PortKind.FIBER: QColor("#2a6fdb"),
+    PortKind.ELECTRICAL: QColor("#8e44ad"),
+}
+LINK_COLORS = {
+    "free_space": KIND_COLORS[PortKind.FREE_SPACE],
+    "fiber": KIND_COLORS[PortKind.FIBER],
+    "cable": KIND_COLORS[PortKind.ELECTRICAL],
+}
+SEVERITY_COLORS = {
+    "error": QColor("#d62728"),
+    "warning": QColor("#e6a700"),
+    "info": QColor("#1f77b4"),
+}
+VALID_COLOR = QColor("#2ecc71")
+INVALID_COLOR = QColor("#e74c3c")
+
+
+def _font(pixels: float, bold: bool = False, italic: bool = False) -> QFont:
+    font = QFont(QApplication.font())
+    font.setPixelSize(int(pixels))
+    font.setBold(bold)
+    font.setItalic(italic)
+    return font
+
+
+_FONTS: dict = {}
+
+
+def font(name: str) -> QFont:
+    if name not in _FONTS:
+        spec = {
+            "type": (9, False, False),
+            "id": (11, True, False),
+            "port": (8, False, False),
+            "label": (10, False, False),
+            "label_italic": (10, False, True),
+        }[name]
+        _FONTS[name] = _font(*spec)
+    return _FONTS[name]
+
+
+def snap_value(value: float, step: float) -> float:
+    return round(value / step) * step
+
+
+def marker_path(kind: PortKind, radius: float = PORT_RADIUS) -> QPainterPath:
+    path = QPainterPath()
+    r = radius
+    if kind == PortKind.ELECTRICAL:
+        path.addRect(QRectF(-r, -r, 2 * r, 2 * r))
+    elif kind == PortKind.FIBER:
+        r *= 1.3
+        path.moveTo(0, -r)
+        path.lineTo(r, 0)
+        path.lineTo(0, r)
+        path.lineTo(-r, 0)
+        path.closeSubpath()
+    else:
+        path.addEllipse(QPointF(0, 0), r, r)
+    return path
+
+
+class ComponentItem(QGraphicsItem):
+    def __init__(self, canvas, instance, ports, valid: bool) -> None:
+        super().__init__()
+        self.canvas = canvas
+        self.instance_id = instance.id
+        self.part = instance.part
+        self.rotation_deg = 0.0
+        self.flipped = False
+        self.ports = ()
+        self.valid = True
+        self._port_states: dict[str, str] = {}
+        self._local: dict[str, tuple[float, float, float, float]] = {}
+        self._w = 2 * CELL
+        self._h = 1.5 * CELL
+        self.setFlags(
+            QGraphicsItem.ItemIsSelectable
+            | QGraphicsItem.ItemIsMovable
+            | QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self.setAcceptHoverEvents(True)
+        self.setZValue(2)
+        self.update_from(instance, ports, valid)
+
+    @property
+    def type_label(self) -> str:
+        return self.part.rsplit("/", 1)[-1]
+
+    def update_from(self, instance, ports, valid: bool) -> None:
+        self.prepareGeometryChange()
+        self.part = instance.part
+        self.rotation_deg = float(instance.rotation)
+        self.flipped = bool(instance.flipped)
+        self.ports = tuple(ports)
+        self.valid = valid
+        self._layout()
+        target = QPointF(instance.position[0] * CELL, instance.position[1] * CELL)
+        if self.pos() != target:
+            self.setPos(target)
+        self.update()
+
+    @staticmethod
+    def _shows_label(name: str) -> bool:
+        return name not in ("in", "out")
+
+    def _layout(self) -> None:
+        ins = [p for p in self.ports if p.direction == PortDirection.IN]
+        outs = [p for p in self.ports if p.direction == PortDirection.OUT]
+        n = max(len(ins), len(outs), 1)
+        self._h = max(1.5, 0.5 * (n + 1)) * CELL
+        text_w = max(
+            QFontMetricsF(font("id")).horizontalAdvance(self.instance_id),
+            QFontMetricsF(font("type")).horizontalAdvance(self.type_label),
+        )
+        fm = QFontMetricsF(font("port"))
+        side = max(
+            [fm.horizontalAdvance(p.name) for p in self.ports if self._shows_label(p.name)] or [0]
+        )
+        need = text_w + 2 * side + 24
+        self._w = max(2, math.ceil(need / CELL)) * CELL
+        self._local = {}
+        for group, x, inward in ((ins, -self._w / 2, 1.0), (outs, self._w / 2, -1.0)):
+            for i, port in enumerate(group):
+                y = -self._h / 2 + self._h * (i + 1) / (len(group) + 1)
+                self._local[port.name] = (x, y, inward, 0.0)
+
+    def _matrix(self) -> tuple[float, float, float, float]:
+        a = math.radians(-self.rotation_deg)
+        c, s = math.cos(a), math.sin(a)
+        if self.rotation_deg % 90 == 0:
+            c, s = round(c), round(s)
+        fx = -1.0 if self.flipped else 1.0
+        return c * fx, s * fx, -s, c
+
+    def _map(self, x: float, y: float) -> QPointF:
+        m11, m12, m21, m22 = self._matrix()
+        return QPointF(m11 * x + m21 * y, m12 * x + m22 * y)
+
+    def port_offset(self, name: str) -> QPointF | None:
+        entry = self._local.get(name)
+        return None if entry is None else self._map(entry[0], entry[1])
+
+    def port_inward(self, name: str) -> QPointF | None:
+        entry = self._local.get(name)
+        return None if entry is None else self._map(entry[2], 0.0)
+
+    def port_scene_position(self, name: str) -> QPointF | None:
+        offset = self.port_offset(name)
+        return None if offset is None else self.pos() + offset
+
+    def port_at(self, scene_pos: QPointF, radius: float = PORT_HIT) -> str | None:
+        best, best_d = None, radius
+        for name in self._local:
+            d = math.dist(
+                (scene_pos.x(), scene_pos.y()),
+                (self.port_scene_position(name).x(), self.port_scene_position(name).y()),
+            )
+            if d <= best_d:
+                best, best_d = name, d
+        return best
+
+    def port_spec(self, name: str):
+        return next((p for p in self.ports if p.name == name), None)
+
+    def set_port_state(self, name: str | None, state: str | None) -> None:
+        if name is None:
+            self._port_states.clear()
+        elif state is None:
+            self._port_states.pop(name, None)
+        else:
+            self._port_states[name] = state
+        self.update()
+
+    def _body_path(self) -> QPainterPath:
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(-self._w / 2, -self._h / 2, self._w, self._h), 6, 6)
+        m11, m12, m21, m22 = self._matrix()
+        return QTransform(m11, m12, m21, m22, 0, 0).map(path)
+
+    def boundingRect(self) -> QRectF:
+        return self._body_path().boundingRect().adjusted(-12, -12, 12, 12)
+
+    def shape(self) -> QPainterPath:
+        path = self._body_path()
+        for name in self._local:
+            p = self.port_offset(name)
+            path.addEllipse(p, PORT_RADIUS + 1, PORT_RADIUS + 1)
+        return path
+
+    def hoverMoveEvent(self, event) -> None:
+        name = self.port_at(event.scenePos())
+        if name is None:
+            self.setToolTip(f"{self.instance_id} ({self.part})")
+        else:
+            spec = self.port_spec(name)
+            self.setToolTip(f"{self.instance_id}.{name} ({spec.kind}, {spec.direction})")
+        super().hoverMoveEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.canvas.item_activated.emit(self.instance_id)
+
+    def itemChange(self, change, value):
+        canvas = self.canvas
+        if change == QGraphicsItem.ItemPositionChange and canvas is not None and canvas.snap:
+            step = SNAP_CELLS * CELL
+            return QPointF(snap_value(value.x(), step), snap_value(value.y(), step))
+        if change == QGraphicsItem.ItemPositionHasChanged and canvas is not None:
+            canvas.item_moved(self)
+        return super().itemChange(change, value)
+
+    def _text_angle(self) -> float:
+        ang = -(self.rotation_deg % 360.0)
+        while ang < -90:
+            ang += 180
+        while ang >= 90:
+            ang -= 180
+        return ang
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        pal = QApplication.palette()
+        painter.setRenderHint(QPainter.Antialiasing)
+        severity = self.canvas.highlights.get(self.instance_id)
+        body = self._body_path()
+        text_color = pal.windowText().color()
+        edge = QColor(text_color)
+        edge.setAlpha(170)
+        pen = QPen(edge, 1.3)
+        if not self.valid:
+            pen = QPen(SEVERITY_COLORS["error"], 1.6, Qt.DashLine)
+        if severity in SEVERITY_COLORS:
+            pen = QPen(SEVERITY_COLORS[severity], 3.0)
+        if self.isSelected():
+            glow = QColor(pal.highlight().color())
+            glow.setAlpha(110)
+            painter.setPen(QPen(glow, 8))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(body)
+            if severity not in SEVERITY_COLORS:
+                pen = QPen(pal.highlight().color(), 2.2)
+        painter.setPen(pen)
+        painter.setBrush(QBrush(pal.base().color().darker(103)))
+        painter.drawPath(body)
+
+        painter.save()
+        painter.rotate(self._text_angle())
+        painter.setPen(text_color)
+        avail = self._w - 8 if abs(self._text_angle()) < 1e-6 or True else self._w
+        fm_t, fm_i = QFontMetricsF(font("type")), QFontMetricsF(font("id"))
+        painter.setFont(font("type"))
+        gray = QColor(text_color)
+        gray.setAlpha(150)
+        painter.setPen(gray)
+        painter.drawText(
+            QRectF(-avail / 2, -fm_t.height() - 1, avail, fm_t.height()),
+            Qt.AlignCenter,
+            fm_t.elidedText(self.type_label, Qt.ElideRight, avail),
+        )
+        painter.setFont(font("id"))
+        painter.setPen(text_color)
+        painter.drawText(
+            QRectF(-avail / 2, 1, avail, fm_i.height()),
+            Qt.AlignCenter,
+            fm_i.elidedText(self.instance_id, Qt.ElideRight, avail),
+        )
+        painter.restore()
+
+        ang = self._text_angle()
+        t = (math.cos(math.radians(ang)), math.sin(math.radians(ang)))
+        fm_p = QFontMetricsF(font("port"))
+        for port in self.ports:
+            name = port.name
+            if name not in self._local:
+                continue
+            p = self.port_offset(name)
+            state = self._port_states.get(name)
+            color = KIND_COLORS[port.kind]
+            if state == "valid":
+                color = VALID_COLOR
+            elif state == "invalid":
+                color = INVALID_COLOR
+            painter.save()
+            painter.translate(p)
+            if state:
+                painter.setPen(Qt.NoPen)
+                halo = QColor(color)
+                halo.setAlpha(90)
+                painter.setBrush(halo)
+                painter.drawEllipse(QPointF(0, 0), PORT_RADIUS + 5, PORT_RADIUS + 5)
+            painter.setPen(QPen(text_color, 1.0))
+            painter.setBrush(color)
+            painter.drawPath(marker_path(port.kind))
+            painter.restore()
+            if self._shows_label(name):
+                d = self.port_inward(name)
+                painter.save()
+                painter.translate(p + d * 7)
+                painter.rotate(ang)
+                painter.setFont(font("port"))
+                painter.setPen(gray)
+                tw = fm_p.horizontalAdvance(name)
+                forward = t[0] * d.x() + t[1] * d.y() >= 0
+                x0 = 0.0 if forward else -tw
+                painter.drawText(
+                    QRectF(x0, -fm_p.height() / 2, tw, fm_p.height()), Qt.AlignCenter, name
+                )
+                painter.restore()
+
+
+class ProbeItem(QGraphicsItem):
+    def __init__(self, canvas, probe_id: str, part: str, link_id: str) -> None:
+        super().__init__()
+        self.canvas = canvas
+        self.probe_id = probe_id
+        self.part = part
+        self.link_id = link_id
+        self.setFlags(QGraphicsItem.ItemIsSelectable)
+        self.setZValue(3)
+        self.setToolTip(f"{probe_id} ({part}) on {link_id}")
+
+    def boundingRect(self) -> QRectF:
+        w = QFontMetricsF(font("port")).horizontalAdvance(self.probe_id)
+        return QRectF(-9, -22, max(18.0, w + 8), 32)
+
+    def shape(self) -> QPainterPath:
+        path = QPainterPath()
+        path.addRect(self.boundingRect())
+        return path
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.canvas.item_activated.emit(self.probe_id)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        pal = QApplication.palette()
+        painter.setRenderHint(QPainter.Antialiasing)
+        severity = self.canvas.highlights.get(self.probe_id)
+        color = SEVERITY_COLORS.get(severity, pal.windowText().color())
+        if self.isSelected():
+            color = pal.highlight().color()
+        tri = QPainterPath()
+        tri.moveTo(0, 0)
+        tri.lineTo(-5, -10)
+        tri.lineTo(5, -10)
+        tri.closeSubpath()
+        painter.setPen(QPen(pal.windowText().color(), 1))
+        painter.setBrush(color)
+        painter.drawPath(tri)
+        painter.setFont(font("port"))
+        painter.setPen(pal.windowText().color())
+        painter.drawText(QPointF(-8, -14), self.probe_id)
