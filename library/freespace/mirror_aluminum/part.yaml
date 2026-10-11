@@ -1,0 +1,15 @@
+type: Mirror
+manufacturer: generic
+model: protected aluminum mirror, 25.4 mm
+params:
+  wavefront_error: 0.05
+  damage_threshold_cw: 500.0
+  reflectance:
+    curve: reflectance.csv
+    x: wavelength (nm)
+    y: reflectance (1)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  clear_aperture:
+    value: 22.9
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

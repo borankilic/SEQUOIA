@@ -1,0 +1,19 @@
+type: Objective
+manufacturer: generic
+model: 20x objective, NA 0.4
+params:
+  wavefront_error: 0.05
+  effective_focal_length:
+    value: 9.0
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  numerical_aperture: 0.4
+  back_aperture:
+    value: 7.2
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  working_distance:
+    value: 31.62277660168379
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  transmission: 0.9

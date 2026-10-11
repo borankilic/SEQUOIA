@@ -1,0 +1,14 @@
+type: FiberCoupler
+manufacturer: generic
+model: FC fiber collimator / coupler f = 4.5 mm
+params:
+  wavefront_error: 0.05
+  focal_length:
+    value: 4.5
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  clear_aperture:
+    value: 4.05
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  transmission: 0.98

@@ -1,0 +1,11 @@
+type: SpectralFilter
+manufacturer: generic
+model: 405 nm band-pass, 10 nm FWHM, OD 5 blocking
+description: Typical-class thin-film band-pass; shifts to shorter wavelengths with angle.
+params:
+  damage_threshold_cw: 1000.0
+  transmission:
+    curve: transmission.csv
+    x: wavelength (nm)
+    y: transmission (1)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

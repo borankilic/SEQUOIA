@@ -1,0 +1,4 @@
+type: Polarizer
+manufacturer: generic
+model: wire-grid polarizer, extinction ratio 100
+params: {wavefront_error: 0.1, damage_threshold_cw: 500.0, extinction_ratio: 100.0, transmission: 0.75}

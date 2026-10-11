@@ -1,0 +1,13 @@
+type: WavePlate
+manufacturer: generic
+model: multi-order half-wave plate, 633 nm (order 10)
+description: 'Cheap multi-order plate: very sensitive to wavelength and temperature.'
+params:
+  retardance: 0.5
+  design_wavelength:
+    value: 633.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  order: 10
+  retardance_error: 0.005
+  transmission: 0.99

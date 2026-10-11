@@ -1,0 +1,15 @@
+type: WavePlate
+manufacturer: generic
+model: achromatic half-wave plate, 500-900 nm
+params:
+  retardance: 0.5
+  design_wavelength:
+    value: 700.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  retardance_curve:
+    curve: retardance_curve.csv
+    x: wavelength (nm)
+    y: retardance (1)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  transmission: 0.99

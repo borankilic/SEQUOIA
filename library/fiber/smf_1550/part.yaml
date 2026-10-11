@@ -1,0 +1,15 @@
+type: OpticalFiber
+manufacturer: generic
+model: 1550 nm single-mode fiber
+params:
+  kind: smf
+  mode_field_diameter:
+    value: 10.4
+    unit: um
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  cutoff_wavelength:
+    value: 1260.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  numerical_aperture: 0.14
+  attenuation_db_per_km: 0.2

@@ -1,0 +1,19 @@
+type: Objective
+manufacturer: generic
+model: 60x objective, NA 0.85
+params:
+  wavefront_error: 0.05
+  effective_focal_length:
+    value: 3.0
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  numerical_aperture: 0.85
+  back_aperture:
+    value: 5.1
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  working_distance:
+    value: 21.693045781865617
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  transmission: 0.9

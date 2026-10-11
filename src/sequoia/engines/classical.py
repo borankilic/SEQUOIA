@@ -154,7 +154,8 @@ def propagate_network(
             deliver(inst_id, port, beam)
         for port in [p.name for p in comp.ports()]:
             for beam in arrivals.get((inst_id, port), []):
-                for out_port, out_beam in comp.propagate(port, beam, ctx):
+                outputs = comp.apply_quality(beam, comp.propagate(port, beam, ctx), ctx)
+                for out_port, out_beam in outputs:
                     deliver(inst_id, out_port, out_beam)
     return arrivals, arrived_beams
 

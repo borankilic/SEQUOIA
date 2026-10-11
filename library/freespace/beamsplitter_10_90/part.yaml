@@ -1,0 +1,4 @@
+type: BeamSplitter
+manufacturer: generic
+model: plate beam splitter R:T = 10:90
+params: {wavefront_error: 0.1, reflectance: 0.1, absorption: 0.01}

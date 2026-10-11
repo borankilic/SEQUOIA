@@ -1,5 +1,5 @@
 import numpy as np
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from sequoia.components._util import (
     REFLECT,
@@ -11,6 +11,7 @@ from sequoia.components._util import (
 )
 from sequoia.components.base import (
     Component,
+    OpticParams,
     Params,
     PortDirection,
     PortKind,
@@ -28,10 +29,21 @@ class AngleSettings(Settings):
     angle: Angle = Scalar(value=0.0, unit="deg")
 
 
-class WavePlateParams(Params):
+class WavePlateParams(OpticParams):
     retardance: Dimensionless
     design_wavelength: Length
     retardance_curve: Curve | None = None
+    order: int = Field(
+        default=0,
+        ge=0,
+        description="whole waves of retardance added to a multi-order plate (0 = zero order); "
+        "higher orders are more sensitive to wavelength",
+    )
+    retardance_error: float = Field(
+        default=0.0,
+        description="as-built retardance error in waves at the design wavelength "
+        "(for example 0.0033 for a lambda/300 tolerance)",
+    )
     transmission: Dimensionless | Curve = Unity
 
 
@@ -49,13 +61,13 @@ class WavePlate(Component):
         if p.retardance_curve is not None:
             waves = np.asarray(p.retardance_curve(w), dtype=float)
         else:
-            waves = p.retardance.si * p.design_wavelength.si / w
+            waves = (p.retardance.si + p.order + p.retardance_error) * p.design_wavelength.si / w
         amplitude = sqrt_power(spectral(p.transmission, w))
         jones = amplitude[:, None, None] * retarder(waves, self.settings.angle.si)
         return [("out", beam.through(ctx.subject, jones))]
 
 
-class PolarizerParams(Params):
+class PolarizerParams(OpticParams):
     extinction_ratio: Dimensionless = Scalar(value=1000.0)
     transmission: Dimensionless | Curve = Unity
 
@@ -76,11 +88,24 @@ class Polarizer(Component):
         return [("out", beam.through(ctx.subject, jones))]
 
 
-class PBSParams(Params):
+class PBSParams(OpticParams):
     transmittance_p: Dimensionless | Curve = Unity
     transmittance_s: Dimensionless | Curve = Scalar(value=0.0)
     reflectance_s: Dimensionless | Curve = Unity
     reflectance_p: Dimensionless | Curve = Scalar(value=0.0)
+
+    @model_validator(mode="after")
+    def _energy(self):
+        for t, r, what in (
+            (self.transmittance_p, self.reflectance_p, "p"),
+            (self.transmittance_s, self.reflectance_s, "s"),
+        ):
+            if isinstance(t, Scalar) and isinstance(r, Scalar) and t.si + r.si > 1.0 + 1e-9:
+                raise ValueError(
+                    f"transmittance_{what} + reflectance_{what} = {t.si + r.si:.4g} exceeds 1: "
+                    "a passive splitter cannot create light"
+                )
+        return self
 
 
 @register("polarization", "PBS")

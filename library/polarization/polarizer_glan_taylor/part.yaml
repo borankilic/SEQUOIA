@@ -1,0 +1,4 @@
+type: Polarizer
+manufacturer: generic
+model: glan-taylor polarizer, extinction ratio 100000
+params: {wavefront_error: 0.1, damage_threshold_cw: 2000.0, extinction_ratio: 100000.0, transmission: 0.95}

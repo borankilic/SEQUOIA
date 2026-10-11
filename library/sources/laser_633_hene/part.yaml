@@ -1,0 +1,21 @@
+type: Laser
+manufacturer: generic
+model: 633 nm CW laser, 5 mW
+params:
+  wavelength:
+    value: 633.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  power:
+    value: 5.0
+    unit: mW
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  linewidth:
+    value: 1.5
+    unit: GHz
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  polarization_extinction_ratio: 500.0
+  waist_radius:
+    value: 0.4
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

@@ -1,0 +1,14 @@
+type: WavePlate
+manufacturer: generic
+model: zero-order half-wave plate, 780 nm
+description: Zero-order plate, tolerance lambda/300; retardance varies with wavelength.
+params:
+  wavefront_error: 0.05
+  damage_threshold_cw: 1000.0
+  retardance: 0.5
+  design_wavelength:
+    value: 780.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  retardance_error: 0.0033333333333333335
+  transmission: 0.995

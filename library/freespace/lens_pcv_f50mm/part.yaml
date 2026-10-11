@@ -1,0 +1,19 @@
+type: Lens
+manufacturer: generic
+model: plano-concave lens f = -50 mm, 25.4 mm
+params:
+  wavefront_error: 0.07
+  focal_length:
+    value: -50.0
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  focal_length_curve:
+    curve: focal_length_curve.csv
+    x: wavelength (nm)
+    y: focal length (m)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  transmission: 0.99
+  clear_aperture:
+    value: 22.9
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

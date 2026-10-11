@@ -1,0 +1,10 @@
+type: SpectralFilter
+manufacturer: generic
+model: 850 nm long-pass edge filter, OD 5
+params:
+  damage_threshold_cw: 1000.0
+  transmission:
+    curve: transmission.csv
+    x: wavelength (nm)
+    y: transmission (1)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

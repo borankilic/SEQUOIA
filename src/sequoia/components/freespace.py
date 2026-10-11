@@ -1,11 +1,12 @@
 import math
 
 import numpy as np
+from pydantic import model_validator
 
 from sequoia.components._util import REFLECT, diag_jones, spectral, sqrt_power
 from sequoia.components.base import (
     Component,
-    Params,
+    OpticParams,
     PortDirection,
     PortKind,
     PortSpec,
@@ -34,7 +35,7 @@ class _Optic(Component):
         return t
 
 
-class LensParams(Params):
+class LensParams(OpticParams):
     focal_length: Length
     focal_length_curve: Curve | None = None
     transmission: Dimensionless | Curve = Unity
@@ -67,7 +68,7 @@ class Lens(_Optic):
         return [("out", beam.through(ctx.subject, jones, mode=mode))]
 
 
-class ObjectiveParams(Params):
+class ObjectiveParams(OpticParams):
     effective_focal_length: Length
     numerical_aperture: Dimensionless
     back_aperture: Length | None = None
@@ -96,7 +97,7 @@ class Objective(_Optic):
         return [("out", beam.through(ctx.subject, jones, mode=mode))]
 
 
-class MirrorParams(Params):
+class MirrorParams(OpticParams):
     reflectance: Dimensionless | Curve = Unity
     radius_of_curvature: Length | None = None
     clear_aperture: Length | None = None
@@ -128,10 +129,21 @@ class Mirror(_Optic):
         return [("out", beam.through(ctx.subject, jones, mode=mode))]
 
 
-class BeamSplitterParams(Params):
+class BeamSplitterParams(OpticParams):
     reflectance: Dimensionless | Curve = Scalar(value=0.5)
     reflectance_v: Dimensionless | Curve | None = None
     absorption: Dimensionless | Curve = Scalar(value=0.0)
+
+    @model_validator(mode="after")
+    def _energy(self):
+        a = self.absorption.si if isinstance(self.absorption, Scalar) else 0.0
+        for r in (self.reflectance, self.reflectance_v):
+            if isinstance(r, Scalar) and r.si + a > 1.0 + 1e-9:
+                raise ValueError(
+                    f"reflectance {r.si:.4g} + absorption {a:.4g} exceeds 1: "
+                    "a beam splitter cannot create light"
+                )
+        return self
 
 
 @register("freespace", "BeamSplitter")
@@ -167,7 +179,7 @@ class BeamSplitter(Component):
         ]
 
 
-class DichroicParams(Params):
+class DichroicParams(OpticParams):
     transmittance: Dimensionless | Curve
     reflectance: Dimensionless | Curve | None = None
 

@@ -71,6 +71,8 @@ class MainWindow(QMainWindow):
         self._bound = False
         self.library_manager: LibraryManager | None = None
         self._new_fiber_kind = "smf"
+        self.launcher: Callable[[], object] | None = None
+        self._skip_save_prompt = False
 
         self.document = SetupDocument(library)
         self.scene = CanvasScene(self.document)
@@ -176,6 +178,12 @@ class MainWindow(QMainWindow):
     def _build_actions(self) -> None:
         S = QKeySequence
         self.act_new = self._action("New", self.new_document, S.StandardKey.New)
+        self.act_new_window = self._action(
+            "New Experiment in New Window...", self.new_window, "Ctrl+Shift+N"
+        )
+        self.act_start = self._action(
+            "Close Experiment and Go to Start Screen", self.back_to_start, "Ctrl+Shift+W"
+        )
         self.act_open = self._action("Open...", self.open_dialog, S.StandardKey.Open)
         self.act_open_library = self._action("Open Library...", self.open_library_dialog)
         self.act_library_manager = self._action(
@@ -236,6 +244,7 @@ class MainWindow(QMainWindow):
         bar = self.menuBar()
         file_menu = bar.addMenu("&File")
         file_menu.addAction(self.act_new)
+        file_menu.addAction(self.act_new_window)
         file_menu.addAction(self.act_open)
         self.recent_menu = file_menu.addMenu("Open Recent")
         file_menu.addAction(self.act_open_library)
@@ -243,6 +252,8 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.act_save)
         file_menu.addAction(self.act_save_as)
+        file_menu.addSeparator()
+        file_menu.addAction(self.act_start)
         file_menu.addSeparator()
         file_menu.addAction(self.act_quit)
 
@@ -641,8 +652,31 @@ class MainWindow(QMainWindow):
             return self.save()
         return choice == "discard"
 
+    def new_window(self) -> None:
+        """Open the start screen in addition to this window, to begin another experiment."""
+        if self.launcher is not None:
+            self.launcher()
+
+    def back_to_start(self) -> bool:
+        """Close this experiment (asking to save) and show the start screen."""
+        if not self.maybe_save():
+            return False
+        if self.launcher is not None:
+            self.launcher()
+        self._skip_save_prompt = True
+        self.close()
+        return True
+
+    @staticmethod
+    def _is_bundled_example(path: Path) -> bool:
+        root = Path(__file__).resolve().parents[3]
+        resolved = Path(path).resolve()
+        return any(
+            folder in resolved.parents for folder in ((root / "templates"), (root / "setups"))
+        )
+
     def save(self) -> bool:
-        if self.document.path is None:
+        if self.document.path is None or self._is_bundled_example(self.document.path):
             return self.save_as()
         return self._save_to(None)
 
@@ -808,7 +842,7 @@ class MainWindow(QMainWindow):
         self.settings.sync()
 
     def closeEvent(self, event) -> None:
-        if not self.maybe_save():
+        if not self._skip_save_prompt and not self.maybe_save():
             event.ignore()
             return
         self._closing = True

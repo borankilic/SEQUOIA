@@ -1,0 +1,17 @@
+type: Photodiode
+manufacturer: generic
+model: InGaAs photodiode, 3 mm active diameter
+params:
+  responsivity:
+    curve: responsivity.csv
+    x: wavelength (nm)
+    y: responsivity (A/W)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  active_diameter:
+    value: 3.0
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  dark_current:
+    value: 5.0
+    unit: nA
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

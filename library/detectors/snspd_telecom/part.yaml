@@ -1,0 +1,21 @@
+type: SNSPD
+manufacturer: generic
+model: SNSPD, fiber coupled, optimized for 1550 nm
+params:
+  efficiency:
+    curve: efficiency.csv
+    x: wavelength (nm)
+    y: efficiency (1)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  dark_count_rate:
+    value: 50.0
+    unit: Hz
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  dead_time:
+    value: 30.0
+    unit: ns
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  jitter_fwhm:
+    value: 25.0
+    unit: ps
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

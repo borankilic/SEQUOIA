@@ -136,7 +136,7 @@ def test_search_filters_parts(qtbot, lib_copy):
     manager = LibraryManager(lib_copy)
     qtbot.addWidget(manager)
     manager.search.setText("snspd")
-    assert manager.visible_refs() == ["detectors/snspd_generic"]
+    assert manager.visible_refs() == ["detectors/snspd_generic", "detectors/snspd_telecom"]
     manager.search.setText("")
     assert len(manager.visible_refs()) == len(lib_copy.index())
 

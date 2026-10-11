@@ -1,0 +1,9 @@
+type: SpectralFilter
+manufacturer: generic
+model: 650 nm short-pass edge filter, OD 4
+params:
+  transmission:
+    curve: transmission.csv
+    x: wavelength (nm)
+    y: transmission (1)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

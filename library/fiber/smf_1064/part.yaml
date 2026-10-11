@@ -1,0 +1,15 @@
+type: OpticalFiber
+manufacturer: generic
+model: 1064 nm single-mode fiber
+params:
+  kind: smf
+  mode_field_diameter:
+    value: 6.8
+    unit: um
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  cutoff_wavelength:
+    value: 970.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  numerical_aperture: 0.12
+  attenuation_db_per_km: 1.5

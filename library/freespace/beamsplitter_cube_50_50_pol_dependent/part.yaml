@@ -1,0 +1,5 @@
+type: BeamSplitter
+manufacturer: generic
+model: non-polarizing cube beam splitter 50:50 with 5% polarization dependence
+description: Rs differs from Rp, as for real 'non-polarizing' cubes.
+params: {wavefront_error: 0.05, reflectance: 0.5, reflectance_v: 0.55, absorption: 0.01}

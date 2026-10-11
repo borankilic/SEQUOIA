@@ -1,0 +1,16 @@
+type: Lens
+manufacturer: generic
+model: aspheric lens f = 11 mm, NA 0.25, AR 600-1050 nm
+description: 'Aspheric collimation lens: almost no spherical aberration, small aperture.'
+params:
+  wavefront_error: 0.02
+  damage_threshold_cw: 2000.0
+  focal_length:
+    value: 11.0
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  transmission: 0.995
+  clear_aperture:
+    value: 5.5
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

@@ -2,6 +2,7 @@ import math
 from typing import Literal
 
 import numpy as np
+from pydantic import model_validator
 from scipy import constants
 
 from sequoia.components._util import rotation
@@ -48,6 +49,28 @@ class LaserParams(Params):
     repetition_rate: Frequency | None = None
     pulse_width: Duration | None = None
     pulse_shape: Literal["gaussian", "sech2"] = "gaussian"
+
+    @model_validator(mode="after")
+    def _physical(self):
+        checks = (
+            (self.wavelength.si > 0, "wavelength must be positive"),
+            (self.power.si >= 0, "power must not be negative"),
+            (
+                self.waist_radius is None or self.waist_radius.si > 0,
+                "waist_radius must be positive",
+            ),
+            (self.m_squared.si >= 1.0 - 1e-9, "m_squared must be at least 1"),
+            (self.divergence is None or self.divergence.si > 0, "divergence must be positive"),
+            (
+                self.repetition_rate is None or self.repetition_rate.si > 0,
+                "repetition_rate must be positive",
+            ),
+            (self.pulse_width is None or self.pulse_width.si > 0, "pulse_width must be positive"),
+        )
+        for ok, message in checks:
+            if not ok:
+                raise ValueError(message)
+        return self
 
 
 class LaserSettings(Settings):

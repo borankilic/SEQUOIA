@@ -1,0 +1,6 @@
+type: PBS
+manufacturer: generic
+model: broadband polarizing beam splitter cube, Tp 0.95 / Rs 0.995, finite extinction
+description: 'Typical cube PBS: transmission port is clean (1000:1), reflection port about 20:1.'
+params: {wavefront_error: 0.1, damage_threshold_cw: 500.0, transmittance_p: 0.95, transmittance_s: 0.005, reflectance_s: 
+    0.995, reflectance_p: 0.05}

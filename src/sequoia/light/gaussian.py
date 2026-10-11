@@ -102,6 +102,23 @@ class GaussianMode:
         abcd_y = abcd_x if abcd_y is None else abcd_y
         return replace(self, q_x=_apply(abcd_x, self.q_x), q_y=_apply(abcd_y, self.q_y))
 
+    def degraded(self, factor: float) -> "GaussianMode":
+        """Same local beam radius and curvature with the M^2 multiplied by ``factor`` (>= 1)."""
+        if factor == 1.0:
+            return self
+
+        def new_q(q: complex) -> complex:
+            inv = 1.0 / q
+            return 1.0 / complex(inv.real, inv.imag * factor)
+
+        return replace(
+            self,
+            q_x=new_q(self.q_x),
+            q_y=new_q(self.q_y),
+            m2_x=self.m2_x * factor,
+            m2_y=self.m2_y * factor,
+        )
+
     def propagate(self, distance: float) -> "GaussianMode":
         return self.apply(free_space(distance))
 

@@ -1,0 +1,21 @@
+type: Laser
+manufacturer: generic
+model: 1550 nm CW laser, 10 mW
+params:
+  wavelength:
+    value: 1550.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  power:
+    value: 10.0
+    unit: mW
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  linewidth:
+    value: 100.0
+    unit: kHz
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  polarization_extinction_ratio: 500.0
+  waist_radius:
+    value: 0.4
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

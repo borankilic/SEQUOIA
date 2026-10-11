@@ -114,51 +114,96 @@ class LinkTab(QWidget):
 
 
 class CausticTab(LinkTab):
+    """Beam envelope (1/e^2 radius, mirrored) along the optical path with apertures and waists."""
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.plot = pg.PlotWidget()
-        style_plot(self.plot, "distance along the path [mm]", "beam radius w [mm]")
+        style_plot(self.plot, "distance along the path [mm]", "beam radius [mm]")
         self.plot.addLegend(offset=(-10, 10))
-        self.curve_x = self.plot.plot(pen=pg.mkPen("#1f77b4", width=2), name="w_x")
-        self.curve_y = self.plot.plot(pen=pg.mkPen("#d62728", width=2, style=Qt.PenStyle.DashLine))
-        self.curve_y.opts["name"] = "w_y"
-        self.plot.getPlotItem().legend.addItem(self.curve_y, "w_y")
-        self.markers: list[pg.InfiniteLine] = []
+        blue, red = pg.mkPen("#1f77b4", width=2), pg.mkPen("#d62728", width=1.5)
+        self.upper_x = self.plot.plot(pen=blue, name="w (x)")
+        self.lower_x = self.plot.plot(pen=blue)
+        self.upper_y = self.plot.plot(
+            pen=pg.mkPen("#d62728", width=1.5, style=Qt.PenStyle.DashLine), name="w (y)"
+        )
+        self.lower_y = self.plot.plot(
+            pen=pg.mkPen("#d62728", width=1.5, style=Qt.PenStyle.DashLine)
+        )
+        self.fill = pg.FillBetweenItem(self.upper_x, self.lower_x, brush=(31, 119, 180, 45))
+        self.plot.addItem(self.fill)
+        self._red = red
+        self.items: list = []
         self.layout_.addWidget(self.plot, 1)
         self.data = None
 
     def clear(self) -> None:
-        self.curve_x.setData([], [])
-        self.curve_y.setData([], [])
-        self._clear_markers()
+        for curve in (self.upper_x, self.lower_x, self.upper_y, self.lower_y):
+            curve.setData([], [])
+        self._clear_items()
         self.data = None
 
-    def _clear_markers(self) -> None:
-        for line in self.markers:
-            self.plot.removeItem(line)
-        self.markers = []
+    def _clear_items(self) -> None:
+        for item in self.items:
+            self.plot.removeItem(item)
+        self.items = []
+
+    def _add(self, item) -> None:
+        self.plot.addItem(item)
+        self.items.append(item)
 
     def redraw(self, outcome: SimulationOutcome, link_id: str) -> None:
-        self._clear_markers()
+        self._clear_items()
         data = caustic(outcome.classical, link_id)
         self.data = data
         if len(data.z) == 0:
             self.clear()
             self.note.setText("no free-space path ends at this link")
             return
-        self.curve_x.setData(data.z * 1e3, data.w_x * 1e3)
-        self.curve_y.setData(data.z * 1e3, data.w_y * 1e3)
-        for z, label in data.markers:
+        z = data.z * 1e3
+        for curve, y in (
+            (self.upper_x, data.w_x * 1e3),
+            (self.lower_x, -data.w_x * 1e3),
+            (self.upper_y, data.w_y * 1e3),
+            (self.lower_y, -data.w_y * 1e3),
+        ):
+            curve.setData(z, y)
+        for zz, label in data.markers:
             line = pg.InfiniteLine(
-                z * 1e3,
+                zz * 1e3,
                 angle=90,
                 pen=pg.mkPen((128, 128, 128, 120), style=Qt.PenStyle.DotLine),
                 label=label,
                 labelOpts={"position": 0.97, "rotateAxis": (1, 0), "anchors": [(1, 1), (1, 1)]},
             )
-            self.plot.addItem(line)
-            self.markers.append(line)
-        self.note.setText(" → ".join(data.links))
+            self._add(line)
+        for zz, radius, _name in data.apertures:
+            half = radius * 1e3
+            xs = [zz * 1e3] * 2
+            self._add(pg.PlotCurveItem(xs, [-half, half], pen=pg.mkPen("#444", width=4), name=None))
+            for sign in (-1, 1):
+                self._add(
+                    pg.PlotCurveItem(
+                        [zz * 1e3 - 4, zz * 1e3 + 4],
+                        [sign * half] * 2,
+                        pen=pg.mkPen("#444", width=3),
+                    )
+                )
+        for zz, w0 in data.waists:
+            text = pg.TextItem(f"w0 = {eng(w0, 'm', 3)}", color="#1f77b4", anchor=(0.5, 1.2))
+            text.setPos(zz * 1e3, w0 * 1e3)
+            self._add(text)
+            dot = pg.ScatterPlotItem(
+                [zz * 1e3, zz * 1e3], [w0 * 1e3, -w0 * 1e3], size=7, brush="#1f77b4"
+            )
+            self._add(dot)
+        top = float(max(data.w_x.max(), data.w_y.max())) * 1e3
+        top = max(top * 1.6, 1e-6)
+        self.plot.setXRange(float(z.min()), float(z.max()), padding=0.02)
+        self.plot.setYRange(-top, top, padding=0)
+        self.note.setText(
+            " → ".join(data.links) + "   (bars: clear apertures; envelope = 1/e² beam radius)"
+        )
 
 
 class _Ellipse(QWidget):

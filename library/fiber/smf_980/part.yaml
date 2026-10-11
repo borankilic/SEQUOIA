@@ -1,0 +1,15 @@
+type: OpticalFiber
+manufacturer: generic
+model: 980 nm single-mode fiber
+params:
+  kind: smf
+  mode_field_diameter:
+    value: 6.6
+    unit: um
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  cutoff_wavelength:
+    value: 920.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  numerical_aperture: 0.12
+  attenuation_db_per_km: 2.0

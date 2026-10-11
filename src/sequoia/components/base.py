@@ -1,9 +1,10 @@
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import ClassVar
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from sequoia.errors import Issue, UnknownComponentError
 from sequoia.light.detection import DetectorModel, TaggerModel
@@ -44,6 +45,29 @@ class PortSpec:
 
 class Params(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class OpticParams(Params):
+    """Quality data shared by passive optics (catalogue 'specifications' tab)."""
+
+    wavefront_error: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="RMS wavefront error in waves at 633 nm; degrades the beam quality (M^2)",
+    )
+    damage_threshold_cw: float | None = Field(
+        default=None,
+        gt=0.0,
+        description="continuous-wave damage threshold in W/cm^2 (a warning is raised near it)",
+    )
+    damage_threshold_pulsed: float | None = Field(
+        default=None,
+        gt=0.0,
+        description="pulsed damage threshold in J/cm^2 for the pulse length of the source",
+    )
+
+
+DAMAGE_CAUTION = 0.5
 
 
 class Settings(BaseModel):
@@ -101,6 +125,44 @@ class Component:
     def propagate(self, port: str, beam: Beam, ctx: Context) -> list[tuple[str, Beam]]:
         return []
 
+    def apply_quality(
+        self, beam: Beam, outputs: list[tuple[str, Beam]], ctx: Context
+    ) -> list[tuple[str, Beam]]:
+        """Wavefront-error beam degradation and damage-threshold checks for passive optics."""
+        p = self.params
+        error = getattr(p, "wavefront_error", 0.0) or 0.0
+        cw = getattr(p, "damage_threshold_cw", None)
+        pulsed = getattr(p, "damage_threshold_pulsed", None)
+        if cw is not None or pulsed is not None:
+            power = ctx.beam_power(beam)
+            src = ctx.sources.get(beam.source)
+            if power is not None and power > 0 and ctx.significant(beam):
+                area = math.pi * beam.mode.w_x * beam.mode.w_y / 2.0
+                rep = getattr(src, "repetition_rate", None)
+                if pulsed is not None and rep:
+                    fluence = power / rep / area / 1e4
+                    self._damage_warning(ctx, fluence, pulsed, "J/cm^2", "pulse fluence")
+                elif cw is not None:
+                    self._damage_warning(ctx, power / area / 1e4, cw, "W/cm^2", "peak intensity")
+        if error <= 0.0:
+            return outputs
+        factor = math.sqrt(1.0 + (2.0 * math.pi * error) ** 2)
+        return [(port, _degrade_beam(b, factor)) for port, b in outputs]
+
+    @staticmethod
+    def _damage_warning(ctx: Context, value: float, limit: float, unit: str, what: str) -> None:
+        if value >= limit:
+            ctx.warn(
+                "damage_threshold_exceeded",
+                f"{what} {value:.3g} {unit} exceeds the damage threshold of {limit:.3g} {unit}",
+            )
+        elif value >= DAMAGE_CAUTION * limit:
+            ctx.warn(
+                "damage_threshold_close",
+                f"{what} {value:.3g} {unit} is {100 * value / limit:.0f}% of the damage "
+                f"threshold of {limit:.3g} {unit}",
+            )
+
     def detect(self, light: dict[str, LinkLight], ctx: Context) -> dict[str, float]:
         return {}
 
@@ -116,6 +178,12 @@ class Component:
 
     def measure(self, light: LinkLight) -> dict:
         return {}
+
+
+def _degrade_beam(beam: Beam, factor: float) -> Beam:
+    from dataclasses import replace
+
+    return replace(beam, mode=beam.mode.degraded(factor))
 
 
 _REGISTRY: dict[str, type[Component]] = {}

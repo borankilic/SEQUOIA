@@ -1,0 +1,4 @@
+type: Polarizer
+manufacturer: generic
+model: film polarizer, extinction ratio 1000
+params: {wavefront_error: 0.1, damage_threshold_cw: 500.0, extinction_ratio: 1000.0, transmission: 0.8}

@@ -58,6 +58,7 @@ def create_window(
             return None
         root = Path(chosen)
     window = MainWindow(Library(root), args.setup, settings=settings)
+    window.launcher = lambda: open_start_screen(argv, settings)
     if untitled and args.setup:
         make_untitled(window, args.setup)
     return window
@@ -104,6 +105,20 @@ def show_start_screen(
     return screen
 
 
+_OPEN_SCREENS: list[StartScreen] = []
+
+
+def open_start_screen(
+    argv: list[str] | None = None, settings: QSettings | None = None
+) -> StartScreen:
+    """Show a start screen; choosing something there opens a new window."""
+    screen = show_start_screen(argv, settings)
+    _OPEN_SCREENS.append(screen)
+    screen.show()
+    screen.raise_()
+    return screen
+
+
 def run(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv[:1])
     if parse_args(argv).setup is None:
@@ -113,6 +128,7 @@ def run(argv: list[str] | None = None) -> int:
     window = create_window(argv)
     if window is None:
         return 1
+    window.launcher = lambda: open_start_screen(argv)
     window.show()
     code = app.exec()
     window.deleteLater()

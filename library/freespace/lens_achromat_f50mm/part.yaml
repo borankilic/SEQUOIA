@@ -1,0 +1,21 @@
+type: Lens
+manufacturer: generic
+model: achromatic doublet f = 50 mm, 25.4 mm, AR 400-700 nm
+description: 'Achromatic doublet: small residual chromatic focal shift.'
+params:
+  wavefront_error: 0.04
+  damage_threshold_cw: 5000.0
+  focal_length:
+    value: 50.0
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  focal_length_curve:
+    curve: focal_length_curve.csv
+    x: wavelength (nm)
+    y: focal length (m)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  transmission: 0.99
+  clear_aperture:
+    value: 22.9
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

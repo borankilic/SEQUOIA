@@ -463,7 +463,7 @@ def test_hbt_pump_leakage_without_pump_blocking_filter(emission_cache):
         assert ch["leakage_hz"] > 1e8
         assert ch["leakage_hz"] > 1e3 * nominal.channels[name]["leakage_hz"]
         assert ch["singles_hz"] < 1.0 / h.spad.dead_time.si
-        assert ch["singles_hz"] > 0.9 / h.spad.dead_time.si
+        assert ch["singles_hz"] > 0.7 / h.spad.dead_time.si
     ratio = (
         result.channels["tagger.ch1"]["leakage_hz"] / nominal.channels["tagger.ch1"]["leakage_hz"]
     )

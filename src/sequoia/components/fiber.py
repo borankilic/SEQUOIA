@@ -1,11 +1,13 @@
 from typing import Literal
 
 import numpy as np
+from pydantic import Field
 from scipy.spatial.transform import Rotation
 
 from sequoia.components._util import diag_jones, spectral, sqrt_power
 from sequoia.components.base import (
     Component,
+    OpticParams,
     Params,
     PortDirection,
     PortKind,
@@ -54,6 +56,10 @@ class OpticalFiberParams(Params):
     attenuation_db_per_km: float | Curve = 0.0
     effective_index: float = 1.46
     group_index: float = 1.468
+    beat_length: Length | None = None
+    polarization_extinction_db: float | None = Field(
+        default=None, ge=0.0, description="PM fibers: crosstalk between the two polarization axes"
+    )
 
 
 @register("fiber", "OpticalFiber")
@@ -110,6 +116,13 @@ class OpticalFiber(Component):
         transmission = 10.0 ** (-loss_db / 10.0)
         amplitude = np.sqrt(eta * transmission)
         u = fiber_polarization(link.polarization)
+        if p.kind == "pm" and p.beat_length is not None:
+            waves = link.length.si / p.beat_length.si
+            u = u @ np.diag([1.0, np.exp(2j * np.pi * waves)])
+        if p.kind == "pm" and p.polarization_extinction_db:
+            crosstalk = 10.0 ** (-p.polarization_extinction_db / 20.0)
+            c, s_ = np.sqrt(1.0 - crosstalk**2), crosstalk
+            u = np.array([[c, -s_], [s_, c]]) @ u
         jones = amplitude[:, None, None] * u[None, :, :]
         out = beam.through(
             link_id,
@@ -123,7 +136,7 @@ class OpticalFiber(Component):
         return out, info
 
 
-class CouplerParams(Params):
+class CouplerParams(OpticParams):
     focal_length: Length
     clear_aperture: Length | None = None
     transmission: Dimensionless | Curve = Unity
@@ -165,7 +178,7 @@ class FiberCoupler(_Optic):
         return [("out", out)]
 
 
-class FiberBeamSplitterParams(Params):
+class FiberBeamSplitterParams(OpticParams):
     split_ratio: Dimensionless | Curve = Scalar(value=0.5)
     transmission: Dimensionless | Curve = Unity
 

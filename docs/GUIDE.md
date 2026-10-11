@@ -49,3 +49,30 @@ Numbers from the shipped example (10 mW pump, generic placeholder parts):
 - Scroll or pinch to zoom; the buttons at the bottom-left of the canvas zoom and fit the view.
 - Drag from a port to another port to connect two parts. Select a link to switch it between
   air and fiber, or to set the fiber type and its loss.
+
+## Saving and starting another experiment
+
+- **File > Save** (Ctrl+S) writes the experiment to its `.yaml` file; a new or template-based
+  experiment asks for a name first, and example files shipped with SEQUOIA are never overwritten.
+- **File > New Experiment in New Window** (Ctrl+Shift+N) opens the start screen next to the
+  current experiment so you can work on two at once.
+- **File > Close Experiment and Go to Start Screen** (Ctrl+Shift+W) asks to save, closes the
+  experiment and shows the start screen with templates and recent files.
+
+## Part properties that are modelled
+
+Every optic can carry the quality data of a catalogue "specifications" tab:
+
+| Property | Where | Effect |
+|---|---|---|
+| `wavefront_error` (RMS waves at 633 nm) | lenses, mirrors, splitters, plates, filters, couplers | raises the beam's M^2 (worse focusing and fiber coupling), keeping the local beam size |
+| `damage_threshold_cw` (W/cm^2), `damage_threshold_pulsed` (J/cm^2) | same optics | warning at 50% and when exceeded, computed from the beam size on the part |
+| `clear_aperture` | lenses, mirrors, couplers, iris | clipping loss and warning |
+| `focal_length_curve` | lenses | chromatic focal shift (singlets use the N-BK7 or fused-silica Sellmeier curve) |
+| `order`, `retardance_error` | wave plates | multi-order plates are far more sensitive to wavelength; as-built tolerance such as lambda/300 |
+| `beat_length`, `polarization_extinction_db` | PM fibers | the fiber acts as a long retarder along its slow axis, with polarization crosstalk |
+| `transmission`, `reflectance`, ... curves | filters, mirrors, splitters | full spectral dependence; `angle_of_incidence` blue-shifts filter edges |
+
+Splitters whose transmitted and reflected fractions add up to more than 1 are rejected.
+`scripts/make_catalog.py` regenerates the typical-class parts (filters, lenses, mirrors, wave
+plates, polarizers, fibers, detectors, lasers) with these properties.

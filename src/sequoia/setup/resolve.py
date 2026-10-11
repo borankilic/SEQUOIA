@@ -24,7 +24,11 @@ def apply_overrides(params: Params, overrides: dict[str, Any]) -> Params:
             update[name] = adapter.validate_python(value)
         except ValidationError as exc:
             raise ValueError(f"{name}: {format_validation_error(exc)}") from exc
-    return params.model_copy(update=update)
+    updated = params.model_copy(update=update)
+    try:
+        return type(params).model_validate(dict(updated))
+    except ValidationError as exc:
+        raise ValueError(format_validation_error(exc)) from exc
 
 
 def instantiate(library: Library, placed: Instance | ProbeSpec) -> Component:

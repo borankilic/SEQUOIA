@@ -3,7 +3,7 @@ import numpy as np
 from sequoia.components._util import diag_jones, spectral, sqrt_power
 from sequoia.components.base import (
     Component,
-    Params,
+    OpticParams,
     PortDirection,
     PortKind,
     PortSpec,
@@ -15,7 +15,7 @@ from sequoia.data import Angle, Curve, Dimensionless, Scalar
 FREE, IN, OUT = PortKind.FREE_SPACE, PortDirection.IN, PortDirection.OUT
 
 
-class SpectralFilterParams(Params):
+class SpectralFilterParams(OpticParams):
     transmission: Curve
     effective_index: float = 2.0
 
@@ -41,7 +41,7 @@ class SpectralFilter(Component):
         return [("out", beam.through(ctx.subject, diag_jones(amplitude, amplitude)))]
 
 
-class NDFilterParams(Params):
+class NDFilterParams(OpticParams):
     optical_density: Dimensionless | Curve
 
 

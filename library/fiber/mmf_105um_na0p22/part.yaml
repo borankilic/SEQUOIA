@@ -1,0 +1,11 @@
+type: OpticalFiber
+manufacturer: generic
+model: 105 um core multimode fiber, NA 0.22
+params:
+  kind: mmf
+  numerical_aperture: 0.22
+  core_diameter:
+    value: 105.0
+    unit: um
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  attenuation_db_per_km: 6.0

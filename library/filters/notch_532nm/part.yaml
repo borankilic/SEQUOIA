@@ -1,0 +1,9 @@
+type: SpectralFilter
+manufacturer: generic
+model: 532 nm notch filter, OD 6, 20 nm stop band
+params:
+  transmission:
+    curve: transmission.csv
+    x: wavelength (nm)
+    y: transmission (1)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

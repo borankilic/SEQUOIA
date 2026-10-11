@@ -1,0 +1,21 @@
+type: OpticalFiber
+manufacturer: generic
+model: 1550 nm polarization-maintaining fiber
+description: 'PM fiber: the slow axis acts as a long retarder; crosstalk limited by PER.'
+params:
+  kind: pm
+  mode_field_diameter:
+    value: 10.920000000000002
+    unit: um
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  cutoff_wavelength:
+    value: 1260.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  numerical_aperture: 0.14
+  attenuation_db_per_km: 0.26
+  beat_length:
+    value: 4.0
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  polarization_extinction_db: 25.0

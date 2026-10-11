@@ -1,0 +1,26 @@
+type: Laser
+manufacturer: generic
+model: 800 nm mode-locked Ti:sapphire, 80 MHz, 100 fs, 1 W
+params:
+  wavelength:
+    value: 800.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  power:
+    value: 1000.0
+    unit: mW
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  polarization_extinction_ratio: 100.0
+  waist_radius:
+    value: 1.0
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  repetition_rate:
+    value: 80.0
+    unit: MHz
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  pulse_width:
+    value: 100.0
+    unit: fs
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  pulse_shape: sech2

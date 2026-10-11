@@ -1,0 +1,26 @@
+type: SPAD
+manufacturer: generic
+model: InGaAs/InP SPAD, gated, 1550 nm
+params:
+  efficiency:
+    curve: efficiency.csv
+    x: wavelength (nm)
+    y: efficiency (1)
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  dark_count_rate:
+    value: 2000.0
+    unit: Hz
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  dead_time:
+    value: 5.0
+    unit: us
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  jitter_fwhm:
+    value: 200.0
+    unit: ps
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  afterpulse_probability: 0.05
+  afterpulse_tau:
+    value: 1.0
+    unit: us
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}

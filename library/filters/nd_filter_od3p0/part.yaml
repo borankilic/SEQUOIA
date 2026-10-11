@@ -1,0 +1,4 @@
+type: NDFilter
+manufacturer: generic
+model: neutral density filter, OD 3
+params: {damage_threshold_cw: 100.0, optical_density: 3.0}
