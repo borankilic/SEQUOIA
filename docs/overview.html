@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>SEQUOIA overview</title>
+<style>
+@page { size: A4; margin: 0 }
+:root { --g:#1f4d3a; --g2:#e7f0ea; --a:#c8782a; --b:#2b5f9e; --r:#b3261e; --k:#222; --m:#667; --l:#d5dbd7 }
+* { box-sizing: border-box }
+html,body { margin:0; padding:0; background:#fff; color:var(--k);
+  font-family:"Helvetica Neue",Helvetica,Arial,sans-serif; font-size:8.6pt; line-height:1.3 }
+.page { width:210mm; height:297mm; padding:11mm 12mm 9mm; display:flex; flex-direction:column; gap:4.6mm; overflow:hidden }
+header { display:flex; align-items:flex-end; justify-content:space-between; border-bottom:1.2px solid var(--g); padding-bottom:2mm }
+h1 { margin:0; font-size:25pt; letter-spacing:.06em; color:var(--g); line-height:1 }
+h1 small { font-size:8pt; letter-spacing:0; color:var(--m); font-weight:400; margin-left:3mm }
+.tag { text-align:right; color:var(--m); font-size:8pt; max-width:98mm }
+h2 { margin:0 0 1.2mm; font-size:8.4pt; text-transform:uppercase; letter-spacing:.09em; color:var(--g) }
+svg { display:block; width:100%; height:auto }
+.cols { display:grid; grid-template-columns:1fr 1fr; gap:5mm }
+.cap { color:var(--m); font-size:7.6pt; margin-top:.8mm }
+.eq { background:var(--g2); border-left:2px solid var(--g); padding:1.5mm 2.4mm; margin-top:1.4mm; font-size:8pt }
+.eq i { font-family:"Times New Roman",serif; font-size:9.4pt }
+table { border-collapse:collapse; width:100%; font-size:8pt }
+td { padding:.7mm 1.4mm; border-bottom:1px solid var(--l) }
+td:last-child { text-align:right; font-variant-numeric:tabular-nums; font-weight:600 }
+.strip { display:grid; grid-template-columns:1.1fr 1fr 1fr; gap:5mm; border-top:1px solid var(--l); padding-top:2.4mm }
+.strip ul { margin:0; padding-left:3.6mm }
+.strip li { margin-bottom:.5mm }
+.chips { display:flex; gap:1.6mm; flex-wrap:wrap }
+.chip { border:1px solid var(--g); color:var(--g); border-radius:3px; padding:.4mm 1.8mm; font-size:7.6pt }
+.chip.todo { border-color:var(--l); color:var(--m) }
+footer { margin-top:auto; font-size:7pt; color:var(--m); display:flex; justify-content:space-between }
+</style></head>
+<body><div class="page">
+
+<header>
+  <h1>SEQUOIA<small>se-KWOY-uh</small></h1>
+  <div class="tag"><b style="color:var(--k)">S</b>imulated <b style="color:var(--k)">E</b>valuation of <b style="color:var(--k)">QU</b>antum <b style="color:var(--k)">O</b>ptics <b style="color:var(--k)">I</b>nstruments and <b style="color:var(--k)">A</b>nalysis<br>
+  Build a lab setup from characterized parts, then predict beams, counts, CAR, g2, HOM and CHSH.</div>
+</header>
+
+<section>
+<h2>1 · From parts to predictions</h2>
+<svg viewBox="0 0 760 118" font-family="Helvetica Neue,Helvetica,Arial" >
+  <defs><marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" fill="#1f4d3a"/></marker></defs>
+  <g stroke="#1f4d3a" stroke-width="1.4" fill="#fff">
+    <rect x="1" y="10" width="108" height="56" rx="6"/>
+    <rect x="131" y="10" width="108" height="56" rx="6"/>
+    <rect x="261" y="10" width="108" height="56" rx="6"/>
+    <rect x="391" y="10" width="108" height="56" rx="6" fill="#e7f0ea"/>
+    <rect x="521" y="10" width="108" height="56" rx="6" fill="#e7f0ea"/>
+    <rect x="651" y="10" width="108" height="56" rx="6"/>
+  </g>
+  <g stroke="#1f4d3a" stroke-width="1.4" marker-end="url(#ar)">
+    <line x1="110" y1="38" x2="129" y2="38"/><line x1="240" y1="38" x2="259" y2="38"/><line x1="370" y1="38" x2="389" y2="38"/>
+    <line x1="500" y1="38" x2="519" y2="38"/><line x1="630" y1="38" x2="649" y2="38"/>
+  </g>
+  <g text-anchor="middle" font-size="12.5" font-weight="700" fill="#1f4d3a">
+    <text x="55" y="32">Parts library</text><text x="185" y="32">Setup</text><text x="315" y="32">Validation</text>
+    <text x="445" y="32">Classical engine</text><text x="575" y="32">Rate engine</text><text x="705" y="32">Readouts</text>
+  </g>
+  <g text-anchor="middle" font-size="9" fill="#444">
+    <text x="55" y="48">part.yaml + CSV</text><text x="55" y="60">provenance per value</text>
+    <text x="185" y="48">graph on a grid</text><text x="185" y="60">free-space · fiber</text>
+    <text x="315" y="48">port kinds · cycles</text><text x="315" y="60">units · dangling ports</text>
+    <text x="445" y="48">Jones · Gaussian q</text><text x="445" y="60">power · pol. · size</text>
+    <text x="575" y="48">biphoton amplitude</text><text x="575" y="60">detectors · tagger</text>
+    <text x="705" y="48">singles · CAR</text><text x="705" y="60">g2 · HOM · CHSH</text>
+  </g>
+  <path d="M391 78 v8 H629 v-8" fill="none" stroke="#c8782a" stroke-width="1.4"/>
+  <text x="510" y="102" text-anchor="middle" font-size="10.5" fill="#c8782a" font-weight="700">one linear network, two statistics layers</text>
+  <path d="M1 78 v8 H239 v-8" fill="none" stroke="#667" stroke-width="1.2"/>
+  <text x="120" y="102" text-anchor="middle" font-size="10.5" fill="#667">PySide6 GUI or plain YAML</text>
+  <path d="M651 78 v8 H759 v-8" fill="none" stroke="#667" stroke-width="1.2"/>
+  <text x="705" y="102" text-anchor="middle" font-size="10.5" fill="#667">GUI · CLI</text>
+</svg>
+</section>
+
+<div class="cols">
+<section>
+<h2>2 · Component model</h2>
+<svg viewBox="0 0 360 188" font-family="Helvetica Neue,Helvetica,Arial">
+  <defs><marker id="ar2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="#667"/></marker></defs>
+  <g font-size="11.5" font-weight="700" fill="#1f4d3a" stroke="#1f4d3a" stroke-width="1.3">
+    <rect x="1" y="4" width="92" height="34" rx="5" fill="#e7f0ea"/>
+    <rect x="1" y="52" width="92" height="34" rx="5" fill="#e7f0ea"/>
+    <rect x="1" y="100" width="92" height="34" rx="5" fill="#e7f0ea"/>
+    <rect x="1" y="148" width="92" height="34" rx="5" fill="#e7f0ea"/>
+  </g>
+  <g font-size="12" font-weight="700" fill="#1f4d3a" text-anchor="middle">
+    <text x="47" y="25">Category</text><text x="47" y="73">Type</text><text x="47" y="121">Part</text><text x="47" y="169">Instance</text>
+  </g>
+  <g stroke="#667" stroke-width="1.3" marker-end="url(#ar2)">
+    <line x1="47" y1="39" x2="47" y2="50"/><line x1="47" y1="87" x2="47" y2="98"/><line x1="47" y1="135" x2="47" y2="146"/>
+  </g>
+  <g font-size="10.2" fill="#222">
+    <text x="106" y="19" font-weight="700">Detectors</text><text x="106" y="32" fill="#667">palette group, port conventions</text>
+    <text x="106" y="67" font-weight="700">SNSPD</text><text x="106" y="80" fill="#667">Python class + pydantic schema (physics)</text>
+    <text x="106" y="115" font-weight="700">snspd_generic</text><text x="106" y="128" fill="#667">data only: scalars, curves, surfaces</text>
+    <text x="106" y="163" font-weight="700">spad_h  @ (34, 6), rot 90°</text><text x="106" y="176" fill="#667">settings + overrides in a setup file</text>
+  </g>
+</svg>
+<div class="cap">Value resolution: instance override › measured › datasheet › model › ideal default. New part = data only; new type = one Python file.</div>
+<div class="eq"><b>Links</b> carry the physics: free-space (length, medium), fiber (part, length, connector), cable (delay). Ideal ↔ characterized toggle gives a loss budget.</div>
+</section>
+
+<section>
+<h2>3 · Two layers on one network</h2>
+<svg viewBox="0 0 360 188" font-family="Helvetica Neue,Helvetica,Arial">
+  <g stroke="#1f4d3a" stroke-width="1.3">
+    <rect x="1" y="4" width="358" height="76" rx="6" fill="#fff"/>
+    <rect x="1" y="108" width="358" height="76" rx="6" fill="#fff"/>
+  </g>
+  <g font-size="11.5" font-weight="700" fill="#2b5f9e"><text x="10" y="21">CLASSICAL</text></g>
+  <g font-size="11.5" font-weight="700" fill="#c8782a"><text x="10" y="125">QUANTUM (low gain, first order in pair rate)</text></g>
+  <g font-size="10.2" fill="#222">
+    <text x="10" y="38">Jones 2×2 per wavelength: loss, polarization, phase</text>
+    <text x="10" y="52">Gaussian q-parameter (ABCD, M²): w, R, waist, fiber overlap</text>
+    <text x="10" y="66">coherent paths from one source: coherence × mode overlap</text>
+    <text x="10" y="142">pair source: biphoton amplitude F(ω₁,ω₂) × pair rate (spdcalc)</text>
+    <text x="10" y="156">same Jones + delays → detector POVM, dead time, jitter, window</text>
+    <text x="10" y="170">singles, coincidences, accidentals, g2, HOM, tomography</text>
+  </g>
+  <g stroke="#1f4d3a" stroke-width="1.4" fill="none"><path d="M180 82 v24" marker-end="url(#ar)"/></g>
+  <text x="188" y="98" font-size="9.5" fill="#667">pump state at the crystal</text>
+</svg>
+<div class="eq"><i>A</i><sub>AB</sub> = <i>J</i><sub>A←s</sub>⊗<i>J</i><sub>B←i</sub> <i>F</i>(ω₁,ω₂) + <i>J</i><sub>A←i</sub>⊗<i>J</i><sub>B←s</sub> <i>F</i>(ω₂,ω₁)<br>
+<i>P</i><sub>AB</sub> = ∫∫ <i>A</i>† (<i>D</i><sub>A</sub>⊗<i>D</i><sub>B</sub>) <i>A</i> &nbsp;<span style="color:var(--m)">(D: detector efficiency)</span><br>
+One formula covers heralding, HBT, HOM (exchange term), Bell tests, tomography.</div>
+</section>
+</div>
+
+<section>
+<h2>4 · Worked example: heralded HBT with type-II PPKTP (<code>setups/hbt_heralded.yaml</code>)</h2>
+<svg viewBox="0 0 760 196" font-family="Helvetica Neue,Helvetica,Arial">
+  <defs>
+    <marker id="ap" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="#6b3fa0"/></marker>
+  </defs>
+  <g stroke-width="2.2" fill="none">
+    <path d="M62 70 H150" stroke="#6b3fa0"/>
+    <path d="M200 70 H410" stroke="#b3261e"/>
+    <path d="M410 70 V150" stroke="#b3261e"/>
+    <path d="M410 70 H470" stroke="#b3261e"/>
+  </g>
+  <g stroke-width="1.8" fill="none" stroke="#2b5f9e">
+    <path d="M480 70 C 520 70, 520 70, 556 70"/>
+    <path d="M575 70 C 600 70, 610 44, 640 44"/>
+    <path d="M575 70 C 600 70, 610 98, 640 98"/>
+    <path d="M420 150 H640"/>
+  </g>
+  <g stroke="#1f4d3a" stroke-width="1.3" fill="#fff">
+    <rect x="10" y="54" width="52" height="32" rx="4" fill="#efe8f7"/>
+    <ellipse cx="100" cy="70" rx="7" ry="22"/>
+    <rect x="150" y="56" width="50" height="28" rx="3" fill="#e7f0ea"/>
+    <ellipse cx="250" cy="70" rx="7" ry="22"/>
+    <rect x="296" y="50" width="7" height="40"/><rect x="340" y="50" width="7" height="40" fill="#f6e1d2"/>
+    <rect x="395" y="55" width="30" height="30" fill="#fff"/><path d="M395 85 L425 55" fill="none"/>
+    <rect x="466" y="60" width="14" height="20" rx="3" fill="#dfe9f5"/>
+    <rect x="556" y="56" width="19" height="28" rx="3" fill="#dfe9f5"/>
+    <rect x="410" y="140" width="14" height="20" rx="3" fill="#dfe9f5"/>
+    <rect x="640" y="30" width="38" height="28" rx="4" fill="#fff"/><rect x="640" y="84" width="38" height="28" rx="4"/>
+    <rect x="640" y="136" width="38" height="28" rx="4"/>
+    <rect x="708" y="26" width="48" height="142" rx="5" fill="#e7f0ea"/>
+  </g>
+  <g stroke="#1f4d3a" stroke-width="1.2"><path d="M678 44 H708 M678 98 H708 M678 150 H708"/></g>
+  <g font-size="10" text-anchor="middle" fill="#222">
+    <text x="36" y="104">405 nm CW</text><text x="36" y="116" fill="#667">10 mW</text>
+    <text x="100" y="104">f 200</text>
+    <text x="175" y="104" font-weight="700">PPKTP</text><text x="175" y="116" fill="#667">type II, 10 mm</text>
+    <text x="250" y="104">f 200</text>
+    <text x="300" y="104">LP</text><text x="343" y="104">BP 810</text>
+    <text x="410" y="104">PBS</text>
+    <text x="473" y="96">coupler</text>
+    <text x="566" y="104">50:50</text>
+    <text x="417" y="178">coupler</text>
+    <text x="659" y="48">A</text><text x="659" y="102">B</text><text x="659" y="154">H</text>
+    <text x="732" y="92" font-weight="700">time</text><text x="732" y="104" font-weight="700">tagger</text>
+  </g>
+  <g font-size="9.6" fill="#c8782a" font-weight="700" text-anchor="middle"><text x="175" y="132">1.3×10⁶ pairs/s</text></g>
+  <g font-size="9.6" fill="#b3261e" text-anchor="middle">
+    <text x="230" y="50">H signal + V idler</text>
+    <text x="388" y="124" text-anchor="end">idler V</text><text x="452" y="58">signal H</text>
+  </g>
+  <g font-size="9.6" fill="#2b5f9e"><text x="496" y="52">SMF</text><text x="520" y="184">SMF</text></g>
+</svg>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:5mm;margin-top:1.4mm">
+<table>
+  <tr><td>Pairs emitted into collection modes</td><td>1.3 × 10⁶ s⁻¹</td></tr>
+  <tr><td>Herald singles (H)</td><td>6.0 × 10⁵ s⁻¹</td></tr>
+  <tr><td>True coincidences H×A, 1 ns window</td><td>1.3 × 10⁵ s⁻¹</td></tr>
+  <tr><td>CAR (C_true / accidentals)</td><td>736</td></tr>
+  <tr><td>Heralded g2(0)</td><td>0.0027</td></tr>
+</table>
+<div class="cap" style="margin-top:0">Generic placeholder parts, ideal alignment. Remove the long-pass filter and the pump-leakage diagnostic fires, with the count rate it adds to each detector. Replace parts by measured ones (curves, DCR, jitter) to move from ideal to characterized.</div>
+</div>
+</section>
+
+<section class="strip">
+<div>
+  <h2>Validated against</h2>
+  <ul>
+    <li>Malus, HWP rotation, thin lens, telescope, Gaussian overlap</li>
+    <li>MZI visibility = |γ(τ)|; CHSH S = 2√2·V; unheralded g2 = 1+1/K</li>
+    <li>HOM curve vs spdcalc; dead time vs Monte Carlo</li>
+    <li>777 tests; three independent review rounds on the quantum layer</li>
+  </ul>
+</div>
+<div>
+  <h2>Known limits</h2>
+  <ul>
+    <li>Absolute SPDC rate uncertain (×0.4 to ×2): use a measured <i>brightness</i></li>
+    <li>Collection modes are part data, not back-propagated</li>
+    <li>Thin lenses, mode at centre wavelength, no GDD/PMD</li>
+    <li>Feed-forward only: no cavities, no back-reflections</li>
+  </ul>
+</div>
+<div>
+  <h2>Roadmap</h2>
+  <div class="chips">
+    <span class="chip">M0–M4 done: model, engines, GUI</span>
+    <span class="chip todo">M5 sweeps · optimizer · plots</span>
+    <span class="chip todo">M6 library manager</span>
+    <span class="chip todo">M7 Monte-Carlo time tags</span>
+    <span class="chip todo">M8 Gaussian multimode</span>
+  </div>
+  <div class="cap">Stack: Python 3.12, numpy/scipy, pint, pydantic, spdcalc, PySide6, pyqtgraph.</div>
+</div>
+</section>
+
+<footer><span>SEQUOIA 0.1 · docs/overview.html</span><span>Details: README.md · docs/conventions.md · docs/M3_REPORT.md</span></footer>
+</div></body></html>

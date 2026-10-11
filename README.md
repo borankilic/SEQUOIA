@@ -1,9 +1,99 @@
 # SEQUOIA
 
-**S**imulated **E**valuation of **QU**antum **O**ptics **I**nstruments and **A**nalysis: a desktop simulator for quantum optics lab setups.
+**S**imulated **E**valuation of **QU**antum **O**ptics **I**nstruments and **A**nalysis (pronounced se-KWOY-uh).
 
-- Implementation plan: [docs/PLAN.md](docs/PLAN.md)
-- Physics and code conventions: [docs/conventions.md](docs/conventions.md)
+A desktop simulator for quantum optics lab setups. Build an experiment from a library of
+characterized parts (lasers, SPDC sources, lenses, wave plates, filters, fibers, SPADs/SNSPDs, time
+tagger), then read off what the light does at every link and what the detectors will see:
+power, polarization, beam size, singles, coincidences, CAR, heralding efficiency, g2, HOM
+visibility and CHSH.
+
+![SEQUOIA main window with the heralded HBT example](docs/img/gui_hbt.png)
+
+One-page overview: [docs/overview.pdf](docs/overview.pdf)
+
+## What it does
+
+- **Schematic editor.** Place parts anywhere on a grid, rotate and flip them, and connect them with
+  free-space, fiber or cable links that carry a length. Undo/redo, copy/paste, auto layout.
+- **Classical engine.** Per-wavelength Jones matrices and Gaussian beams (ABCD, M²) with coherent
+  combination of paths, so interferometer fringes, coherence length and mode mismatch come out
+  naturally. Fiber coupling is computed as a mode overlap.
+- **Quantum rate engine.** SPDC pair sources (spdcalc) or entangled-pair black boxes, pushed
+  through the same network and into detector, dead-time, jitter and coincidence-window models.
+- **Parts as data.** A part is a `part.yaml` plus CSV curves with provenance per value
+  (datasheet, measured, model, ideal default). CSV/XLSX import converts %, OD, dB and
+  responsivity to SI curves.
+- **Diagnostics.** Pump leakage, aperture clipping, fiber below cutoff, curve extrapolation,
+  coincidence peak outside the window, and more; each links back to the offending component.
+
+```
+parts (YAML + CSV) ─► setup graph ─► validation ─► classical engine ─► rate engine ─► readouts
+```
+
+## Components
+
+| Category | Types |
+|---|---|
+| Sources | `Laser` (CW / pulsed) |
+| Nonlinear | `SPDCCrystal`, `EntangledPairSource` |
+| Free-space | `Lens`, `Objective`, `Mirror`, `BeamSplitter`, `DichroicMirror`, `Iris`, `BeamDump` |
+| Polarization | `WavePlate`, `Polarizer`, `PBS`, `FiberPaddleController` |
+| Filters | `SpectralFilter`, `NDFilter` |
+| Fiber | `OpticalFiber`, `FiberCoupler`, `FiberBeamSplitter` |
+| Detectors | `SPAD`, `SNSPD`, `Photodiode` |
+| Electronics | `TimeTagger` |
+| Probes | `PowerMeter`, `BeamProfiler`, `Polarimeter`, `Spectrometer` |
+
+The shipped `library/` parts are generic placeholders with ideal or model values and no vendor
+numbers. Replace them with your measured parts before trusting absolute numbers.
+
+## Example setups
+
+| File | What it shows |
+|---|---|
+| `setups/laser_fiber_coupling.yaml` | laser, telescope, mirrors, fiber coupler, SMF: coupling efficiency |
+| `setups/mzi.yaml` | Mach-Zehnder fringes and coherence-limited visibility |
+| `setups/hbt_heralded.yaml` | type-II PPKTP, heralded HBT: singles, CAR, heralded g2 |
+| `setups/hom.yaml` | HOM dip versus delay |
+| `setups/bell_test.yaml` | polarization correlations and CHSH |
+
+## Project layout
+
+```
+src/sequoia/
+  units.py data.py        pint boundary parsing, Scalar/Curve/Surface/Provenance
+  components/             one module per category; registry of types
+  light/                  spectra, Gaussian modes, beam state, pair amplitudes, detection
+  engines/                classical.py, rates.py, cache and report helpers
+  analysis/               CAR, heralding, visibility, CHSH, tomography (MLE)
+  library/                part store and CSV/XLSX importer
+  setup/                  setup model, YAML I/O, validation
+  gui/                    document, canvas, palette, inspector, results, main window
+library/                  part library (data)
+setups/                   example setups
+docs/                     plan, conventions, M3 report, overview
+```
+
+## Status
+
+Milestones M0 to M4 are done: data model and library, classical engine, quantum rate engine, and
+the GUI shell with the schematic editor (see [docs/PLAN.md](docs/PLAN.md)). The test suite covers
+analytic checks (Malus, HWP rotation, thin lens, Gaussian overlap, MZI visibility, CHSH
+S = 2√2·V, HOM against spdcalc, dead time against Monte Carlo).
+
+Planned: results plots, sweeps and optimizer (M5), library manager (M6), Monte Carlo time tags
+(M7), Gaussian multimode engine (M8).
+
+Known limits:
+
+- The absolute SPDC pair rate is uncertain by a factor of about 0.4 to 2; set a measured
+  `brightness` on the part for real experiments (details in [docs/M3_REPORT.md](docs/M3_REPORT.md)).
+- Collection modes are taken from part data, not back-propagated through the optics.
+- Thin lenses, mode tracked at the central wavelength, no GDD or PMD.
+- Feed-forward networks only: no cavities or back-reflections.
+- The GUI has been exercised through offscreen tests and rendered screenshots; keyboard
+  shortcuts have had little live-display testing.
 
 ## Setup
 
