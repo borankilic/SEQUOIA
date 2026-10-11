@@ -1,0 +1,51 @@
+name: polarization-entanglement (Bell/CHSH) measurement
+description: >
+  A polarization-entangled source (|phi+>, visibility 0.97) sends the signal to analyser A and the
+  idler to analyser B. Each analyser is a half-wave plate, a quarter-wave plate and a PBS; both PBS
+  outputs go through fiber couplers and single-mode fibers to SNSPDs, so all four outcomes are
+  recorded (tagger channels 1,2 = A transmitted/reflected, 3,4 = B transmitted/reflected).
+  A half-wave plate at angle h analyses linear polarization at 2h from H. Here a = 0 deg (HWP 0)
+  and b = 22.5 deg (HWP 11.25 deg); the quarter-wave plates are at 0. Sweeping the four CHSH
+  settings (a, a', b, b') = (0, 45, 22.5, 67.5) deg gives S = 2 sqrt(2) V.
+  All parts are generic placeholders; replace them with the lab's measured parts.
+instances:
+  - {id: source, part: nonlinear/entangled_810_generic, position: [0, 0], overrides: {visibility: 0.97}}
+  - {id: hwp_a, part: polarization/hwp_810, position: [7, -5], settings: {angle: 0 deg}}
+  - {id: qwp_a, part: polarization/qwp_810, position: [11, -5], settings: {angle: 0 deg}}
+  - {id: pbs_a, part: polarization/pbs_ideal, position: [15, -5]}
+  - {id: hwp_b, part: polarization/hwp_810, position: [7, 5], settings: {angle: 11.25 deg}}
+  - {id: qwp_b, part: polarization/qwp_810, position: [11, 5], settings: {angle: 0 deg}}
+  - {id: pbs_b, part: polarization/pbs_ideal, position: [15, 5]}
+  - {id: cpl_at, part: fiber/coupler_f11mm_810, position: [20, -5]}
+  - {id: cpl_ar, part: fiber/coupler_f11mm_810, position: [15, -9], rotation: 90}
+  - {id: cpl_bt, part: fiber/coupler_f11mm_810, position: [20, 5]}
+  - {id: cpl_br, part: fiber/coupler_f11mm_810, position: [15, 9], rotation: 90}
+  - {id: snspd_at, part: detectors/snspd_generic, position: [26, -5]}
+  - {id: snspd_ar, part: detectors/snspd_generic, position: [22, -9]}
+  - {id: snspd_bt, part: detectors/snspd_generic, position: [26, 5]}
+  - {id: snspd_br, part: detectors/snspd_generic, position: [22, 9]}
+  - {id: tagger, part: electronics/tagger_generic_4ch, position: [32, 0]}
+links:
+  - {id: s_a1, kind: free_space, from: source.signal, to: hwp_a.in, length: 100 mm}
+  - {id: s_a2, kind: free_space, from: hwp_a.out, to: qwp_a.in, length: 30 mm}
+  - {id: s_a3, kind: free_space, from: qwp_a.out, to: pbs_a.in, length: 30 mm}
+  - {id: s_at, kind: free_space, from: pbs_a.out_t, to: cpl_at.in, length: 100 mm}
+  - {id: s_ar, kind: free_space, from: pbs_a.out_r, to: cpl_ar.in, length: 100 mm}
+  - {id: s_b1, kind: free_space, from: source.idler, to: hwp_b.in, length: 100 mm}
+  - {id: s_b2, kind: free_space, from: hwp_b.out, to: qwp_b.in, length: 30 mm}
+  - {id: s_b3, kind: free_space, from: qwp_b.out, to: pbs_b.in, length: 30 mm}
+  - {id: s_bt, kind: free_space, from: pbs_b.out_t, to: cpl_bt.in, length: 100 mm}
+  - {id: s_br, kind: free_space, from: pbs_b.out_r, to: cpl_br.in, length: 100 mm}
+  - {id: f_at, kind: fiber, from: cpl_at.out, to: snspd_at.in, fiber: fiber/smf_810, length: 2 m}
+  - {id: f_ar, kind: fiber, from: cpl_ar.out, to: snspd_ar.in, fiber: fiber/smf_810, length: 2 m}
+  - {id: f_bt, kind: fiber, from: cpl_bt.out, to: snspd_bt.in, fiber: fiber/smf_810, length: 2 m}
+  - {id: f_br, kind: fiber, from: cpl_br.out, to: snspd_br.in, fiber: fiber/smf_810, length: 2 m}
+  - {id: c_at, kind: cable, from: snspd_at.out, to: tagger.ch1, delay: 0 ns}
+  - {id: c_ar, kind: cable, from: snspd_ar.out, to: tagger.ch2, delay: 0 ns}
+  - {id: c_bt, kind: cable, from: snspd_bt.out, to: tagger.ch3, delay: 0 ns}
+  - {id: c_br, kind: cable, from: snspd_br.out, to: tagger.ch4, delay: 0 ns}
+analyses:
+  - {name: tt, type: coincidences, channels: [tagger.ch1, tagger.ch3], window: 200 ps, center: auto}
+  - {name: tr, type: coincidences, channels: [tagger.ch1, tagger.ch4], window: 200 ps, center: auto}
+  - {name: rt, type: coincidences, channels: [tagger.ch2, tagger.ch3], window: 200 ps, center: auto}
+  - {name: rr, type: coincidences, channels: [tagger.ch2, tagger.ch4], window: 200 ps, center: auto}

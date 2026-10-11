@@ -4,7 +4,15 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPainterPathStroker, QPen
 from PySide6.QtWidgets import QApplication, QGraphicsItem
 
-from sequoia.gui.canvas.items import CELL, LINK_COLORS, SEVERITY_COLORS, font
+from sequoia.gui.canvas.items import (
+    CELL,
+    HIDE_ALL_TEXT_BELOW,
+    LINK_COLORS,
+    SEVERITY_COLORS,
+    font,
+    label_visible,
+)
+from sequoia.gui.canvas.routing import rounded_path, route_link
 
 
 def format_scalar(scalar) -> str:
@@ -66,6 +74,9 @@ class LinkLabel(QGraphicsItem):
         return QRectF(-w / 2, -h / 2, w, h)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        zoom = getattr(self.parentItem().canvas, "zoom", 1.0)
+        if zoom < HIDE_ALL_TEXT_BELOW or not label_visible("label", zoom):
+            return
         pal = QApplication.palette()
         painter.setRenderHint(QPainter.Antialiasing)
         bg = QColor(pal.base().color())
@@ -107,14 +118,22 @@ class LinkItem(QGraphicsItem):
         self.prepareGeometryChange()
         a, b = self._anchors()
         path = QPainterPath()
+        self.route: list[tuple[float, float]] = []
         if a is not None and b is not None:
             (p0, d0), (p1, d1) = a, b
-            path.moveTo(p0)
-            if self.link.kind == "fiber":
-                k = max(CELL, 0.4 * math.dist((p0.x(), p0.y()), (p1.x(), p1.y())))
-                path.cubicTo(p0 + d0 * k, p1 + d1 * k, p1)
-            else:
-                path.lineTo(p1)
+            obstacles = self.canvas.obstacle_rects()
+            points = route_link(
+                (p0.x(), p0.y()),
+                (d0.x(), d0.y()),
+                (p1.x(), p1.y()),
+                (d1.x(), d1.y()),
+                obstacles,
+                clearance=10.0,
+                stub=14.0,
+                grid=CELL / 4,
+            )
+            self.route = points
+            path = rounded_path(points, 14.0 if self.link.kind == "fiber" else 8.0)
         self.path = path
         text, italic = label_text(self.canvas.document, self.link)
         self.label.set_text(text, italic)

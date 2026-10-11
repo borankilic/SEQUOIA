@@ -1,0 +1,42 @@
+name: heralded HBT with type-II PPKTP
+description: >
+  405 nm CW pump focused into a 10 mm type-II PPKTP crystal. The pump-blocking long-pass filter, an
+  810 nm band-pass and a PBS separate the pump, the H signal and the V idler. The idler goes to a herald SPAD; the signal
+  goes through a 50:50 fiber beam splitter to two SPADs. One time tagger records all three.
+  All parts are generic placeholders; replace them with the lab's measured parts.
+instances:
+  - {id: pump, part: sources/laser_405_cw, position: [0, 0]}
+  - {id: pump_lens, part: freespace/lens_f200mm, position: [5, 0]}
+  - {id: crystal, part: nonlinear/ppktp_type2_10mm, position: [11, 0]}
+  - {id: collect_lens, part: freespace/lens_f200mm, position: [17, 0]}
+  - {id: lp, part: filters/lp_650_pumpblock, position: [22, 0]}
+  - {id: bp, part: filters/bp_810_10nm, position: [26, 0]}
+  - {id: pbs, part: polarization/pbs_cube_810, position: [30, 0]}
+  - {id: cpl_signal, part: fiber/coupler_f11mm_810, position: [35, 0]}
+  - {id: cpl_idler, part: fiber/coupler_f11mm_810, position: [30, 5], rotation: 90}
+  - {id: fbs, part: fiber/beamsplitter_50_50_810, position: [41, 0]}
+  - {id: spad_h, part: detectors/spad_si_generic, position: [36, 7]}
+  - {id: spad_a, part: detectors/spad_si_generic, position: [47, -3]}
+  - {id: spad_b, part: detectors/spad_si_generic, position: [47, 3]}
+  - {id: tagger, part: electronics/tagger_generic_4ch, position: [53, 0]}
+links:
+  - {id: s_pump, kind: free_space, from: pump.out, to: pump_lens.in, length: 100 mm}
+  - {id: s_focus, kind: free_space, from: pump_lens.out, to: crystal.in, length: 195 mm}
+  - {id: s_collect, kind: free_space, from: crystal.out, to: collect_lens.in, length: 197 mm}
+  - {id: s_lp, kind: free_space, from: collect_lens.out, to: lp.in, length: 50 mm}
+  - {id: s_bp, kind: free_space, from: lp.out, to: bp.in, length: 25 mm}
+  - {id: s_pbs, kind: free_space, from: bp.out, to: pbs.in, length: 25 mm}
+  - {id: s_signal, kind: free_space, from: pbs.out_t, to: cpl_signal.in, length: 100 mm}
+  - {id: s_idler, kind: free_space, from: pbs.out_r, to: cpl_idler.in, length: 100 mm}
+  - {id: f_signal, kind: fiber, from: cpl_signal.out, to: fbs.in_a, fiber: fiber/smf_810, length: 2 m}
+  - {id: f_idler, kind: fiber, from: cpl_idler.out, to: spad_h.in, fiber: fiber/smf_810, length: 1 m}
+  - {id: f_a, kind: fiber, from: fbs.out_a, to: spad_a.in, fiber: fiber/smf_810, length: 1 m}
+  - {id: f_b, kind: fiber, from: fbs.out_b, to: spad_b.in, fiber: fiber/smf_810, length: 1 m}
+  - {id: c_h, kind: cable, from: spad_h.out, to: tagger.ch1, delay: 0 ns}
+  - {id: c_a, kind: cable, from: spad_a.out, to: tagger.ch2, delay: 0 ns}
+  - {id: c_b, kind: cable, from: spad_b.out, to: tagger.ch3, delay: 0 ns}
+analyses:
+  - {name: herald_a, type: coincidences, channels: [tagger.ch1, tagger.ch2], window: 1 ns, center: auto}
+  - {name: herald_b, type: coincidences, channels: [tagger.ch1, tagger.ch3], window: 1 ns, center: auto}
+  - {name: hbt, type: heralded_g2, herald: tagger.ch1, a: tagger.ch2, b: tagger.ch3, window: 1 ns, center: auto}
+  - {name: g2_ab, type: g2, channels: [tagger.ch2, tagger.ch3], range: 10 ns, bins: 100}

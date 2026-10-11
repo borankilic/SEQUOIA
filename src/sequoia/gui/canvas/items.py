@@ -39,8 +39,6 @@ VALID_COLOR = QColor("#2ecc71")
 INVALID_COLOR = QColor("#e74c3c")
 
 
-MIN_SCREEN_FONT = 8.0
-
 _FONT_SPECS = {
     "type": (9, False, False),
     "id": (11, True, False),
@@ -51,21 +49,24 @@ _FONT_SPECS = {
 _FONTS: dict = {}
 
 
+MIN_LABEL_PIXELS = 6.0
+HIDE_ALL_TEXT_BELOW = 0.3
+
+
 def font_scale(name: str, zoom: float) -> float:
-    base = _FONT_SPECS[name][0]
-    if zoom <= 0:
-        return 1.0
-    needed = MIN_SCREEN_FONT / (base * zoom)
-    return max(1.0, math.ceil(needed * 4) / 4)
+    return 1.0
+
+
+def label_visible(name: str, zoom: float) -> bool:
+    return _FONT_SPECS[name][0] * zoom >= MIN_LABEL_PIXELS
 
 
 def font(name: str, zoom: float = 1.0) -> QFont:
     pixels, bold, italic = _FONT_SPECS[name]
-    size = int(round(pixels * font_scale(name, zoom)))
-    key = (name, size)
+    key = (name, pixels)
     if key not in _FONTS:
         f = QFont(QApplication.font())
-        f.setPixelSize(size)
+        f.setPixelSize(pixels)
         f.setBold(bold)
         f.setItalic(italic)
         _FONTS[key] = f
@@ -76,14 +77,10 @@ def body_size(instance_id: str, type_label: str, ports) -> tuple[float, float]:
     ins = [p for p in ports if p.direction == PortDirection.IN]
     outs = [p for p in ports if p.direction == PortDirection.OUT]
     n = max(len(ins), len(outs), 1)
-    height = max(1.5, 0.5 * (n + 1)) * CELL
-    text_w = max(
-        QFontMetricsF(font("id")).horizontalAdvance(instance_id),
-        QFontMetricsF(font("type")).horizontalAdvance(type_label),
-    )
+    height = max(2.0, 0.5 * (n + 1)) * CELL
     fm = QFontMetricsF(font("port"))
     side = max([fm.horizontalAdvance(p.name) for p in ports if p.name not in ("in", "out")] or [0])
-    need = text_w + 2 * side + 24
+    need = 2 * side + 36
     return max(2, math.ceil(need / CELL)) * CELL, height
 
 
@@ -121,7 +118,8 @@ class ComponentItem(QGraphicsItem):
         self._port_states: dict[str, str] = {}
         self._local: dict[str, tuple[float, float, float, float]] = {}
         self._w = 2 * CELL
-        self._h = 1.5 * CELL
+        self._h = 2 * CELL
+        self.type_name: str | None = None
         self.setFlags(
             QGraphicsItem.ItemIsSelectable
             | QGraphicsItem.ItemIsMovable
@@ -142,6 +140,9 @@ class ComponentItem(QGraphicsItem):
         self.flipped = bool(instance.flipped)
         self.ports = tuple(ports)
         self.valid = valid
+        document = getattr(self.canvas, "document", None)
+        component = document.component(instance.id) if document is not None else None
+        self.type_name = type(component).__name__ if component is not None else None
         self._layout()
         target = QPointF(instance.position[0] * CELL, instance.position[1] * CELL)
         if self.pos() != target:
@@ -215,8 +216,16 @@ class ComponentItem(QGraphicsItem):
         m11, m12, m21, m22 = self._matrix()
         return QTransform(m11, m12, m21, m22, 0, 0).map(path)
 
+    LABEL_HEIGHT = 30.0
+
+    def _label_rect(self) -> QRectF:
+        body = self._body_path().boundingRect()
+        width = max(body.width(), 2.4 * CELL)
+        return QRectF(body.center().x() - width / 2, body.bottom() + 2, width, self.LABEL_HEIGHT)
+
     def boundingRect(self) -> QRectF:
-        return self._body_path().boundingRect().adjusted(-12, -12, 12, 12)
+        rect = self._body_path().boundingRect().adjusted(-12, -12, 12, 12)
+        return rect.united(self._label_rect().adjusted(0, 0, 0, 4))
 
     def shape(self) -> QPainterPath:
         path = self._body_path()
@@ -254,6 +263,22 @@ class ComponentItem(QGraphicsItem):
             ang -= 180
         return ang
 
+    def _paint_icon(self, painter: QPainter, color: QColor, gutter: float) -> None:
+        try:
+            from sequoia.gui.canvas.icons import ICON_TYPES, paint_icon
+        except ImportError:
+            return
+        name = self.type_name
+        if name is None or name not in ICON_TYPES or self.canvas.zoom < 0.12:
+            return
+        m11, m12, m21, m22 = self._matrix()
+        inset = max(gutter + 8.0, 10.0)
+        rect = QRectF(-self._w / 2 + inset, -self._h / 2 + 8, self._w - 2 * inset, self._h - 16)
+        painter.save()
+        painter.setTransform(QTransform(m11, m12, m21, m22, 0, 0), True)
+        paint_icon(painter, name, rect, color=color, fiber=name.startswith("Fiber"))
+        painter.restore()
+
     def paint(self, painter: QPainter, option, widget=None) -> None:
         pal = QApplication.palette()
         painter.setRenderHint(QPainter.Antialiasing)
@@ -279,39 +304,41 @@ class ComponentItem(QGraphicsItem):
         painter.setBrush(QBrush(pal.base().color().darker(103)))
         painter.drawPath(body)
 
-        painter.save()
-        painter.rotate(self._text_angle())
-        painter.setPen(text_color)
         zoom = self.canvas.zoom
-        f_type, f_id, f_port = font("type", zoom), font("id", zoom), font("port", zoom)
+        f_port = font("port")
         fm_p = QFontMetricsF(f_port)
+        show_ports = zoom >= HIDE_ALL_TEXT_BELOW and label_visible("port", zoom)
         shown = [
             p.name
             for p in self.ports
-            if p.name in self._local
+            if show_ports
+            and p.name in self._local
             and self._shows_label(p.name)
             and fm_p.horizontalAdvance(p.name) <= self._w / 2 - 6
         ]
         side = max([fm_p.horizontalAdvance(n) for n in shown] or [0.0])
-        avail = max(self._w - 2 * side - 10, min(self._w - 8, 36.0))
-        fm_t, fm_i = QFontMetricsF(f_type), QFontMetricsF(f_id)
-        painter.setFont(f_type)
         gray = QColor(text_color)
         gray.setAlpha(150)
-        painter.setPen(gray)
-        painter.drawText(
-            QRectF(-avail / 2, -fm_t.height() - 1, avail, fm_t.height()),
-            Qt.AlignCenter,
-            fm_t.elidedText(self.type_label, Qt.ElideRight, avail),
-        )
-        painter.setFont(f_id)
-        painter.setPen(text_color)
-        painter.drawText(
-            QRectF(-avail / 2, 1, avail, fm_i.height()),
-            Qt.AlignCenter,
-            fm_i.elidedText(self.instance_id, Qt.ElideRight, avail),
-        )
-        painter.restore()
+        self._paint_icon(painter, text_color, side)
+        if zoom >= HIDE_ALL_TEXT_BELOW and label_visible("id", zoom):
+            rect = self._label_rect()
+            painter.setFont(font("id"))
+            painter.setPen(text_color)
+            fm_i = QFontMetricsF(font("id"))
+            painter.drawText(
+                QRectF(rect.left(), rect.top(), rect.width(), fm_i.height()),
+                Qt.AlignHCenter | Qt.AlignTop,
+                fm_i.elidedText(self.instance_id, Qt.ElideRight, rect.width()),
+            )
+            if label_visible("type", zoom) and zoom >= 0.9:
+                fm_t = QFontMetricsF(font("type"))
+                painter.setFont(font("type"))
+                painter.setPen(gray)
+                painter.drawText(
+                    QRectF(rect.left(), rect.top() + fm_i.height(), rect.width(), fm_t.height()),
+                    Qt.AlignHCenter | Qt.AlignTop,
+                    fm_t.elidedText(self.type_label, Qt.ElideRight, rect.width()),
+                )
 
         ang = self._text_angle()
         t = (math.cos(math.radians(ang)), math.sin(math.radians(ang)))

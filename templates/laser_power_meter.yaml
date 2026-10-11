@@ -1,0 +1,13 @@
+name: laser and power meter
+description: >
+  Minimal starter: a 780 nm laser, a neutral-density filter and a photodiode with a power meter
+  on the link. Drag more parts from the palette and link them to build your experiment.
+instances:
+  - {id: laser, part: sources/laser_780_cw, position: [0, 0]}
+  - {id: nd, part: filters/nd_filter_od1, position: [6, 0]}
+  - {id: pd, part: detectors/photodiode_generic, position: [12, 0]}
+links:
+  - {id: s1, kind: free_space, from: laser.out, to: nd.in, length: 100 mm}
+  - {id: s2, kind: free_space, from: nd.out, to: pd.in, length: 100 mm}
+probes:
+  - {id: pm, part: probes/power_meter, link: s2}

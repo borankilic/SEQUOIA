@@ -71,10 +71,10 @@ def augmented_example(tmp_path):
 
 
 def build_with_gui(window, target_path):
-    doc, scene = window.document, window.scene
+    doc = window.document
     example = load_setup(target_path)
     assert not doc.setup.instances
-    scene.choose_fiber = lambda refs: "fiber/smf_810"
+    doc.new_fiber_ref = "fiber/smf_810"
 
     for inst in example.instances:
         new_id = drop_part(window, inst.part, inst.position)

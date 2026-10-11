@@ -2,7 +2,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPointF, QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
         self._closing = False
         self._bound = False
         self.library_manager: LibraryManager | None = None
+        self._new_fiber_kind = "smf"
 
         self.document = SetupDocument(library)
         self.scene = CanvasScene(self.document)
@@ -259,6 +260,19 @@ class MainWindow(QMainWindow):
         edit.addSeparator()
         edit.addAction(self.act_layout)
         edit.addAction(self.act_snap)
+        edit.addSeparator()
+        fiber_menu = edit.addMenu("Fiber type for new links")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for label, kind in (
+            ("Single-mode (SM)", "smf"),
+            ("Polarization-maintaining (PM)", "pm"),
+            ("Multimode (MM)", "mmf"),
+        ):
+            action = QAction(label, self, checkable=True, checked=kind == "smf")
+            action.triggered.connect(lambda _c=False, k=kind: self._set_new_fiber_kind(k))
+            group.addAction(action)
+            fiber_menu.addAction(action)
 
         view = bar.addMenu("&View")
         for action in (self.act_zoom_in, self.act_zoom_out, self.act_fit):
@@ -302,6 +316,8 @@ class MainWindow(QMainWindow):
         doc.path_changed.connect(self._on_path_changed)
         doc.changed.connect(self._on_document_changed)
         doc.structure_changed.connect(self._update_hint)
+        doc.selection_requested.connect(self.scene.select)
+        self._apply_new_fiber_kind()
         stack = doc.undo_stack
         stack.canUndoChanged.connect(self._update_undo_actions)
         stack.canRedoChanged.connect(self._update_undo_actions)
@@ -322,6 +338,7 @@ class MainWindow(QMainWindow):
             (doc.path_changed, self._on_path_changed),
             (doc.changed, self._on_document_changed),
             (doc.structure_changed, self._update_hint),
+            (doc.selection_requested, scene.select),
             (doc.undo_stack.canUndoChanged, self._update_undo_actions),
             (doc.undo_stack.canRedoChanged, self._update_undo_actions),
             (doc.undo_stack.undoTextChanged, self._update_undo_actions),
@@ -415,6 +432,14 @@ class MainWindow(QMainWindow):
         probes = [i for i in ids if i in self.scene.probe_items]
         self.menu_add_probe.setEnabled(len(ids) == 1 and len(links) == 1)
         self.act_remove_probe.setEnabled(bool(probes))
+
+    def _set_new_fiber_kind(self, kind: str) -> None:
+        self._new_fiber_kind = kind
+        self._apply_new_fiber_kind()
+
+    def _apply_new_fiber_kind(self) -> None:
+        parts = self.document.fiber_parts_by_kind().get(self._new_fiber_kind) or []
+        self.document.new_fiber_ref = parts[0] if parts else None
 
     def show_sweeps(self) -> None:
         self.results_dock.show()

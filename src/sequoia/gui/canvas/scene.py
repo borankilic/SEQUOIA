@@ -42,6 +42,9 @@ class _Editor(QLineEdit):
         super().keyPressEvent(event)
 
 
+_SCENE_RECT = QRectF(-60000, -40000, 120000, 80000)
+
+
 class CanvasScene(QGraphicsScene):
     selection_changed = Signal(list)
     item_activated = Signal(str)
@@ -183,10 +186,8 @@ class CanvasScene(QGraphicsScene):
             item.setPos(link.point_at(_PROBE_T[n % len(_PROBE_T)]))
 
     def _update_scene_rect(self) -> None:
-        rect = self.itemsBoundingRect()
-        if rect.isNull():
-            rect = QRectF(-400, -300, 800, 600)
-        self.setSceneRect(rect.adjusted(-3000, -2000, 3000, 2000))
+        if self.sceneRect() != _SCENE_RECT:
+            self.setSceneRect(_SCENE_RECT)
 
     def port_anchor(self, instance_id: str, port_name: str):
         item = self.component_items.get(instance_id)
@@ -201,12 +202,18 @@ class CanvasScene(QGraphicsScene):
         item = self.component_items.get(instance_id)
         return None if item is None else item.port_scene_position(port_name)
 
+    def obstacle_rects(self) -> list[tuple[float, float, float, float]]:
+        rects = []
+        for item in self.component_items.values():
+            r = item._body_path().boundingRect().translated(item.pos())
+            rects.append((r.left(), r.top(), r.right(), r.bottom()))
+        return rects
+
     def item_moved(self, item: ComponentItem) -> None:
         if self._syncing:
             return
         for link in self.link_items.values():
-            if item.instance_id in (link.link.src.split(".")[0], link.link.dst.split(".")[0]):
-                link.update_geometry()
+            link.update_geometry()
         self._place_probes()
         if not self._mouse_down:
             self._commit_moves()
@@ -647,15 +654,6 @@ class CanvasScene(QGraphicsScene):
             return None
         src, dst = self.document.normalize_connection(drag["endpoint"], target)
         fields: dict = {}
-        if kind == "fiber":
-            fibers = self.document.fiber_parts()
-            if len(fibers) > 1:
-                ref = self._last_fiber if self._last_fiber in fibers else self.choose_fiber(fibers)
-                if ref is None:
-                    self.status_message.emit("no fiber chosen; the link was not created")
-                    return None
-                self._last_fiber = ref
-                fields["fiber"] = ref
         try:
             return self.document.add_link(kind, src, dst, **fields)
         except ValueError as exc:
@@ -666,9 +664,13 @@ class CanvasScene(QGraphicsScene):
         self._gesture += 1
         if event.button() == Qt.LeftButton and self.link_editor is None:
             hit = self._port_hit(event.scenePos())
-            if hit is not None and self.start_link(hit[0], hit[1], event.scenePos()):
-                event.accept()
-                return
+            if hit is not None:
+                item, port = hit
+                if not event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier):
+                    self.select(item.instance_id)
+                if self.start_link(item, port, event.scenePos()):
+                    event.accept()
+                    return
         self._mouse_down = True
         super().mousePressEvent(event)
 

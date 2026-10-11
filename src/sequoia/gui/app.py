@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 import sequoia.components.builtin  # noqa: F401
 from sequoia.cli import resolve_library
 from sequoia.gui.main_window import MainWindow
+from sequoia.gui.start_screen import StartScreen
 from sequoia.library.store import Library
 
 
@@ -36,9 +37,14 @@ def find_library(explicit: str | None, setup_path: str | None) -> Path | None:
 
 
 def create_window(
-    argv: list[str] | None = None, settings: QSettings | None = None
+    argv: list[str] | None = None,
+    settings: QSettings | None = None,
+    setup: str | None = None,
+    untitled: bool = False,
 ) -> MainWindow | None:
     args = parse_args(argv)
+    if setup is not None:
+        args.setup = setup
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("SEQUOIA")
     app.setOrganizationName("SEQUOIA")
@@ -51,11 +57,59 @@ def create_window(
         if not chosen:
             return None
         root = Path(chosen)
-    return MainWindow(Library(root), args.setup, settings=settings)
+    window = MainWindow(Library(root), args.setup, settings=settings)
+    if untitled and args.setup:
+        make_untitled(window, args.setup)
+    return window
+
+
+def make_untitled(window: MainWindow, template_path: str) -> None:
+    window.document.path = None
+    window.document.path_changed.emit()
+    resolved = str(Path(template_path).resolve())
+    window.settings.setValue(
+        "recent_files", [p for p in window.recent_files() if Path(p).resolve() != Path(resolved)]
+    )
+    window._update_recent_menu()
+
+
+def show_start_screen(
+    argv: list[str] | None = None,
+    settings: QSettings | None = None,
+    templates_root: Path | None = None,
+) -> StartScreen:
+    QApplication.instance() or QApplication(sys.argv[:1])
+    screen = StartScreen(templates_root, settings)
+    screen.windows = []
+
+    def launch(setup: str | None = None, untitled: bool = False) -> None:
+        window = create_window(argv, settings, setup, untitled)
+        if window is None:
+            return
+        screen.windows.append(window)
+        window.show()
+        screen.close()
+
+    def ask_open() -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            screen, "Open project", "", "Setup files (*.yaml *.yml);;All files (*)"
+        )
+        if path:
+            launch(path)
+
+    screen.new_requested.connect(launch)
+    screen.open_requested.connect(ask_open)
+    screen.path_requested.connect(lambda path: launch(path))
+    screen.template_requested.connect(lambda path: launch(path, untitled=True))
+    return screen
 
 
 def run(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    if parse_args(argv).setup is None:
+        screen = show_start_screen(argv)
+        screen.show()
+        return app.exec()
     window = create_window(argv)
     if window is None:
         return 1

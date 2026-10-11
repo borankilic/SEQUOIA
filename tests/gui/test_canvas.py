@@ -74,7 +74,7 @@ def test_port_positions_rotation_flip(doc, scene):
 def test_ports_spacing_for_multiport(doc, scene):
     doc.add_instance("freespace/bs", [0, 0], instance_id="bs")
     ys = [scene.port_scene_position("bs", n).y() for n in ("in_a", "in_b")]
-    assert ys[1] - ys[0] == pytest.approx(0.5 * CELL)
+    assert ys[1] - ys[0] == pytest.approx(scene.component_items["bs"]._h / 3)
     assert scene.port_scene_position("bs", "out_t").y() == pytest.approx(ys[0])
 
 
@@ -340,3 +340,27 @@ def test_render_hbt_example(qtbot):
         view2.grab().save(str(SCRATCH / "hbt_canvas_auto.png"))
         doc2.undo_stack.cleanChanged.disconnect()
     doc.undo_stack.cleanChanged.disconnect()
+
+
+def test_scene_rect_is_fixed_so_edits_never_move_the_view(doc, scene):
+    before = scene.sceneRect()
+    chain(doc)
+    doc.add_instance("freespace/bs", [200, 150], instance_id="far")
+    assert scene.sceneRect() == before
+
+
+def test_pressing_a_port_selects_the_component(doc, scene):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtWidgets import QGraphicsSceneMouseEvent
+
+    chain(doc)
+    item = scene.component_items["mirror"]
+    scene.clearSelection()
+    event = QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMousePress)
+    pos = scene.port_scene_position("mirror", "in")
+    event.setScenePos(pos)
+    event.setButton(Qt.LeftButton)
+    event.setButtons(Qt.LeftButton)
+    scene.mousePressEvent(event)
+    assert scene.selected_ids() == ["mirror"]
+    assert item.isSelected()

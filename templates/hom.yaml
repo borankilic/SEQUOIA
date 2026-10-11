@@ -1,0 +1,44 @@
+name: Hong-Ou-Mandel interference with type-II PPKTP
+description: >
+  The H signal and V idler of a type-II PPKTP crystal are separated on a PBS. A half-wave plate at
+  45 degrees turns the idler into H, the signal arm contains the adjustable free-space delay
+  (link 'delay_arm'; 0.3 mm of path = 1 ps), and the two photons meet on a 50:50 fiber beam splitter.
+  The dip in the coincidences between the two output detectors is centred at the delay that
+  compensates the crystal walk-off (about +2.2 ps of extra signal path), not at equal path length.
+  The crystal is held at 27.4 degC, where the signal and idler spectra are centred symmetrically
+  about the degenerate wavelength; at 25 degC the spectra are offset by 0.11 nm and the
+  dip visibility drops to about 0.95.
+  All parts are generic placeholders; replace them with the lab's measured parts.
+instances:
+  - {id: pump, part: sources/laser_405_cw, position: [0, 0]}
+  - {id: pump_lens, part: freespace/lens_f200mm, position: [5, 0]}
+  - {id: crystal, part: nonlinear/ppktp_type2_10mm, position: [11, 0], settings: {temperature: 27.4 degC}}
+  - {id: collect_lens, part: freespace/lens_f200mm, position: [17, 0]}
+  - {id: lp, part: filters/lp_650_pumpblock, position: [22, 0]}
+  - {id: bp, part: filters/bp_810_10nm, position: [26, 0]}
+  - {id: pbs, part: polarization/pbs_ideal, position: [30, 0]}
+  - {id: hwp_idler, part: polarization/hwp_810, position: [30, 5], settings: {angle: 45 deg}}
+  - {id: cpl_signal, part: fiber/coupler_f11mm_810, position: [36, 0]}
+  - {id: cpl_idler, part: fiber/coupler_f11mm_810, position: [36, 5]}
+  - {id: fbs, part: fiber/beamsplitter_50_50_810, position: [42, 2]}
+  - {id: spad_1, part: detectors/spad_si_generic, position: [48, 0]}
+  - {id: spad_2, part: detectors/spad_si_generic, position: [48, 5]}
+  - {id: tagger, part: electronics/tagger_generic_4ch, position: [54, 2]}
+links:
+  - {id: s_pump, kind: free_space, from: pump.out, to: pump_lens.in, length: 100 mm}
+  - {id: s_focus, kind: free_space, from: pump_lens.out, to: crystal.in, length: 195 mm}
+  - {id: s_collect, kind: free_space, from: crystal.out, to: collect_lens.in, length: 197 mm}
+  - {id: s_lp, kind: free_space, from: collect_lens.out, to: lp.in, length: 50 mm}
+  - {id: s_bp, kind: free_space, from: lp.out, to: bp.in, length: 25 mm}
+  - {id: s_pbs, kind: free_space, from: bp.out, to: pbs.in, length: 25 mm}
+  - {id: delay_arm, kind: free_space, from: pbs.out_t, to: cpl_signal.in, length: 100 mm}
+  - {id: s_idler_a, kind: free_space, from: pbs.out_r, to: hwp_idler.in, length: 50 mm}
+  - {id: s_idler_b, kind: free_space, from: hwp_idler.out, to: cpl_idler.in, length: 50 mm}
+  - {id: f_signal, kind: fiber, from: cpl_signal.out, to: fbs.in_a, fiber: fiber/smf_810, length: 1 m}
+  - {id: f_idler, kind: fiber, from: cpl_idler.out, to: fbs.in_b, fiber: fiber/smf_810, length: 1 m}
+  - {id: f_1, kind: fiber, from: fbs.out_a, to: spad_1.in, fiber: fiber/smf_810, length: 1 m}
+  - {id: f_2, kind: fiber, from: fbs.out_b, to: spad_2.in, fiber: fiber/smf_810, length: 1 m}
+  - {id: c_1, kind: cable, from: spad_1.out, to: tagger.ch1, delay: 0 ns}
+  - {id: c_2, kind: cable, from: spad_2.out, to: tagger.ch2, delay: 0 ns}
+analyses:
+  - {name: hom, type: coincidences, channels: [tagger.ch1, tagger.ch2], window: 1 ns, center: auto}

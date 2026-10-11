@@ -1,0 +1,9 @@
+type: OpticalFiber
+manufacturer: generic
+model: 50 um graded-index multimode fiber
+description: Generic placeholder multimode fiber (core 50 um, NA 0.2).
+params:
+  kind: mmf
+  core_diameter: {value: 50, unit: um, provenance: {source: ideal-default, note: generic placeholder}}
+  numerical_aperture: 0.2
+  attenuation_db_per_km: 3.0

@@ -14,8 +14,11 @@ One-page overview: [docs/overview.pdf](docs/overview.pdf)
 
 ## What it does
 
-- **Schematic editor.** Place parts anywhere on a grid, rotate and flip them, and connect them with
-  free-space, fiber or cable links that carry a length. Undo/redo, copy/paste, auto layout.
+- **Schematic editor.** Place parts (drawn with optics-schematic icons) anywhere on a grid, rotate
+  and flip them, and connect them with air, fiber (SM, PM or MM, with an adjustable loss that
+  defaults to 0 dB) or cable links; links route around other parts. Switch a link between air and
+  fiber in the inspector (launch couplers are inserted automatically). Undo/redo, copy/paste,
+  auto layout.
 - **Classical engine.** Per-wavelength Jones matrices and Gaussian beams (ABCD, M²) with coherent
   combination of paths, so interferometer fringes, coherence length and mode mismatch come out
   naturally. Fiber coupling is computed as a mode overlap.
@@ -149,6 +152,13 @@ counts; clicking a diagnostic selects the offending component or link. Shortcuts
 rotate, `F` flip, `Delete`, `Ctrl+C`/`Ctrl+V`, `Ctrl+Z`/`Ctrl+Shift+Z`, `Ctrl+L` auto layout,
 `Ctrl+G` snap to grid, `Ctrl+=`/`Ctrl+-`/`Ctrl+0` zoom, `Ctrl+Return` run now, `Space`+drag or middle
 mouse to pan. Window layout and recent files are remembered between sessions.
+
+Launching `uv run sequoia` without a setup file opens a start screen with New project, Open
+project..., the recent projects and a gallery of templates from `templates/` (a laser and power
+meter starter, Malus' law, a beam expander, Mach-Zehnder, fiber coupling, an SPDC source with
+coincidences and CAR, heralded HBT, Hong-Ou-Mandel and a Bell test). A template opens as a new
+untitled project, so saving never overwrites the shipped file. Any YAML setup dropped into
+`templates/` (with a `name` and `description`) shows up in the gallery.
 
 Simulate a setup from the command line:
 

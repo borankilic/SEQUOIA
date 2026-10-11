@@ -1,0 +1,17 @@
+name: beam expander
+description: >
+  780 nm laser through a Keplerian two-lens beam expander (f = 50 mm and f = 200 mm, spaced by the
+  sum of the focal lengths, 4x) with a beam profiler before and after. The output waist is four
+  times the input waist and the divergence four times smaller.
+instances:
+  - {id: laser, part: sources/laser_780_cw, position: [0, 0]}
+  - {id: lens1, part: freespace/lens_f50mm, position: [6, 0]}
+  - {id: lens2, part: freespace/lens_f200mm, position: [14, 0]}
+  - {id: dump, part: freespace/beam_dump, position: [22, 0]}
+links:
+  - {id: s1, kind: free_space, from: laser.out, to: lens1.in, length: 100 mm}
+  - {id: s2, kind: free_space, from: lens1.out, to: lens2.in, length: 250 mm}
+  - {id: s3, kind: free_space, from: lens2.out, to: dump.in, length: 200 mm}
+probes:
+  - {id: profile_in, part: probes/beam_profiler, link: s1}
+  - {id: profile_out, part: probes/beam_profiler, link: s3}

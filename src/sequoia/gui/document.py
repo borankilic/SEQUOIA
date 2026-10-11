@@ -10,6 +10,7 @@ from pydantic import TypeAdapter, ValidationError
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
+import sequoia.components.builtin  # noqa: F401
 from sequoia.components.base import Component, PortDirection, PortKind, PortSpec, get_component
 from sequoia.data import Duration
 from sequoia.errors import SequoiaError, format_validation_error
@@ -234,6 +235,7 @@ def check_analyses(analyses: list) -> None:
 class SetupDocument(QObject):
     changed = Signal()
     structure_changed = Signal()
+    selection_requested = Signal(str)
     dirty_changed = Signal(bool)
     path_changed = Signal()
     ids_renamed = Signal(object)
@@ -251,6 +253,7 @@ class SetupDocument(QObject):
         self.path = Path(path) if path is not None else None
         self._components: dict[tuple[str, str], tuple[Any, Component | None, str | None]] = {}
         self._macro_stack: list[Setup] = []
+        self.new_fiber_ref: str | None = None
         self._renames: list[tuple[str, str]] = []
         self._structure = self._structure_key()
         self.undo_stack = QUndoStack(self)
@@ -615,10 +618,139 @@ class SetupDocument(QObject):
             return None, f"linking '{out}' to '{inp}' would form a cycle"
         return _KIND_FOR_PORT[p_src.kind], ""
 
+    def _fiber_kind(self, ref: str) -> str | None:
+        try:
+            params = self.library.load_part(ref).params
+        except SequoiaError:
+            return None
+        return getattr(params, "kind", None)
+
+    def fiber_parts_by_kind(self) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {"smf": [], "pm": [], "mmf": []}
+        for ref in self.fiber_parts():
+            kind = self._fiber_kind(ref)
+            if kind in out:
+                out[kind].append(ref)
+        return out
+
+    def convert_link_to_fiber(self, link_id: str, fiber: str | None = None) -> str:
+        """Replace a free-space link by launch coupler, fiber and receive coupler.
+
+        Returns the id of the new fiber link."""
+        raw = self._raw()
+        link = self._find(raw["links"], link_id, "link")
+        if link["kind"] != "free_space":
+            raise ValueError(f"link '{link_id}' is not a free-space link")
+        couplers = [i.ref for i in self.library.index() if i.type == "FiberCoupler"]
+        if not couplers:
+            raise ValueError("the library has no FiberCoupler part to launch into a fiber")
+        coupler = next((c for c in couplers if c.endswith("810")), couplers[0])
+        fiber = fiber or next(
+            iter(self.fiber_parts_by_kind().get("smf") or self.fiber_parts()), None
+        )
+        if fiber is None:
+            raise ValueError("the library has no fiber part")
+        src_inst, dst_inst = link["from"].split(".")[0], link["to"].split(".")[0]
+        positions = {i["id"]: i["position"] for i in raw["instances"]}
+        a, b = positions[src_inst], positions[dst_inst]
+        launch_at = [round((a[0] * 2 + b[0]) / 3 * 2) / 2, round((a[1] * 2 + b[1]) / 3 * 2) / 2]
+        recv_at = [round((a[0] + b[0] * 2) / 3 * 2) / 2, round((a[1] + b[1] * 2) / 3 * 2) / 2]
+        length = link.get("length", "1 m")
+        with self.macro(f"Fiber-couple {link_id}"):
+            launch = self.add_instance(coupler, launch_at)
+            recv = self.add_instance(coupler, recv_at)
+            self.set_setting(recv, "mode", "to_free")
+            free_in = next(
+                p.name
+                for p in self.ports(launch)
+                if p.kind == PortKind.FREE_SPACE and p.direction == PortDirection.IN
+            )
+            free_out = next(
+                p.name
+                for p in self.ports(recv)
+                if p.kind == PortKind.FREE_SPACE and p.direction == PortDirection.OUT
+            )
+            fib_out = next(
+                p.name
+                for p in self.ports(launch)
+                if p.kind == PortKind.FIBER and p.direction == PortDirection.OUT
+            )
+            fib_in = next(
+                p.name
+                for p in self.ports(recv)
+                if p.kind == PortKind.FIBER and p.direction == PortDirection.IN
+            )
+            medium = link.get("medium", "air")
+            original_src, original_dst = link["from"], link["to"]
+            self.remove_link(link_id)
+            self.add_link(
+                "free_space", original_src, f"{launch}.{free_in}", length="50 mm", medium=medium
+            )
+            fiber_link = self.add_link(
+                "fiber",
+                f"{launch}.{fib_out}",
+                f"{recv}.{fib_in}",
+                fiber=fiber,
+                length=length if isinstance(length, str) else "1 m",
+            )
+            self.add_link(
+                "free_space", f"{recv}.{free_out}", original_dst, length="50 mm", medium=medium
+            )
+        return fiber_link
+
+    def convert_link_to_air(self, link_id: str) -> str:
+        """Inverse of ``convert_link_to_fiber`` for a fiber link between two couplers."""
+        raw = self._raw()
+        fiber = self._find(raw["links"], link_id, "link")
+        if fiber["kind"] != "fiber":
+            raise ValueError(f"link '{link_id}' is not a fiber link")
+        launch = fiber["from"].split(".")[0]
+        recv = fiber["to"].split(".")[0]
+        kinds = {i["id"]: self.component(i["id"]) for i in raw["instances"]}
+        for inst in (launch, recv):
+            if type(kinds.get(inst)).__name__ != "FiberCoupler":
+                raise ValueError(
+                    "only fibers between two fiber couplers can be turned back into an air link"
+                )
+        upstream = [
+            link
+            for link in raw["links"]
+            if link["kind"] == "free_space" and link["to"].split(".")[0] == launch
+        ]
+        downstream = [
+            link
+            for link in raw["links"]
+            if link["kind"] == "free_space" and link["from"].split(".")[0] == recv
+        ]
+        if len(upstream) != 1 or len(downstream) != 1:
+            raise ValueError("the couplers of this fiber are not connected in a simple chain")
+        up, down = upstream[0], downstream[0]
+        for inst in (launch, recv):
+            others = [
+                x
+                for x in raw["links"]
+                if inst in (x["from"].split(".")[0], x["to"].split(".")[0])
+                and x["id"] not in (up["id"], down["id"], link_id)
+            ]
+            if others:
+                raise ValueError(f"coupler '{inst}' has other connections")
+        length = fiber.get("length", "100 mm")
+        with self.macro(f"Replace fiber {link_id} by air"):
+            src, dst = up["from"], down["to"]
+            medium = up.get("medium", "air")
+            for lid in (up["id"], link_id, down["id"]):
+                self.remove_link(lid)
+            self.remove_instance(launch)
+            self.remove_instance(recv)
+            return self.add_link("free_space", src, dst, length=length, medium=medium)
+
     def _default_fiber(self) -> str:
         fibers = [info.ref for info in self.library.index() if info.type == FIBER_TYPE]
-        if len(fibers) == 1:
-            return fibers[0]
+        if self.new_fiber_ref in fibers:
+            return self.new_fiber_ref
+        smf = self.fiber_parts_by_kind().get("smf") or []
+        if len(fibers) == 1 or smf:
+            return (smf or fibers)[0]
         if not fibers:
             raise ValueError(f"the library has no {FIBER_TYPE} part to use for a fiber link")
         raise ValueError(

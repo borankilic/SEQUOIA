@@ -3,8 +3,10 @@ from typing import Any
 from pydantic import ValidationError
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QScrollArea,
     QSlider,
@@ -43,8 +45,8 @@ LINK_LABELS = {
     "length": "Length",
     "lock_to_canvas": "Lock length to canvas distance",
     "medium": "Medium",
-    "fiber": "Fiber part",
-    "connector_loss_db": "Connector loss (dB)",
+    "fiber": "Fiber type",
+    "connector_loss_db": "Loss (dB)",
     "polarization": "Polarization transform",
     "delay": "Cable delay",
 }
@@ -54,7 +56,8 @@ LINK_HINTS = {
     "(one grid cell is the setup's grid cell size) instead of a typed length.",
     "medium": "Propagation medium of the free-space path.",
     "fiber": "Library fiber part this link is made of.",
-    "connector_loss_db": "Insertion loss of the connectors in dB (0 or more).",
+    "connector_loss_db": "Extra loss of this fiber link in dB (connectors, splices, bends); "
+    "0 by default. Fiber attenuation per length comes from the fiber part.",
     "polarization": "Fixed polarization rotation of the fiber.",
     "delay": "Signal delay of the cable, e.g. 5 ns.",
 }
@@ -412,6 +415,22 @@ class LinkForm(QWidget):
             track_default=False,
         )
         layout.addWidget(self.id_row)
+        self.medium_combo = None
+        if link.kind in ("free_space", "fiber"):
+            self.medium_combo = QComboBox()
+            self.medium_combo.addItem("Air (free space)", "free_space")
+            self.medium_combo.addItem("Fiber (inserts launch couplers)", "fiber")
+            self.medium_combo.setCurrentIndex(0 if link.kind == "free_space" else 1)
+            self.medium_combo.setToolTip(
+                "Carry the beam through air or through an optical fiber. Switching an air link "
+                "to fiber inserts a launch and a receive fiber coupler; switching back removes "
+                "them again."
+            )
+            self.medium_combo.activated.connect(self._medium_chosen)
+            row = QHBoxLayout()
+            row.addWidget(QLabel("Link type"))
+            row.addWidget(self.medium_combo, 1)
+            layout.addLayout(row)
         editors: dict = {}
         specs: dict = {}
         self.fiber_editor: LiteralEditor | None = None
@@ -441,14 +460,33 @@ class LinkForm(QWidget):
         layout.addStretch(1)
         self.refresh()
 
+    def _medium_chosen(self, index: int) -> None:
+        wanted = self.medium_combo.itemData(index)
+        if wanted == self._link().kind:
+            return
+        try:
+            if wanted == "fiber":
+                new_id = self.document.convert_link_to_fiber(self.link_id)
+            else:
+                new_id = self.document.convert_link_to_air(self.link_id)
+            self.document.selection_requested.emit(new_id)
+        except ValueError as exc:
+            self.medium_combo.setCurrentIndex(0 if self._link().kind == "free_space" else 1)
+            QMessageBox.warning(self, "Link type", str(exc))
+
+    _FIBER_KINDS = {"smf": "SM", "pm": "PM", "mmf": "MM"}
+
     def _fiber_editor(self, spec: FieldSpec) -> LiteralEditor:
         editor = LiteralEditor(spec)
         self.fiber_editor = editor
         items = []
         for info in self.document.library.index():
             if info.type == FIBER_TYPE:
+                kind = self.document._fiber_kind(info.ref)
+                tag = self._FIBER_KINDS.get(kind, "?")
                 name = " ".join(p for p in (info.manufacturer, info.model) if p)
-                items.append((f"{name} ({info.ref})" if name else info.ref, info.ref))
+                items.append((f"[{tag}] {name} ({info.ref})" if name else info.ref, info.ref))
+        items.sort(key=lambda x: x[0])
         editor.set_choices(items)
         return editor
 

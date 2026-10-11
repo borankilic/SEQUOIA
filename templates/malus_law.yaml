@@ -1,0 +1,17 @@
+name: Malus' law polarization analysis
+description: >
+  780 nm laser, a half-wave plate and a linear polarizer in front of a photodiode. Sweep the
+  half-wave plate angle (a rotation of theta turns the polarization by 2 theta) to trace the
+  cos^2 transmission of Malus' law, limited by the polarizer extinction ratio.
+instances:
+  - {id: laser, part: sources/laser_780_cw, position: [0, 0]}
+  - {id: hwp, part: polarization/hwp_810, position: [6, 0], settings: {angle: 11.25 deg}}
+  - {id: pol, part: polarization/polarizer_generic, position: [12, 0]}
+  - {id: pd, part: detectors/photodiode_generic, position: [18, 0]}
+links:
+  - {id: s1, kind: free_space, from: laser.out, to: hwp.in, length: 100 mm}
+  - {id: s2, kind: free_space, from: hwp.out, to: pol.in, length: 50 mm}
+  - {id: s3, kind: free_space, from: pol.out, to: pd.in, length: 50 mm}
+probes:
+  - {id: pm, part: probes/power_meter, link: s3}
+  - {id: pol_state, part: probes/polarimeter, link: s2}

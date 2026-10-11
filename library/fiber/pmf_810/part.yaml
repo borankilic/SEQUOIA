@@ -1,0 +1,10 @@
+type: OpticalFiber
+manufacturer: generic
+model: 810 nm polarization-maintaining fiber
+description: Generic placeholder PM fiber (PANDA-like). Polarization is carried on the slow axis; use the link's polarization transform to model a misaligned launch.
+params:
+  kind: pm
+  mode_field_diameter: {value: 5.5, unit: um, provenance: {source: ideal-default, note: generic value at 810 nm}}
+  cutoff_wavelength: {value: 730, unit: nm, provenance: {source: ideal-default, note: generic placeholder}}
+  numerical_aperture: 0.12
+  attenuation_db_per_km: 4.0

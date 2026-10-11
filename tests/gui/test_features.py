@@ -5,7 +5,7 @@ from PySide6.QtCore import QEvent, QPointF, QSettings, Qt
 from PySide6.QtGui import QKeyEvent
 
 from sequoia.gui.canvas import CanvasScene
-from sequoia.gui.canvas.items import CELL, font, font_scale
+from sequoia.gui.canvas.items import CELL, font, label_visible
 from sequoia.gui.canvas.layout import plan_layout
 from sequoia.gui.inspector.panel import InspectorPanel
 from sequoia.gui.main_window import MainWindow
@@ -439,8 +439,8 @@ def test_link_form_polish(window):
     assert rows["length"].label.toolTip()
     window.scene.select("f_signal")
     fiber_rows = window.inspector.form.form.rows
-    assert fiber_rows["connector_loss_db"].label.text() == "Connector loss (dB)"
-    assert fiber_rows["fiber"].label.text() == "Fiber part"
+    assert fiber_rows["connector_loss_db"].label.text() == "Loss (dB)"
+    assert fiber_rows["fiber"].label.text() == "Fiber type"
     window.scene.select("c_h")
     assert window.inspector.form.form.rows["delay"].label.text() == "Cable delay"
 
@@ -497,16 +497,15 @@ def test_auto_layout_fits_readably(qtbot, window):
         window.auto_layout()
         assert not window._overlapping(), name
         assert window.view.zoom_level >= 0.6, (name, window.view.zoom_level)
-        for kind in ("type", "id", "port", "label"):
-            assert font(kind, window.view.zoom_level).pixelSize() * window.view.zoom_level >= 7.5
+        assert label_visible("id", window.view.zoom_level)
         window.undo()
 
 
-def test_font_lod_keeps_labels_readable():
-    assert font_scale("id", 1.0) == 1.0
-    for zoom in (0.2, 0.4, 0.6, 0.9):
-        for name in ("type", "id", "port", "label"):
-            assert font(name, zoom).pixelSize() * zoom >= 7.5, (name, zoom)
+def test_text_scales_with_zoom_and_hides_when_tiny():
+    assert font("id", 0.1).pixelSize() == font("id", 2.0).pixelSize()
+    assert label_visible("id", 1.0)
+    assert not label_visible("id", 0.2)
+    assert not label_visible("port", 0.3)
 
 
 def test_layout_has_no_overlap_and_keeps_all_instances(window):

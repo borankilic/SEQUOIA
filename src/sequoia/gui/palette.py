@@ -113,6 +113,15 @@ class Palette(QWidget):
         if info.serial:
             tip.append(f"serial: {info.serial}")
         item.setToolTip(0, "\n".join(tip))
+        if info.type:
+            try:
+                from PySide6.QtGui import QIcon
+
+                from sequoia.gui.canvas.icons import component_pixmap
+
+                item.setIcon(0, QIcon(component_pixmap(info.type, 28)))
+            except ImportError:
+                pass
         haystack = " ".join(
             str(x) for x in (info.ref, info.type, info.manufacturer, info.model, info.serial) if x
         )

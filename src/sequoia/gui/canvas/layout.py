@@ -80,7 +80,7 @@ def _extent(document: SetupDocument, instance) -> tuple[float, float]:
     w, h = w / CELL, h / CELL
     if round(instance.rotation) % 180 == 90:
         w, h = h, w
-    return w, h
+    return w + 0.5, h + 1.0
 
 
 def _place(layers, sizes, cuts):
