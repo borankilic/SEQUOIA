@@ -1,11 +1,41 @@
+import gc
 import threading
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from sequoia.engines.cache import Cancelled
+
+_gc_lock = threading.Lock()
+_gc_depth = 0
+_gc_was_enabled = True
+
+
+@contextmanager
+def gc_paused() -> Iterator[None]:
+    """Keep the cyclic garbage collector off while worker threads run.
+
+    A collection that happens on a worker thread can finalise PySide wrappers of Qt objects
+    (menus, actions, plot items); their destructors take Qt-internal locks and then need the
+    GIL, which deadlocks against the GUI thread. Collection is done on the GUI thread when the
+    job has finished instead.
+    """
+    global _gc_depth, _gc_was_enabled
+    with _gc_lock:
+        if _gc_depth == 0:
+            _gc_was_enabled = gc.isenabled()
+            gc.disable()
+        _gc_depth += 1
+    try:
+        yield
+    finally:
+        with _gc_lock:
+            _gc_depth -= 1
+            if _gc_depth == 0 and _gc_was_enabled:
+                gc.enable()
 
 
 class _Signals(QObject):
@@ -25,7 +55,8 @@ class _Job(QRunnable):
 
     def run(self) -> None:
         try:
-            result = self.fn(self.cancel.is_set, self.signals.progress.emit)
+            with gc_paused():
+                result = self.fn(self.cancel.is_set, self.signals.progress.emit)
         except Cancelled:
             self.signals.cancelled.emit()
         except BaseException as exc:
@@ -81,5 +112,6 @@ class JobRunner(QObject):
     def _finish(self, job: _Job, signal, *args) -> None:
         if self._job is job:
             self._job = None
+        gc.collect()
         signal.emit(*args)
         self.busy_changed.emit(self._job is not None)

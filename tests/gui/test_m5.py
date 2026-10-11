@@ -106,3 +106,31 @@ def test_monte_carlo_tab_runs_and_compares(window, qtbot):
     assert mc.table.rowCount() >= 8
     assert sum(mc.outcome.tags.counts().values()) > 10000
     assert all(abs(c.z) < 5 for c in mc.outcome.comparisons)
+
+
+def test_gaussian_tab_sweeps_pump_power(window, qtbot):
+    window.open_path(ROOT / "setups" / "hbt_heralded.yaml")
+    qtbot.waitUntil(lambda: window.controller.last_outcome is not None, timeout=WAIT)
+    tab = window.results.gaussian
+    tab.scale.setValue(0.02)
+    tab.run()
+    qtbot.waitUntil(lambda: tab.outcome is not None, timeout=WAIT)
+    out = tab.outcome
+    assert len(out.pairs) == 13
+    assert np.all(np.diff(out.car) < 0)
+    assert np.all(np.diff(out.g2) > 0)
+    assert tab.table.rowCount() >= 9
+
+
+def test_gc_stays_off_while_jobs_run_and_returns_after():
+    import gc
+
+    from sequoia.gui.jobs import gc_paused
+
+    assert gc.isenabled()
+    with gc_paused():
+        assert not gc.isenabled()
+        with gc_paused():
+            assert not gc.isenabled()
+        assert not gc.isenabled()
+    assert gc.isenabled()

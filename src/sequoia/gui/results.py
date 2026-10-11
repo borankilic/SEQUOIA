@@ -280,6 +280,7 @@ class ResultsDock(QWidget):
             PolarizationTab,
             SpectraTab,
         )
+        from sequoia.gui.gaussian_panel import GaussianTab
         from sequoia.gui.montecarlo_panel import MonteCarloTab
         from sequoia.gui.sweep_panel import SweepTab
 
@@ -291,6 +292,7 @@ class ResultsDock(QWidget):
         self.budget = BudgetTab(lambda: self.provider())
         self.sweeps = SweepTab(lambda: self.provider())
         self.montecarlo = MonteCarloTab(lambda: self.provider())
+        self.gaussian = GaussianTab(lambda: self.provider())
         self.plot_tabs = {
             "Caustic": self.caustic,
             "Polarization": self.polarization,
@@ -299,6 +301,7 @@ class ResultsDock(QWidget):
             "Budget": self.budget,
             "Sweeps": self.sweeps,
             "Monte Carlo": self.montecarlo,
+            "Gaussian": self.gaussian,
         }
         for title, widget in self.plot_tabs.items():
             self.tabs.addTab(widget, title)
@@ -374,6 +377,16 @@ class ResultsDock(QWidget):
             except Exception as exc:
                 self.tab_errors[name] = f"{type(exc).__name__}: {exc}"
         self._refresh_status()
+
+    def shutdown(self) -> None:
+        """Cancel and join the background jobs of the analysis tabs (before widgets are freed)."""
+        for widget in self.plot_tabs.values():
+            runner = getattr(widget, "runner", None)
+            if runner is not None:
+                runner.shutdown()
+            dialog = getattr(widget, "optimizer", None)
+            if dialog is not None:
+                dialog.runner.shutdown()
 
     def select_link(self, link_id: str) -> None:
         for widget in (self.caustic, self.polarization, self.spectra, self.budget):

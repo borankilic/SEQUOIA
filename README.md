@@ -35,6 +35,8 @@ One-page overview: [docs/overview.pdf](docs/overview.pdf)
 - **Monte Carlo time tags.** Event-level simulation of every detector and tagger channel with
   dead time, jitter tails, afterpulsing and dark counts; the same correlation analysis runs on
   recorded tag files.
+- **Gaussian engine.** Exact multimode photon statistics (threshold clicks, photon-number
+  distributions, high gain) from the same network transfers.
 - **Optimizer and budgets.** Maximize or minimize any result by tuning bounded parameters
   (scipy), and rank which part limits a result by replacing each part with its ideal.
 - **Diagnostics.** Pump leakage, aperture clipping, fiber below cutoff, curve extrapolation,
@@ -92,13 +94,15 @@ docs/                     plan, conventions, M3 report, overview
 
 ## Status
 
-Milestones M0 to M7 are done: data model and library, classical engine, quantum rate engine, the
-GUI shell with the schematic editor, results plots, sweeps, optimizer and budgets, the Library
-Manager, and the Monte Carlo time-tag engine (see [docs/PLAN.md](docs/PLAN.md)). The test suite covers
+All milestones of the plan are done (M0 to M8): data model and library, classical engine, quantum
+rate engine, the GUI shell with the schematic editor, results plots, sweeps, optimizer and
+budgets, the Library Manager, the Monte Carlo time-tag engine and the Gaussian multimode engine
+(see [docs/PLAN.md](docs/PLAN.md)). The test suite covers
 analytic checks (Malus, HWP rotation, thin lens, Gaussian overlap, MZI visibility, CHSH
 S = 2√2·V, HOM against spdcalc, dead time against Monte Carlo).
 
-Planned: Gaussian multimode engine (M8).
+Deferred to a later iteration: the PDF plot digitizer, AI-assisted datasheet extraction and
+characterization wizards.
 
 Known limits:
 
@@ -206,6 +210,27 @@ detector and tagger dead times event by event. What to expect:
   (negative-binomial) pairs per pulse; thermal bunching of continuous sources on the
   coherence-time scale is not modelled (the rate engine includes it, so heralded g2 differs
   slightly). Exact multi-pair statistics are the job of the planned Gaussian engine (M8).
+
+## Gaussian multimode statistics
+
+`sequoia run SETUP --engine gaussian [--gain-scale 10]` (or Run > Gaussian multimode statistics...)
+computes exact photon-number statistics of the pair sources at the detectors, including the
+high-gain regime where multi-pair events matter. The pair amplitude is decomposed into
+independent two-mode squeezers (Schmidt modes; for CW sources one small problem per frequency
+pair), the rate engine's detector efficiency and path operators act as loss and linear optics,
+and threshold-click probabilities, coincidences, heralded g2 and photon-number distributions
+(`pnr=`) follow from the Gaussian generating function. `gain_scale` multiplies the pump power.
+
+- Statistics are per window: one pulse for pulsed sources, 1/dnu (the lattice period of the
+  pair source) for CW sources; coincidences are same-window clicks, so CAR and g2 depend on that
+  window. Timing jitter and dead time are not modelled (use the Monte Carlo engine for them).
+- At low gain it reproduces the rate engine (singles as photon rates, coincidence rates within
+  0.5% for HBT, Bell and HOM); at higher pump power CAR falls as 1/(pairs per window) and the
+  heralded g2(0) rises, as expected for thermal multi-pair statistics.
+- Not supported: sources whose signal and idler leave through one port (exchange
+  symmetrisation), and mixed states with more than a few members are computed member by member.
+- Needs no extra packages; `thewalrus` (the `gaussian` extra) is only used by the tests as an
+  independent check of the covariance formulas.
 
 ## Sweeps, optimization and budgets
 

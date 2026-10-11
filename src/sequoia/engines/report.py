@@ -200,3 +200,40 @@ def format_mc_report(tags, analyses, comparisons=None) -> str:
                 f"{c.expected:>14.5g}{c.z:>8.2f}"
             )
     return "\n".join(lines)
+
+
+def format_gaussian_report(result) -> str:
+    lines = [
+        f"Gaussian multimode statistics per window of {result.window * 1e9:.4g} ns "
+        f"(pump scale {result.gain_scale:g})",
+        "",
+    ]
+    for name, info in result.sources.items():
+        kind = "pulse" if info["pulsed"] else "1/dnu"
+        lines.append(
+            f"source {name}: {info['pairs_per_window']:.4g} pairs per {kind}, "
+            f"{info['modes']} Schmidt modes, {info['members']} member(s)"
+        )
+    lines += ["", f"{'channel':<14}{'P(click)':>14}{'<n>':>14}{'rate [Hz]':>14}"]
+    for ch in result.channels:
+        p = result.probability(ch)
+        lines.append(
+            f"{ch:<14}{p:>14.5g}{result.mean_photons[ch]:>14.5g}{p / result.window:>14.5g}"
+        )
+    for name, a in result.analyses.items():
+        lines.append("")
+        if a["type"] == "coincidences":
+            lines.append(f"{name} [coincidences] {' x '.join(a['channels'])}")
+            lines.append(
+                f"  coincidences {a['coincidence_rate_hz']:.5g} Hz, true {a['true_hz']:.5g} Hz, "
+                f"accidental {a['accidental_hz']:.4g} Hz, CAR {a['car']:.4g}"
+            )
+        elif a["type"] == "heralded_g2":
+            lines.append(f"{name} [heralded_g2]")
+            lines.append(f"  triples {a['triples_hz']:.4g} Hz, g2(0) = {a['g2_heralded']:.4g}")
+        else:
+            lines.append(f"{name} [g2] {' x '.join(a['channels'])}: g2 = {a['g2_at_center']:.4g}")
+    if result.issues:
+        lines += ["", "Notes"]
+        lines += [f"  {i.code}: {i.message}" for i in result.issues[:8]]
+    return "\n".join(lines)

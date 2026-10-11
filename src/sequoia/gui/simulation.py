@@ -6,6 +6,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from sequoia.engines.cache import Cancelled, RunCache
 from sequoia.engines.outcome import SimulationOutcome, compute_outcome
 from sequoia.gui.document import SetupDocument
+from sequoia.gui.jobs import gc_paused
 from sequoia.library.store import Library
 
 DEFAULT_DEBOUNCE_MS = 150
@@ -34,9 +35,10 @@ class _Run(QRunnable):
             self.signals.cancelled.emit()
             return
         try:
-            result = compute_outcome(
-                self.setup, self.library, self.cache, self.cancel.is_set, self.revision
-            )
+            with gc_paused():
+                result = compute_outcome(
+                    self.setup, self.library, self.cache, self.cancel.is_set, self.revision
+                )
         except Cancelled:
             self.signals.cancelled.emit()
         except BaseException as exc:
