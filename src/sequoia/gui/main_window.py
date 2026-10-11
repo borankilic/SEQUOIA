@@ -38,10 +38,12 @@ OVERLAP_PX = 10.0
 FILE_FILTER = "Setup files (*.yaml *.yml);;All files (*)"
 
 HINT = (
-    "Empty setup\n\n"
-    "Drag a part from the palette onto the canvas, or double-click it.\n"
-    "Connect ports by dragging from one port to another."
+    "Empty canvas\n\n"
+    "Drag a part from the list on the left onto the canvas, or double-click it.\n"
+    "Connect two ports by dragging from one to the other.\n"
+    "Drag the empty background to move around; scroll or pinch to zoom."
 )
+LAYOUT_VERSION = 3
 
 
 def make_settings() -> QSettings:
@@ -143,12 +145,12 @@ class MainWindow(QMainWindow):
         self.results_dock = self._dock(
             self.results, "Results", "dock_results", Qt.DockWidgetArea.BottomDockWidgetArea
         )
-        self.palette.setMinimumWidth(180)
-        self.inspector.setMinimumWidth(260)
-        self.results.setMinimumHeight(120)
-        self.resize(1400, 900)
-        self.resizeDocks([self.palette_dock, self.inspector_dock], [280, 340], Qt.Horizontal)
-        self.resizeDocks([self.results_dock], [230], Qt.Vertical)
+        self.palette.setMinimumWidth(240)
+        self.inspector.setMinimumWidth(330)
+        self.results.setMinimumHeight(110)
+        self.resize(1500, 920)
+        self.resizeDocks([self.palette_dock, self.inspector_dock], [300, 400], Qt.Horizontal)
+        self.resizeDocks([self.results_dock], [300], Qt.Vertical)
 
     def _action(self, text, slot, shortcut=None, checkable=False, checked=False) -> QAction:
         action = QAction(text, self)
@@ -783,6 +785,12 @@ class MainWindow(QMainWindow):
     def _restore_settings(self) -> None:
         geometry = self.settings.value("window/geometry")
         state = self.settings.value("window/state")
+        try:
+            version = int(self.settings.value("window/layout_version", 0))
+        except (TypeError, ValueError):
+            version = 0
+        if version != LAYOUT_VERSION:
+            geometry = state = None
         if geometry is not None:
             self.restoreGeometry(geometry)
         if state is not None:
@@ -795,6 +803,7 @@ class MainWindow(QMainWindow):
     def _save_settings(self) -> None:
         self.settings.setValue("window/geometry", self.saveGeometry())
         self.settings.setValue("window/state", self.saveState())
+        self.settings.setValue("window/layout_version", LAYOUT_VERSION)
         self.settings.setValue("canvas/snap", self.act_snap.isChecked())
         self.settings.sync()
 

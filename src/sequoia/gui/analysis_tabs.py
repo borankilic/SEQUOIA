@@ -205,15 +205,41 @@ class _Ellipse(QWidget):
 
 
 class _Poincare(QWidget):
+    DEFAULT_VIEW = (-35.0, 22.0)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.points: dict[str, np.ndarray] = {}
         self.selected = ""
+        self.azimuth, self.elevation = self.DEFAULT_VIEW
+        self._drag: QPointF | None = None
         self.setMinimumSize(190, 170)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip("Drag to rotate, double-click to reset the view")
 
-    @staticmethod
-    def _project(v: np.ndarray) -> tuple[float, float, float]:
-        az, el = math.radians(-35), math.radians(22)
+    def mousePressEvent(self, event) -> None:
+        self._drag = event.position()
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag is None:
+            return
+        pos = event.position()
+        self.azimuth += (pos.x() - self._drag.x()) * 0.7
+        self.elevation = max(-90.0, min(90.0, self.elevation + (pos.y() - self._drag.y()) * 0.7))
+        self._drag = pos
+        self.update()
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.azimuth, self.elevation = self.DEFAULT_VIEW
+        self.update()
+
+    def _project(self, v: np.ndarray) -> tuple[float, float, float]:
+        az, el = math.radians(self.azimuth), math.radians(self.elevation)
         x, y, z = v
         x1 = x * math.cos(az) - y * math.sin(az)
         y1 = x * math.sin(az) + y * math.cos(az)
@@ -244,6 +270,12 @@ class _Poincare(QWidget):
         p.setPen(pal.text().color())
         for label, v in (("S1", (1.2, 0, 0)), ("S2", (0, 1.2, 0)), ("S3", (0, 0, 1.2))):
             p.drawText(pt(v), label)
+        axis_pen = QPen(pal.text().color(), 1.2)
+        for v in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+            p.setPen(axis_pen)
+            p.drawLine(pt((-v[0], -v[1], -v[2])), pt(v))
+        p.setPen(pal.placeholderText().color())
+        p.drawText(QPointF(8, self.height() - 8), "H/V: S1   D/A: S2   R/L: S3   (drag to rotate)")
         for name, s in self.points.items():
             if s[0] <= 0:
                 continue

@@ -167,7 +167,8 @@ class MultilineEditor(Editor):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.text = _TextEdit()
-        self.text.setMaximumHeight(80)
+        self.text.setMinimumHeight(110)
+        self.text.setMaximumHeight(240)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.text)
@@ -418,6 +419,10 @@ class LinkForm(QWidget):
         self.medium_combo = None
         if link.kind in ("free_space", "fiber"):
             self.medium_combo = QComboBox()
+            self.medium_combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            self.medium_combo.setMinimumContentsLength(12)
             self.medium_combo.addItem("Air (free space)", "free_space")
             self.medium_combo.addItem("Fiber (inserts launch couplers)", "fiber")
             self.medium_combo.setCurrentIndex(0 if link.kind == "free_space" else 1)

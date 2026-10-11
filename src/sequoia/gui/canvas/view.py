@@ -1,8 +1,8 @@
 import math
 
-from PySide6.QtCore import QLineF, Qt, Signal
+from PySide6.QtCore import QEvent, QLineF, QPoint, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QGraphicsView
+from PySide6.QtWidgets import QGraphicsView, QToolButton
 
 from sequoia.gui.canvas.items import CELL
 from sequoia.gui.canvas.scene import CanvasScene
@@ -21,11 +21,17 @@ class CanvasView(QGraphicsView):
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setRubberBandSelectionMode(Qt.IntersectsItemShape)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setResizeAnchor(QGraphicsView.NoAnchor)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QGraphicsView.NoFrame)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.setAcceptDrops(True)
         self._space = False
         self._pan_last = None
+        self._press_pos: QPoint | None = None
+        self._panning_empty = False
+        self._build_overlay()
         self._bound_scene: CanvasScene | None = None
         self._bind_scene(scene)
 
@@ -62,11 +68,61 @@ class CanvasView(QGraphicsView):
         self.scale(factor, factor)
         self._notify_zoom()
 
+    def _build_overlay(self) -> None:
+        self.overlay = []
+        for text, tip, slot in (
+            ("+", "Zoom in", lambda: self.zoom_by(1.25)),
+            ("\u2212", "Zoom out", lambda: self.zoom_by(0.8)),
+            ("\u2922", "Fit everything in view", self.fit_to_content),
+        ):
+            button = QToolButton(self.viewport())
+            button.setText(text)
+            button.setToolTip(tip)
+            button.setAutoRaise(False)
+            button.setFixedSize(30, 30)
+            button.setStyleSheet(
+                "QToolButton{background:rgba(255,255,255,0.92);color:#27303a;"
+                "border:1px solid #c5ccd3;border-radius:6px;font-size:16px;}"
+                "QToolButton:hover{background:#ffffff;border-color:#2f6fed;}"
+            )
+            button.clicked.connect(slot)
+            self.overlay.append(button)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        h = self.viewport().height()
+        for i, button in enumerate(self.overlay):
+            button.move(10, h - 10 - 30 * (len(self.overlay) - i) - 4 * (len(self.overlay) - i - 1))
+            button.raise_()
+
+    def pan_by(self, dx: float, dy: float) -> None:
+        h, v = self.horizontalScrollBar(), self.verticalScrollBar()
+        h.setValue(int(h.value() - dx))
+        v.setValue(int(v.value() - dy))
+
     def wheelEvent(self, event) -> None:
-        dy = event.angleDelta().y()
-        if dy:
-            self.zoom_by(1.0015**dy)
+        pixel = event.pixelDelta()
+        ctrl = bool(event.modifiers() & (Qt.ControlModifier | Qt.MetaModifier))
+        trackpad = (not pixel.isNull()) or event.phase() != Qt.NoScrollPhase
+        if ctrl:
+            dy = pixel.y() * 2 if not pixel.isNull() else event.angleDelta().y()
+            if dy:
+                self.zoom_by(1.0015**dy)
+        elif trackpad:
+            delta = pixel if not pixel.isNull() else event.angleDelta()
+            self.pan_by(delta.x(), delta.y())
+        else:
+            dy = event.angleDelta().y()
+            if dy:
+                self.zoom_by(1.0015**dy)
         event.accept()
+
+    def viewportEvent(self, event) -> bool:
+        if event.type() == QEvent.NativeGesture and event.gestureType() == Qt.ZoomNativeGesture:
+            self.zoom_by(1.0 + event.value())
+            event.accept()
+            return True
+        return super().viewportEvent(event)
 
     def fit_to_content(self) -> None:
         rect = self.scene().itemsBoundingRect()
@@ -138,26 +194,57 @@ class CanvasView(QGraphicsView):
         super().keyReleaseEvent(event)
 
     def mousePressEvent(self, event) -> None:
+        pos = event.position().toPoint()
         if event.button() == Qt.MiddleButton or (event.button() == Qt.LeftButton and self._space):
-            self._pan_last = event.position().toPoint()
+            self._pan_last = pos
             self.viewport().setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        shift = bool(event.modifiers() & Qt.ShiftModifier)
+        if (
+            event.button() == Qt.LeftButton
+            and not shift
+            and self.itemAt(pos) is None
+            and self.scene() is not None
+            and self.scene().link_editor is None
+        ):
+            self._press_pos = pos
+            self._panning_empty = False
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        pos = event.position().toPoint()
+        if self._press_pos is not None:
+            if not self._panning_empty and (pos - self._press_pos).manhattanLength() > 3:
+                self._panning_empty = True
+                self.viewport().setCursor(Qt.ClosedHandCursor)
+                self._pan_last = self._press_pos
+            if self._panning_empty:
+                delta = pos - self._pan_last
+                self._pan_last = pos
+                self.pan_by(delta.x(), delta.y())
+            event.accept()
+            return
         if self._pan_last is not None:
-            pos = event.position().toPoint()
             delta = pos - self._pan_last
             self._pan_last = pos
-            h, v = self.horizontalScrollBar(), self.verticalScrollBar()
-            h.setValue(h.value() - delta.x())
-            v.setValue(v.value() - delta.y())
+            self.pan_by(delta.x(), delta.y())
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._press_pos is not None:
+            if not self._panning_empty and self.scene() is not None:
+                self.scene().clearSelection()
+            self._press_pos = None
+            self._panning_empty = False
+            self._pan_last = None
+            self.viewport().unsetCursor()
+            event.accept()
+            return
         if self._pan_last is not None:
             self._pan_last = None
             if self._space:

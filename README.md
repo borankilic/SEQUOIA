@@ -146,7 +146,9 @@ uv run sequoia setups/hbt_heralded.yaml
 ```
 
 Drag parts from the palette onto the canvas (or double-click them), drag from a port to another
-port to link them, and edit values in the inspector. The setup is re-simulated in the background
+port to link them, and edit values in the inspector. Drag the empty background to pan, Shift+drag
+to select several parts, scroll or pinch to zoom (a plain mouse wheel zooms, trackpad scrolling
+pans). What each results tab shows is explained in [docs/GUIDE.md](docs/GUIDE.md). The setup is re-simulated in the background
 after every edit (Run > Auto-run) and the results dock shows diagnostics, links, readouts and
 counts; clicking a diagnostic selects the offending component or link. Shortcuts: `R`/`Shift+R`
 rotate, `F` flip, `Delete`, `Ctrl+C`/`Ctrl+V`, `Ctrl+Z`/`Ctrl+Shift+Z`, `Ctrl+L` auto layout,

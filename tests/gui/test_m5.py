@@ -134,3 +134,45 @@ def test_gc_stays_off_while_jobs_run_and_returns_after():
             assert not gc.isenabled()
         assert not gc.isenabled()
     assert gc.isenabled()
+
+
+def test_poincare_sphere_rotates_with_the_mouse(window, qtbot):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    sphere = window.results.polarization.sphere
+    sphere.show()
+    before = (sphere.azimuth, sphere.elevation)
+    QTest.mousePress(sphere, Qt.LeftButton, Qt.NoModifier, QPoint(50, 50))
+    QTest.mouseMove(sphere, QPoint(90, 80))
+    QTest.mouseRelease(sphere, Qt.LeftButton, Qt.NoModifier, QPoint(90, 80))
+    assert (sphere.azimuth, sphere.elevation) != before
+    QTest.mouseDClick(sphere, Qt.LeftButton, Qt.NoModifier, QPoint(50, 50))
+    assert (sphere.azimuth, sphere.elevation) == before
+
+
+def test_dragging_the_background_pans_and_clicking_it_deselects(window, qtbot):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    view = window.view
+    window.scene.select("laser")
+    start = QPoint(view.viewport().width() - 20, view.viewport().height() - 20)
+    assert view.itemAt(start) is None
+    center = view.mapToScene(view.viewport().rect().center())
+    QTest.mousePress(view.viewport(), Qt.LeftButton, Qt.NoModifier, start)
+    for i in range(1, 8):
+        QTest.mouseMove(view.viewport(), start + QPoint(-i * 10, -i * 6))
+    QTest.mouseRelease(view.viewport(), Qt.LeftButton, Qt.NoModifier, start + QPoint(-70, -42))
+    moved = view.mapToScene(view.viewport().rect().center())
+    assert moved != center
+    assert window.scene.selected_ids() == ["laser"]
+    QTest.mouseClick(view.viewport(), Qt.LeftButton, Qt.NoModifier, start)
+    assert window.scene.selected_ids() == []
+
+
+def test_results_tabs_explain_themselves(window, qtbot):
+    r = window.results
+    for index in range(r.tabs.count()):
+        r.tabs.setCurrentIndex(index)
+        assert r.help.text(), r.tabs.tabText(index)

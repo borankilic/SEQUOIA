@@ -1,4 +1,4 @@
-from PySide6.QtCore import QByteArray, QMimeData, Qt, Signal
+from PySide6.QtCore import QByteArray, QMimeData, QSize, Qt, Signal
 from PySide6.QtWidgets import QLineEdit, QMenu, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 from sequoia.components.base import CATEGORIES
@@ -39,6 +39,9 @@ class Palette(QWidget):
         self.search.setClearButtonEnabled(True)
         self.tree = _PartTree()
         self.tree.setHeaderHidden(True)
+        self.tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.tree.setIconSize(QSize(22, 22))
+        self.tree.setIndentation(14)
         self.tree.setDragEnabled(True)
         self.tree.setDragDropMode(QTreeWidget.DragDropMode.DragOnly)
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)

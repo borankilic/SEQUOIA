@@ -228,6 +228,33 @@ _ANALYSIS_FIELDS: dict[str, list[tuple[str, str, Any]]] = {
 }
 
 
+TAB_HELP = {
+    "Diagnostics": "Problems and warnings found in your setup. Click a row to select the part "
+    "or link that causes it.",
+    "Links": "The light on every link: power, beam radius (w), polarization purity (DOP) and, "
+    "for photon-pair setups, photons per second and how well they couple into fibers.",
+    "Readouts && probes": "What each detector and probe reads: photocurrent, incident power, "
+    "beam size and so on.",
+    "Counts": "Detector clicks per second (singles) and the pair statistics from your analyses: "
+    "coincidences, CAR (true pairs vs. accidental ones) and heralding efficiency.",
+    "Caustic": "Beam radius along the optical path: where the beam is focused and how large it "
+    "is at each part.",
+    "Polarization": "Polarization state on the chosen link: the ellipse, and the point on the "
+    "Poincare sphere (drag the sphere to rotate it, double-click to reset).",
+    "Spectra": "How the light on the chosen link is spread over wavelength.",
+    "Histograms": "Arrival-time differences between two detectors. A peak at zero delay means "
+    "photons arrive together; a flat floor is accidental coincidences.",
+    "Budget": "Where light is lost along a path, and how much each real part costs compared "
+    "with an ideal one.",
+    "Sweeps": "Change one setting over a range and plot a result, or let the optimizer search "
+    "for the best value.",
+    "Monte Carlo": "Simulates the stream of single detector clicks a time tagger would record "
+    "in the lab and checks it against the analytic numbers.",
+    "Gaussian": "Exact photon statistics at higher pump power, where several pairs can be "
+    "created at once: CAR falls and heralded g2 rises with pump power.",
+}
+
+
 class ResultsDock(QWidget):
     issue_activated = Signal(str)
 
@@ -306,13 +333,38 @@ class ResultsDock(QWidget):
         for title, widget in self.plot_tabs.items():
             self.tabs.addTab(widget, title)
 
+        self.help = QLabel("")
+        self.help.setWordWrap(True)
+        self.help.setContentsMargins(8, 4, 8, 4)
+        self.help.setStyleSheet(
+            "color: palette(placeholder-text); background: palette(alternate-base);"
+        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.status)
         layout.addWidget(self.tabs, 1)
+        layout.addWidget(self.help)
+        self.tabs.currentChanged.connect(self._update_help)
+        self._update_help(self.tabs.currentIndex())
         self.resize(720, 360)
         self._refresh_status()
+
+    def sizeHint(self):
+        from PySide6.QtCore import QSize
+
+        return QSize(900, 260)
+
+    def minimumSizeHint(self):
+        from PySide6.QtCore import QSize
+
+        return QSize(200, 110)
+
+    def _update_help(self, index: int) -> None:
+        title = self.tabs.tabText(index).split(" (")[0]
+        text = TAB_HELP.get(title, TAB_HELP.get(title.replace("&", "&&"), ""))
+        self.help.setText(text)
+        self.help.setVisible(bool(text))
 
     def connect_controller(self, controller) -> None:
         controller.busy_changed.connect(self.set_busy)
