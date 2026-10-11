@@ -1,5 +1,5 @@
 from PySide6.QtCore import QByteArray, QMimeData, Qt, Signal
-from PySide6.QtWidgets import QLineEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLineEdit, QMenu, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
 
 from sequoia.components.base import CATEGORIES
 from sequoia.library.store import Library, PartInfo
@@ -29,6 +29,7 @@ def part_label(info: PartInfo) -> str:
 
 class Palette(QWidget):
     part_activated = Signal(str)
+    part_edit_requested = Signal(str)
 
     def __init__(self, library: Library, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -47,6 +48,8 @@ class Palette(QWidget):
         layout.addWidget(self.tree)
         self.search.textChanged.connect(self._apply_filter)
         self.tree.itemDoubleClicked.connect(self._on_double_click)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._context_menu)
         self.refresh()
 
     def refresh(self) -> None:
@@ -163,6 +166,20 @@ class Palette(QWidget):
             if item.data(0, _REF_ROLE) == ref:
                 return item
         return None
+
+    def _context_menu(self, pos) -> None:
+        item = self.tree.itemAt(pos)
+        ref = item.data(0, _REF_ROLE) if item is not None else None
+        if not ref:
+            return
+        menu = QMenu(self)
+        add = menu.addAction("Add to canvas")
+        edit = menu.addAction("Edit in Library Manager...")
+        chosen = menu.exec(self.tree.viewport().mapToGlobal(pos))
+        if chosen is add:
+            self.part_activated.emit(ref)
+        elif chosen is edit:
+            self.part_edit_requested.emit(ref)
 
     def _on_double_click(self, item: QTreeWidgetItem, column: int) -> None:
         ref = item.data(0, _REF_ROLE)

@@ -716,16 +716,30 @@ class CurveEditor(Editor):
         self.import_button = QPushButton("Import...")
         self.import_button.setVisible(importable)
         self.import_button.clicked.connect(self.import_curve)
+        self.table_button = QPushButton("Edit table...")
+        self.table_button.setVisible(importable)
+        self.table_button.clicked.connect(self.edit_table)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.info)
         layout.addWidget(self.holder)
-        layout.addWidget(self.import_button, 0, Qt.AlignmentFlag.AlignLeft)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.import_button)
+        buttons.addWidget(self.table_button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
 
     def import_curve(self) -> None:
         curve = run_import_dialog(self)
         if curve is not None:
             self.committed.emit(curve_to_raw(curve))
+
+    def edit_table(self) -> None:
+        from sequoia.gui.inspector.dialogs import CurveTableDialog
+
+        dialog = CurveTableDialog(self.curve, self)
+        if dialog.exec() and dialog.curve() is not None:
+            self.committed.emit(curve_to_raw(dialog.curve()))
 
     def set_raw(self, raw: Any) -> None:
         curve = curve_from_raw(raw)
@@ -914,10 +928,13 @@ class FieldRow(QWidget):
         can_unset: bool = True,
         override_mode: bool = False,
         label: str | None = None,
+        provenance_editable: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.name = name
+        self._provenance_editable = provenance_editable
+        self._shown_raw: Any = MISSING
         self._explicit: Any = MISSING
         self.spec = spec
         self.editor = editor
@@ -943,6 +960,10 @@ class FieldRow(QWidget):
         self.badge = QLabel("")
         self.badge.setProperty("role", "badge")
         self.badge.setVisible(False)
+        self.prov_button = QToolButton()
+        self.prov_button.setText("provenance...")
+        self.prov_button.setAutoRaise(True)
+        self.prov_button.setVisible(False)
         self.error = QLabel("")
         self.error.setProperty("role", "error")
         self.error.setWordWrap(True)
@@ -952,6 +973,7 @@ class FieldRow(QWidget):
         head.setContentsMargins(0, 0, 0, 0)
         head.addWidget(self.label)
         head.addWidget(self.badge)
+        head.addWidget(self.prov_button)
         head.addStretch(1)
         head.addWidget(self.optional_box)
         head.addWidget(self.reset_button)
@@ -966,6 +988,22 @@ class FieldRow(QWidget):
         editor.problem.connect(self._show_error)
         self.optional_box.clicked.connect(self._on_optional)
         self.reset_button.clicked.connect(self._on_reset)
+        self.prov_button.clicked.connect(self._edit_provenance)
+
+    def _edit_provenance(self) -> None:
+        from sequoia.gui.inspector.dialogs import ask_provenance
+        from sequoia.library.editing import get_provenance, with_provenance
+
+        raw = self._shown_raw
+        accepted, prov = ask_provenance(self, get_provenance(raw))
+        if not accepted:
+            return
+        try:
+            new = with_provenance(raw, prov)
+        except ValueError as exc:
+            self._show_error(str(exc))
+            return
+        self._on_committed(new)
 
     def _show_error(self, message: str) -> None:
         self.error.setText(message)
@@ -1024,6 +1062,7 @@ class FieldRow(QWidget):
         shown = explicit if is_set else fallback
         present = shown is not None and shown is not MISSING
         self.is_set = is_set
+        self._shown_raw = shown if present else MISSING
         if isinstance(fallback, Scalar):
             self.editor.set_example(value_text(fallback))
         if self.spec.optional:
@@ -1044,6 +1083,10 @@ class FieldRow(QWidget):
         self.reset_button.setVisible(self._track_default and is_set)
         prov = provenance_text(shown) if present else None
         self.badge.setVisible(prov is not None)
+        if self._provenance_editable:
+            from sequoia.library.editing import accepts_provenance
+
+            self.prov_button.setVisible(present and accepts_provenance(shown))
         if prov:
             self.badge.setText(prov.splitlines()[0].removeprefix("source: "))
             self.badge.setToolTip(prov)
@@ -1064,6 +1107,7 @@ class ModelForm(QWidget):
         labels: Mapping[str, str] | None = None,
         descriptions: Mapping[str, str] | None = None,
         required: tuple[str, ...] = (),
+        provenance_editable: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1091,6 +1135,7 @@ class ModelForm(QWidget):
                 override_mode=override_mode,
                 can_unset=name not in required,
                 label=(labels or {}).get(name),
+                provenance_editable=provenance_editable,
             )
             layout.addWidget(row)
             self.rows[name] = row

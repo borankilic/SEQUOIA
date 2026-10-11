@@ -1,0 +1,6 @@
+type: Polarizer
+manufacturer: generic
+model: linear polarizer, extinction 1000
+params:
+  extinction_ratio: 1000
+  transmission: 0.9

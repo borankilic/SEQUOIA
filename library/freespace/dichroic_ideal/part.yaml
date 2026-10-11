@@ -1,0 +1,6 @@
+type: DichroicMirror
+manufacturer: generic
+model: ideal dichroic, transmits everything
+description: Placeholder; replace the transmittance with a measured curve.
+params:
+  transmittance: 1.0

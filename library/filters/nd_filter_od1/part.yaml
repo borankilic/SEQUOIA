@@ -1,0 +1,5 @@
+type: NDFilter
+manufacturer: generic
+model: neutral density filter, OD 1
+params:
+  optical_density: 1.0

@@ -25,6 +25,7 @@ from sequoia.gui.canvas import CanvasScene, CanvasView, plan_layout
 from sequoia.gui.canvas.items import CELL
 from sequoia.gui.document import SetupDocument
 from sequoia.gui.inspector import InspectorPanel
+from sequoia.gui.library_manager import LibraryManager
 from sequoia.gui.palette import Palette
 from sequoia.gui.results import ResultsDock, eng, ids_for_issue
 from sequoia.gui.simulation import SimulationController, SimulationOutcome
@@ -66,6 +67,7 @@ class MainWindow(QMainWindow):
         self._fitted = False
         self._closing = False
         self._bound = False
+        self.library_manager: LibraryManager | None = None
 
         self.document = SetupDocument(library)
         self.scene = CanvasScene(self.document)
@@ -173,6 +175,9 @@ class MainWindow(QMainWindow):
         self.act_new = self._action("New", self.new_document, S.StandardKey.New)
         self.act_open = self._action("Open...", self.open_dialog, S.StandardKey.Open)
         self.act_open_library = self._action("Open Library...", self.open_library_dialog)
+        self.act_library_manager = self._action(
+            "Library Manager...", self.show_library_manager, "Ctrl+Shift+L"
+        )
         self.act_save = self._action("Save", self.save, S.StandardKey.Save)
         self.act_save_as = self._action("Save As...", self.save_as, S.StandardKey.SaveAs)
         self.act_quit = self._action("Quit", self.close, S.StandardKey.Quit)
@@ -229,6 +234,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.act_open)
         self.recent_menu = file_menu.addMenu("Open Recent")
         file_menu.addAction(self.act_open_library)
+        file_menu.addAction(self.act_library_manager)
         file_menu.addSeparator()
         file_menu.addAction(self.act_save)
         file_menu.addAction(self.act_save_as)
@@ -277,6 +283,7 @@ class MainWindow(QMainWindow):
     def _wire(self) -> None:
         self.view.status_message.connect(self._show_message)
         self.palette.part_activated.connect(self._add_at_center)
+        self.palette.part_edit_requested.connect(self.edit_part)
         self.results.issue_activated.connect(self._focus_issue)
         self.controller.finished.connect(self._on_outcome)
         self.controller.failed.connect(self._on_failed)
@@ -679,8 +686,25 @@ class MainWindow(QMainWindow):
             return False
         return self.set_library(Library(path))
 
+    def show_library_manager(self) -> LibraryManager:
+        if self.library_manager is None:
+            self.library_manager = LibraryManager(self.library, self)
+            self.library_manager.library_changed.connect(self._on_library_changed)
+        self.library_manager.show()
+        self.library_manager.raise_()
+        return self.library_manager
+
+    def edit_part(self, ref: str) -> None:
+        manager = self.show_library_manager()
+        manager.select_ref(ref)
+
+    def _on_library_changed(self) -> None:
+        self.set_library(self.library)
+
     def set_library(self, library: Library) -> bool:
         self.library = library
+        if self.library_manager is not None:
+            self.library_manager.set_library(library)
         self.document.library = library
         self.document.invalidate_components()
         self.palette.library = library

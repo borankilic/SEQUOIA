@@ -1,4 +1,6 @@
 import csv
+import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -206,8 +208,11 @@ class Library:
     def save_part(self, part: Part) -> Path:
         directory = self.part_dir(part.ref)
         directory.mkdir(parents=True, exist_ok=True)
-        dumped = part.params.model_dump(mode="python", exclude_none=True)
+        explicit = part.params.model_fields_set
+        dumped = part.params.model_dump(mode="python", exclude_none=True, include=set(explicit))
         for name in type(part.params).model_fields:
+            if name not in explicit:
+                continue
             value = getattr(part.params, name)
             if isinstance(value, Curve):
                 dumped[name] = self._write_curve(directory, part.ref, name, value)
@@ -270,6 +275,52 @@ class Library:
             entry["extrapolation"] = item.extrapolation
         return entry
 
+    def duplicate_part(self, ref: str, new_ref: str) -> Path:
+        source = self.part_dir(ref)
+        target = self.part_dir(new_ref)
+        if not (source / PART_FILE).is_file():
+            raise PartError(f"part {ref!r} not found in library {self.root}")
+        if target.exists():
+            raise PartError(f"part {new_ref!r} already exists")
+        shutil.copytree(source, target)
+        return target
+
+    def rename_part(self, ref: str, new_ref: str) -> Path:
+        source = self.part_dir(ref)
+        target = self.part_dir(new_ref)
+        if not (source / PART_FILE).is_file():
+            raise PartError(f"part {ref!r} not found in library {self.root}")
+        if target.exists():
+            raise PartError(f"part {new_ref!r} already exists")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(target)
+        return target
+
+    def delete_part(self, ref: str) -> None:
+        directory = self.part_dir(ref)
+        if not (directory / PART_FILE).is_file():
+            raise PartError(f"part {ref!r} not found in library {self.root}")
+        shutil.rmtree(directory)
+        parent = directory.parent
+        while parent != self.root and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+
+    def attach_file(self, ref: str, source: Path | str) -> str:
+        """Copy ``source`` into the part folder and return the stored file name."""
+        directory = self.part_dir(ref)
+        source = Path(source)
+        if not source.is_file():
+            raise PartError(f"{source}: not a file")
+        directory.mkdir(parents=True, exist_ok=True)
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", source.name) or "attachment"
+        if name == PART_FILE:
+            raise PartError(f"an attachment cannot be called {PART_FILE}")
+        target = directory / name
+        if target.resolve() != source.resolve():
+            shutil.copyfile(source, target)
+        return name
+
     def index(self) -> list[PartInfo]:
         if not self.root.is_dir():
             return []
@@ -296,3 +347,8 @@ class Library:
             except Exception as exc:
                 infos.append(PartInfo(ref, None, None, error=f"cannot read {PART_FILE}: {exc}"))
         return infos
+
+
+def slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    return slug or "part"

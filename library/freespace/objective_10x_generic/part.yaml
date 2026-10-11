@@ -1,0 +1,9 @@
+type: Objective
+manufacturer: generic
+model: 10x microscope objective, NA 0.25
+description: Generic placeholder objective (not a vendor part).
+params:
+  effective_focal_length: 18 mm
+  numerical_aperture: 0.25
+  back_aperture: 9 mm
+  working_distance: 10 mm

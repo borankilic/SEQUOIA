@@ -21,6 +21,10 @@ One-page overview: [docs/overview.pdf](docs/overview.pdf)
   naturally. Fiber coupling is computed as a mode overlap.
 - **Quantum rate engine.** SPDC pair sources (spdcalc) or entangled-pair black boxes, pushed
   through the same network and into detector, dead-time, jitter and coincidence-window models.
+- **Library Manager.** File > Library Manager... (Ctrl+Shift+L): browse, create, duplicate, rename
+  and delete parts; forms are generated from each type's schema; import a curve from CSV/XLSX or
+  type it into a table; per-value provenance (source, date, who, reference, note); attach
+  datasheets. Saved parts appear in the palette at once.
 - **Parts as data.** A part is a `part.yaml` plus CSV curves with provenance per value
   (datasheet, measured, model, ideal default). CSV/XLSX import converts %, OD, dB and
   responsivity to SI curves.
@@ -51,8 +55,10 @@ parts (YAML + CSV) ─► setup graph ─► validation ─► classical engine 
 | Electronics | `TimeTagger` |
 | Probes | `PowerMeter`, `BeamProfiler`, `Polarimeter`, `Spectrometer` |
 
-The shipped `library/` parts are generic placeholders with ideal or model values and no vendor
-numbers. Replace them with your measured parts before trusting absolute numbers.
+The shipped `library/` has a generic placeholder part for every type (ideal or model values, no
+vendor numbers). Replace them with your measured parts before trusting absolute numbers: create a
+part in the Library Manager, import the vendor's raw-data CSV/XLSX for its curves, and set the
+provenance of each value.
 
 ## Example setups
 
@@ -83,13 +89,13 @@ docs/                     plan, conventions, M3 report, overview
 
 ## Status
 
-Milestones M0 to M5 are done: data model and library, classical engine, quantum rate engine, the
-GUI shell with the schematic editor, and results plots, sweeps, optimizer and budgets (see
-[docs/PLAN.md](docs/PLAN.md)). The test suite covers
+Milestones M0 to M6 are done: data model and library, classical engine, quantum rate engine, the
+GUI shell with the schematic editor, results plots, sweeps, optimizer and budgets, and the Library
+Manager (see [docs/PLAN.md](docs/PLAN.md)). The test suite covers
 analytic checks (Malus, HWP rotation, thin lens, Gaussian overlap, MZI visibility, CHSH
 S = 2√2·V, HOM against spdcalc, dead time against Monte Carlo).
 
-Planned: library manager (M6), Monte Carlo time tags (M7), Gaussian multimode engine (M8).
+Planned: Monte Carlo time tags (M7), Gaussian multimode engine (M8).
 
 Known limits:
 

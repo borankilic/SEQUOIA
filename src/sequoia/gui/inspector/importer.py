@@ -157,8 +157,9 @@ class ImportCurveDialog(QDialog):
         x = self._table.columns[self.x_column.currentIndex()]
         y = self._table.columns[self.y_column.currentIndex()]
         self.x_unit.setText(x.unit or "")
-        index = self.y_kind.findData(guess_y_kind(y.name, y.unit))
-        self.y_kind.setCurrentIndex(index)
+        kind = guess_y_kind(y.name, y.unit)
+        self.y_kind.setCurrentIndex(self.y_kind.findData(kind))
+        self.target.setCurrentText("responsivity" if kind == "responsivity" else "fraction")
         self.y_unit.setText(y.unit or "")
 
     def _on_column_change(self) -> None:
