@@ -1,15 +1,23 @@
 import csv
+import json
 import math
+import os
+import tempfile
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from sequoia.analysis.metrics import ratio
 from sequoia.data import Duration
 from sequoia.errors import SequoiaError
 
 DEFAULT_SEARCH = 50e-9
+WIDE_SEARCHES = (1e-6, 20e-6)
+TAG_FORMAT_VERSION = 2
+RESERVED_KEYS = {"duration", "repetition_rates", "format_version", "meta_json"}
 MAX_CHUNK_PAIRS = 5_000_000
 
 
@@ -82,23 +90,57 @@ def per_event_counts(
     return hi - lo
 
 
-def find_peak(
-    t_a: np.ndarray, t_b: np.ndarray, window: float, search: float = DEFAULT_SEARCH
-) -> float:
-    """Delay of the correlation peak: the window position holding the most coincidences."""
+def locate_peak(
+    t_a: np.ndarray,
+    t_b: np.ndarray,
+    window: float,
+    search: float = DEFAULT_SEARCH,
+    center: float = 0.0,
+) -> tuple[float, bool]:
+    """Delay of the correlation peak and whether it stands out of the background."""
     width = max(window / 4.0, search / 4000.0)
-    centres, counts = delay_histogram(t_a, t_b, width, search)
+    centres, counts = delay_histogram(t_a, t_b, width, search, center)
     if counts.sum() == 0:
-        return 0.0
+        return 0.0, False
     span = max(int(round(window / width)), 1)
     kernel = np.ones(span)
     smooth = np.convolve(counts, kernel, mode="same")
     k = int(np.argmax(smooth))
+    floor = float(np.median(smooth))
+    significant = bool(smooth[k] >= 3 and smooth[k] > floor + 5.0 * math.sqrt(floor + 1.0))
     lo, hi = max(k - span // 2, 0), min(k + span // 2 + 1, len(counts))
     weights = counts[lo:hi].astype(float)
     if weights.sum() == 0:
-        return float(centres[k])
-    return float(np.sum(centres[lo:hi] * weights) / weights.sum())
+        return float(centres[k]), significant
+    return float(np.sum(centres[lo:hi] * weights) / weights.sum()), significant
+
+
+def find_peak(
+    t_a: np.ndarray, t_b: np.ndarray, window: float, search: float = DEFAULT_SEARCH
+) -> float:
+    """Delay of the correlation peak: the window position holding the most coincidences."""
+    return locate_peak(t_a, t_b, window, search)[0]
+
+
+def find_peak_wide(
+    t_a: np.ndarray,
+    t_b: np.ndarray,
+    window: float,
+    search: float = DEFAULT_SEARCH,
+    widen: bool = True,
+) -> tuple[float, bool, float]:
+    """Peak search that widens from ``search`` through ``WIDE_SEARCHES`` until a peak stands out."""
+    ranges = [search] + ([w for w in WIDE_SEARCHES if w > search] if widen else [])
+    best = (0.0, False, search)
+    for half in ranges:
+        centre, found = locate_peak(t_a, t_b, window, half)
+        if found:
+            coarse = max(window / 4.0, half / 4000.0)
+            if coarse > window / 4.0:
+                centre, _ = locate_peak(t_a, t_b, window, 2.0 * coarse, centre)
+            return centre, True, half
+        best = (centre, False, half) if half == ranges[0] else best
+    return best
 
 
 def _arr(tags: Mapping[str, np.ndarray], name: str, analysis: str) -> np.ndarray:
@@ -119,11 +161,15 @@ def coincidences(
     accidentals: str = "singles",
     sideband: float | None = None,
     search: float = DEFAULT_SEARCH,
+    widen: bool = True,
 ) -> dict[str, Any]:
     """Coincidences in a window with accidentals from the singles product or sidebands."""
     if window <= 0:
         raise CorrelationError("the coincidence window must be positive")
-    peak = find_peak(t_a, t_b, window, search) if center == "auto" else float(center)
+    if center == "auto":
+        peak, found, used = find_peak_wide(t_a, t_b, window, search, widen=widen)
+    else:
+        peak, found, used = float(center), True, search
     n_in = count_in_window(t_a, t_b, window, peak)
     s_a, s_b = len(t_a) / duration, len(t_b) / duration
     if accidentals == "sideband":
@@ -147,8 +193,11 @@ def coincidences(
         "accidental_hz": acc,
         "true_hz": true,
         "true_sigma_hz": sigma,
-        "car": true / acc if acc > 0 else math.inf,
-        "car_total": n_in / duration / acc if acc > 0 else math.inf,
+        "car": ratio(true, acc),
+        "car_total": ratio(n_in / duration, acc),
+        "peak_found": found,
+        "search_s": used,
+        "accidental_model": accidentals,
         "singles_a_hz": s_a,
         "singles_b_hz": s_b,
         "heralding_a_given_b": true / s_b if s_b > 0 else 0.0,
@@ -165,10 +214,20 @@ def heralded_g2(
     center_a: float | str = "auto",
     center_b: float | str = "auto",
     search: float = DEFAULT_SEARCH,
+    widen: bool = True,
 ) -> dict[str, Any]:
-    """Heralded second-order correlation g2(0) = N_hab N_h / (N_ha N_hb) from triples."""
-    ca = find_peak(t_a, t_h, window, search) if center_a == "auto" else float(center_a)
-    cb = find_peak(t_b, t_h, window, search) if center_b == "auto" else float(center_b)
+    """Heralded second-order correlation g2(0) = N_hab N_h / (N_ha N_hb) from triples.
+
+    Centers are the delays ``t_a - t_h`` and ``t_b - t_h`` of the herald correlation peaks.
+    """
+    if center_a == "auto":
+        ca, found_a, used_a = find_peak_wide(t_a, t_h, window, search, widen=widen)
+    else:
+        ca, found_a, used_a = float(center_a), True, search
+    if center_b == "auto":
+        cb, found_b, used_b = find_peak_wide(t_b, t_h, window, search, widen=widen)
+    else:
+        cb, found_b, used_b = float(center_b), True, search
     n_a = per_event_counts(t_h, t_a, window, -ca)
     n_b = per_event_counts(t_h, t_b, window, -cb)
     n_ha, n_hb = int(n_a.sum()), int(n_b.sum())
@@ -189,6 +248,9 @@ def heralded_g2(
         "g2_sigma": sigma,
         "center_a_s": ca,
         "center_b_s": cb,
+        "peak_found_a": found_a,
+        "peak_found_b": found_b,
+        "search_s": max(used_a, used_b),
     }
 
 
@@ -217,42 +279,66 @@ def g2_histogram(
     }
 
 
+def _clock(rates: Mapping[str, float] | Sequence[float], names: Sequence[str]) -> float | None:
+    if isinstance(rates, Mapping):
+        known = [float(rates[n]) for n in names if rates.get(n)]
+        if not known:
+            return None
+        if max(known) > min(known) * (1.0 + 1e-9):
+            return None
+        return known[0]
+    return float(max(rates)) if len(rates) else None
+
+
+def _center(spec: Mapping[str, Any], key: str, name: str) -> float | str:
+    value = spec.get(key, "auto")
+    if isinstance(value, str) and value.lower() == "auto":
+        return "auto"
+    return _duration(value, f"analysis '{name}': {key}")
+
+
 def analyse_tags(
     channels: Mapping[str, np.ndarray],
     duration: float,
     specs: Sequence[Mapping[str, Any]],
-    repetition_rates: Sequence[float] = (),
+    repetition_rates: Mapping[str, float] | Sequence[float] = (),
 ) -> dict[str, dict[str, Any]]:
     """Apply the setup's ``analyses`` entries to a time-tag record.
 
     ``coincidences``, ``heralded_g2``, ``g2`` and ``histogram`` entries use the same keys as the
     rate engine. Accidentals come from sidebands one pulse period away for pulsed sources and
-    from the singles product for CW sources.
+    from the singles product for CW sources. ``repetition_rates`` is either a sequence (the
+    fastest clock applies to every analysis) or a ``{channel: rate_hz}`` map; channels without a
+    clock, or with unequal clocks, use the CW singles estimator.
+
+    Optional keys: ``center`` (coincidences), ``center_a`` / ``center_b`` (heralded g2) and
+    ``search`` (half range of the automatic peak search). A numeric centre disables the search.
     """
     out: dict[str, dict[str, Any]] = {}
-    rep = max(repetition_rates) if repetition_rates else None
     for spec in specs:
         name = str(spec.get("name", spec.get("type", "analysis")))
         kind = spec.get("type")
         try:
+            search = (
+                _duration(spec["search"], f"analysis '{name}': search")
+                if "search" in spec
+                else DEFAULT_SEARCH
+            )
+            widen = "search" not in spec
             if kind == "coincidences":
                 a, b = spec["channels"]
                 window = _duration(spec["window"], f"analysis '{name}': window")
-                center = spec.get("center", "auto")
-                center = (
-                    "auto"
-                    if isinstance(center, str) and center.lower() == "auto"
-                    else _duration(center, f"analysis '{name}': center")
-                )
-                mode = "sideband" if rep else "singles"
+                rep = _clock(repetition_rates, [a, b])
                 result = coincidences(
                     _arr(channels, a, name),
                     _arr(channels, b, name),
                     duration,
                     window,
-                    center,
-                    accidentals=mode,
+                    _center(spec, "center", name),
+                    accidentals="sideband" if rep else "singles",
                     sideband=(1.0 / rep) if rep else None,
+                    search=search,
+                    widen=widen,
                 )
                 result["channels"] = [a, b]
             elif kind == "heralded_g2":
@@ -263,6 +349,10 @@ def analyse_tags(
                     _arr(channels, spec["b"], name),
                     duration,
                     window,
+                    _center(spec, "center_a", name),
+                    _center(spec, "center_b", name),
+                    search,
+                    widen,
                 )
                 result.update(herald=spec["herald"], a=spec["a"], b=spec["b"])
             elif kind in ("g2", "histogram"):
@@ -285,17 +375,38 @@ def analyse_tags(
     return out
 
 
-def read_tags(path: Path | str) -> tuple[dict[str, np.ndarray], float | None]:
-    """Read time tags from ``.npz`` (one array of seconds per channel) or a CSV of
-    ``channel,time_s`` rows. Returns the sorted arrays and the duration if the file has one."""
+@dataclass
+class TagRecord:
+    channels: dict[str, np.ndarray]
+    duration: float | None
+    repetition_rates: dict[str, float] = field(default_factory=dict)
+    meta: dict[str, Any] = field(default_factory=dict)
+    format_version: int = 1
+
+    @property
+    def has_clock(self) -> bool:
+        return bool(self.repetition_rates)
+
+
+def read_tag_record(path: Path | str) -> TagRecord:
+    """Read time tags from ``.npz`` (version 1 or 2) or a CSV of ``channel,time_s`` rows."""
     path = Path(path)
     if path.suffix.lower() == ".npz":
-        with np.load(path) as data:
-            duration = float(data["duration"]) if "duration" in data.files else None
+        with np.load(path, allow_pickle=False) as data:
+            files = set(data.files)
+            duration = float(data["duration"]) if "duration" in files else None
+            version = int(data["format_version"]) if "format_version" in files else 1
+            meta: dict[str, Any] = {}
+            rates: dict[str, float] = {}
+            if "meta_json" in files:
+                meta = json.loads(str(data["meta_json"]))
+                rates = {str(k): float(v) for k, v in meta.pop("clock", {}).items()}
             channels = {
-                k: np.sort(np.asarray(data[k], dtype=float)) for k in data.files if k != "duration"
+                k: np.sort(np.asarray(data[k], dtype=float))
+                for k in data.files
+                if k not in RESERVED_KEYS
             }
-        return channels, duration
+        return TagRecord(channels, duration, rates, meta, version)
     columns: dict[str, list[float]] = {}
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.reader(handle)
@@ -309,11 +420,45 @@ def read_tags(path: Path | str) -> tuple[dict[str, np.ndarray], float | None]:
             columns.setdefault(row[0].strip(), []).append(value)
     if not columns:
         raise CorrelationError(f"{path}: no 'channel,time_s' rows found")
-    return {k: np.sort(np.asarray(v)) for k, v in columns.items()}, None
+    return TagRecord({k: np.sort(np.asarray(v)) for k, v in columns.items()}, None)
 
 
-def write_tags(path: Path | str, channels: Mapping[str, np.ndarray], duration: float) -> None:
+def read_tags(path: Path | str) -> tuple[dict[str, np.ndarray], float | None]:
+    record = read_tag_record(path)
+    return record.channels, record.duration
+
+
+def write_tags(
+    path: Path | str,
+    channels: Mapping[str, np.ndarray],
+    duration: float,
+    repetition_rates: Mapping[str, float] | Sequence[float] = (),
+    meta: Mapping[str, Any] | None = None,
+) -> None:
+    """Write a version-2 tag file; the pulse clock and run metadata travel with the arrays."""
     path = Path(path)
     if path.suffix.lower() != ".npz":
         raise CorrelationError("time tags are written as .npz")
-    np.savez_compressed(path, duration=duration, **{k: np.asarray(v) for k, v in channels.items()})
+    clash = RESERVED_KEYS & set(channels)
+    if clash:
+        raise CorrelationError(f"channel names {sorted(clash)} are reserved in tag files")
+    info = dict(meta or {})
+    if isinstance(repetition_rates, Mapping):
+        info["clock"] = {str(k): float(v) for k, v in repetition_rates.items()}
+    elif len(repetition_rates):
+        info["clock"] = {name: float(max(repetition_rates)) for name in channels}
+    payload = {k: np.asarray(v) for k, v in channels.items()}
+    fd, tmp = tempfile.mkstemp(suffix=".npz", dir=path.parent or ".")
+    os.close(fd)
+    try:
+        np.savez_compressed(
+            tmp,
+            duration=duration,
+            format_version=TAG_FORMAT_VERSION,
+            meta_json=json.dumps(info, default=str),
+            **payload,
+        )
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise

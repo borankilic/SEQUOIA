@@ -72,7 +72,8 @@ These hold throughout the code. Each one gets a test when the code that depends 
 ## Physics simplifications (v1)
 
 - The pump is undepleted and components are stationary.
-- Detectors are threshold detectors; PNR arrives with the Gaussian engine (M8).
+- Detectors are threshold detectors in the rate and Monte Carlo engines; photon-number-resolved
+  distributions come from the Gaussian engine (`pnr=`) and the Fock backend (`docs/FOCK.md`).
 - The rate engine is first order in the pair rate (low gain).
 
 ## Classical engine (M2)
@@ -164,7 +165,7 @@ These are the approximations a user must know. Details and validation numbers ar
 
 - First order in the pair rate: the rate engine gives exact single-pair statistics. Multi-pair
   events enter only through the uncorrelated-process formula for heralded g2 and the thermal term
-  of the unheralded g2 histogram. There is no high-gain or PNR physics (M8).
+  of the unheralded g2 histogram. High-gain and PNR statistics are provided by the Gaussian engine.
 - Photons travel the same linear network as classical light: the pair state is transformed with
   the per-wavelength Jones matrices and the phase `nu*gpl/c + nu0*(opl - gpl)/c`. Fiber group delay
   uses the part's `group_index`; fiber dispersion (GDD) and polarization-mode dispersion are

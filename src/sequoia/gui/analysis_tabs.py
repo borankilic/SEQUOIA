@@ -1,5 +1,8 @@
 import math
+import os
+import tempfile
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
@@ -11,12 +14,14 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
+from scipy.constants import c as C_LIGHT
 
 from sequoia.analysis.budget import ideal_budget, photon_budget, power_budget
 from sequoia.analysis.profile import caustic
@@ -47,27 +52,53 @@ def style_plot(plot: pg.PlotWidget, x: str, y: str) -> None:
     item.showGrid(x=True, y=True, alpha=0.25)
 
 
+CLASSICAL_FIELD = "classical field"
+
+
+def photon_stokes(coherency: np.ndarray) -> np.ndarray:
+    w = np.asarray(coherency).sum(axis=0)
+    return np.array(
+        [
+            (w[0, 0] + w[1, 1]).real,
+            (w[0, 0] - w[1, 1]).real,
+            2.0 * w[0, 1].real,
+            -2.0 * w[0, 1].imag,
+        ]
+    )
+
+
 class LinkTab(QWidget):
-    """A tab with a link selector above a plot; subclasses implement ``redraw``."""
+    """A tab with a link selector above a plot; subclasses implement ``redraw``.
+
+    With ``photon_views`` the tab can also show the pair photons of a link (a reduced
+    single-photon state per source and role) instead of the classical field.
+    """
+
+    photon_views = False
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.outcome: SimulationOutcome | None = None
         self.combo = QComboBox()
         self.combo.setMinimumWidth(160)
+        self.population = QComboBox()
+        self.population.setMinimumWidth(150)
+        self.population.setVisible(self.photon_views)
         self.note = QLabel("")
         self.note.setStyleSheet("color: palette(placeholder-text);")
         top = QHBoxLayout()
         top.setContentsMargins(6, 4, 6, 0)
         top.addWidget(QLabel("Link"))
         top.addWidget(self.combo)
+        top.addWidget(self.population)
         top.addWidget(self.note, 1)
         self.layout_ = QVBoxLayout(self)
         self.layout_.setContentsMargins(0, 0, 0, 0)
         self.layout_.addLayout(top)
-        self.combo.currentIndexChanged.connect(lambda _i: self._safe_redraw())
+        self.combo.currentIndexChanged.connect(self._link_changed)
+        self.population.currentIndexChanged.connect(lambda _i: self._redraw_current())
 
-    def link_choices(self, outcome: SimulationOutcome) -> list[str]:
+    def classical_links(self, outcome: SimulationOutcome) -> list[str]:
         classical = outcome.classical
         if classical is None:
             return []
@@ -79,6 +110,20 @@ class LinkTab(QWidget):
             and getattr(s.end, "mode", None) is not None
             and hasattr(s.end, "wavelengths")
         ]
+
+    def photon_entries(self, outcome: SimulationOutcome | None, link_id: str) -> dict[str, Any]:
+        rates = getattr(outcome, "rates", None)
+        if rates is None:
+            return {}
+        return dict(rates.links.get(link_id, {}).get("quantum", {}))
+
+    def link_choices(self, outcome: SimulationOutcome) -> list[str]:
+        choices = self.classical_links(outcome)
+        if self.photon_views and outcome.rates is not None:
+            for lid, entry in outcome.rates.links.items():
+                if entry.get("quantum") and lid not in choices:
+                    choices.append(lid)
+        return choices
 
     def select_link(self, link_id: str) -> None:
         index = self.combo.findText(link_id)
@@ -97,17 +142,62 @@ class LinkTab(QWidget):
         elif choices:
             self.combo.setCurrentIndex(len(choices) - 1)
         self.combo.blockSignals(False)
+        self._refresh_population()
         self._safe_redraw()
+
+    def _link_changed(self, _index: int) -> None:
+        self._refresh_population()
+        self._safe_redraw()
+
+    def _refresh_population(self) -> None:
+        if not self.photon_views:
+            return
+        previous = self.population.currentText()
+        options: list[str] = []
+        link = self.combo.currentText()
+        if self.outcome is not None and link:
+            if link in self.classical_links(self.outcome):
+                options.append(CLASSICAL_FIELD)
+            entries = list(self.photon_entries(self.outcome, link))
+            options += [f"photons: {k}" for k in entries]
+            if len(entries) > 1:
+                options.append("photons: all")
+        self.population.blockSignals(True)
+        self.population.clear()
+        self.population.addItems(options)
+        if previous in options:
+            self.population.setCurrentText(previous)
+        self.population.blockSignals(False)
+
+    def _redraw_current(self) -> None:
+        self._safe_redraw()
+
+    def photon_selection(self) -> dict[str, Any] | None:
+        text = self.population.currentText()
+        if not self.photon_views or not text.startswith("photons: "):
+            return None
+        entries = self.photon_entries(self.outcome, self.combo.currentText())
+        key = text.removeprefix("photons: ")
+        if key == "all":
+            return entries
+        return {key: entries[key]} if key in entries else {}
 
     def _safe_redraw(self) -> None:
         self.note.setText("")
         if self.outcome is None or not self.combo.currentText():
             self.clear()
             return
+        photons = self.photon_selection()
+        if photons is not None:
+            self.redraw_photons(self.outcome, self.combo.currentText(), photons)
+            return
         self.redraw(self.outcome, self.combo.currentText())
 
     def clear(self) -> None:
         pass
+
+    def redraw_photons(self, outcome: SimulationOutcome, link_id: str, entries: dict) -> None:
+        self.clear()
 
     def redraw(self, outcome: SimulationOutcome, link_id: str) -> None:
         raise NotImplementedError
@@ -216,10 +306,13 @@ class _Ellipse(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         pal = QApplication.palette()
-        side = min(self.width(), self.height()) - 12
-        c = QPointF(self.width() / 2, self.height() / 2)
-        r = side / 2
-        p.setPen(QPen(pal.mid().color(), 1))
+        pad = self.fontMetrics().height() + 8
+        side = min(self.width(), self.height() - pad) - 12
+        c = QPointF(self.width() / 2, (self.height() - pad) / 2 + 4)
+        r = max(side / 2, 10.0)
+        axis = QColor(pal.text().color())
+        axis.setAlpha(150)
+        p.setPen(QPen(axis, 1.2))
         p.drawLine(QPointF(c.x() - r, c.y()), QPointF(c.x() + r, c.y()))
         p.drawLine(QPointF(c.x(), c.y() - r), QPointF(c.x(), c.y() + r))
         p.drawText(QPointF(c.x() + r - 12, c.y() - 4), "H")
@@ -242,7 +335,8 @@ class _Ellipse(QWidget):
         p.drawEllipse(QRectF(-a, -b, 2 * a, 2 * b))
         p.restore()
         p.setPen(pal.text().color())
-        hand = "right" if s[3] > 0 else "left" if s[3] < 0 else "linear"
+        circ = s[3] / pol
+        hand = "right" if circ > 1e-3 else "left" if circ < -1e-3 else "linear"
         p.drawText(
             QPointF(8, self.height() - 8),
             f"ψ {math.degrees(psi):.1f}°  χ {math.degrees(chi):.1f}°  {hand}",
@@ -294,14 +388,17 @@ class _Poincare(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         pal = QApplication.palette()
-        r = min(self.width(), self.height()) / 2 - 14
-        c = QPointF(self.width() / 2, self.height() / 2)
+        label = self.fontMetrics().height()
+        r = max(min(self.width() - 3 * label, self.height() - 4 * label) / 2, 20.0)
+        c = QPointF(self.width() / 2, (self.height() - label) / 2)
 
         def pt(v):
             x, y, _z = self._project(np.asarray(v, dtype=float))
             return QPointF(c.x() + r * x, c.y() - r * y)
 
-        p.setPen(QPen(pal.mid().color(), 1))
+        ring_color = QColor(pal.text().color())
+        ring_color.setAlpha(110)
+        p.setPen(QPen(ring_color, 1))
         p.drawEllipse(c, r, r)
         t = np.linspace(0, 2 * np.pi, 73)
         for ring in (
@@ -313,8 +410,9 @@ class _Poincare(QWidget):
             for i in range(len(t) - 1):
                 p.drawLine(pt((xs[i], ys[i], zs[i])), pt((xs[i + 1], ys[i + 1], zs[i + 1])))
         p.setPen(pal.text().color())
-        for label, v in (("S1", (1.2, 0, 0)), ("S2", (0, 1.2, 0)), ("S3", (0, 0, 1.2))):
-            p.drawText(pt(v), label)
+        for name, v in (("S1", (1.12, 0, 0)), ("S2", (0, 1.12, 0)), ("S3", (0, 0, 1.12))):
+            q = pt(v)
+            p.drawText(QPointF(q.x() - 8, q.y() + 4), name)
         axis_pen = QPen(pal.text().color(), 1.2)
         for v in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
             p.setPen(axis_pen)
@@ -335,6 +433,8 @@ class _Poincare(QWidget):
 
 
 class PolarizationTab(LinkTab):
+    photon_views = True
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.ellipse = _Ellipse()
@@ -361,8 +461,30 @@ class PolarizationTab(LinkTab):
         self.ellipse.update()
         self.sphere.update()
 
+    def redraw_photons(self, outcome: SimulationOutcome, link_id: str, entries: dict) -> None:
+        total = np.zeros(4)
+        for data in entries.values():
+            total += photon_stokes(data["coherency"])
+        points = {}
+        for lid in outcome.rates.links:
+            for key, data in self.photon_entries(outcome, lid).items():
+                points[f"{lid} {key}"] = photon_stokes(data["coherency"])
+        self.ellipse.stokes = total if total[0] > 0 else None
+        self.sphere.points = points
+        self.sphere.selected = ""
+        dop = float(np.linalg.norm(total[1:]) / total[0]) if total[0] > 0 else 0.0
+        self.note.setText(
+            f"single-photon DOP {dop:.3f}; {eng(total[0], 'Hz')} photons "
+            "(a pair partner of an entangled photon looks unpolarized)"
+        )
+        self.ellipse.update()
+        self.sphere.update()
+
 
 class SpectraTab(LinkTab):
+    photon_views = True
+    PALETTE = ("#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b")
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.plot = pg.PlotWidget()
@@ -370,12 +492,45 @@ class SpectraTab(LinkTab):
         self.curve = self.plot.plot(
             pen=pg.mkPen("#1f77b4", width=2), fillLevel=0, brush=(31, 119, 180, 60)
         )
+        self.photon_curves: list = []
         self.layout_.addWidget(self.plot, 1)
 
+    def _drop_photon_curves(self) -> None:
+        for item in self.photon_curves:
+            self.plot.removeItem(item)
+        self.photon_curves = []
+
     def clear(self) -> None:
+        self._drop_photon_curves()
         self.curve.setData([], [])
 
+    def redraw_photons(self, outcome: SimulationOutcome, link_id: str, entries: dict) -> None:
+        self._drop_photon_curves()
+        self.curve.setData([], [])
+        style_plot(self.plot, "wavelength [nm]", "photon rate [Hz per sample]")
+        total = 0.0
+        for n, (key, data) in enumerate(entries.items()):
+            nu = np.asarray(data["nu"])
+            valid = nu > 0
+            wl = C_LIGHT / nu[valid] * 1e9
+            rate = np.einsum("nii->n", np.asarray(data["coherency"])).real[valid]
+            order = np.argsort(wl)
+            color = self.PALETTE[n % len(self.PALETTE)]
+            item = self.plot.plot(
+                wl[order],
+                rate[order],
+                pen=pg.mkPen(color, width=2),
+                name=key,
+                fillLevel=0,
+                brush=pg.mkBrush(color + "40"),
+            )
+            self.photon_curves.append(item)
+            total += float(rate.sum())
+        self.note.setText(f"{len(entries)} population(s), total {eng(total, 'Hz')}")
+
     def redraw(self, outcome: SimulationOutcome, link_id: str) -> None:
+        self._drop_photon_curves()
+        style_plot(self.plot, "wavelength [nm]", "power [mW per sample]")
         state = outcome.classical.links[link_id]
         light = state.end
         if light is None:
@@ -615,6 +770,18 @@ def save_text(parent: QWidget, title: str, default: str, text: str) -> bool:
     path, _ = QFileDialog.getSaveFileName(parent, title, default)
     if not path:
         return False
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
+    try:
+        directory = os.path.dirname(os.path.abspath(path))
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".sequoia-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            os.replace(tmp, path)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+    except OSError as exc:
+        QMessageBox.warning(parent, "Cannot save", f"{path}\n\n{exc.strerror or exc}")
+        return False
     return True

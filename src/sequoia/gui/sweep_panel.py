@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -20,11 +21,20 @@ from PySide6.QtWidgets import (
 )
 
 from sequoia.analysis.optimize import METHODS, Variable, optimize
-from sequoia.analysis.sweep import Axis, Candidate, candidate_targets, metrics_of, run_sweep
+from sequoia.analysis.sweep import (
+    Axis,
+    Candidate,
+    candidate_targets,
+    check_axis_unit,
+    metrics_of,
+    run_sweep,
+    with_values,
+)
 from sequoia.engines.cache import RunCache
 from sequoia.gui.analysis_tabs import save_text, style_plot
 from sequoia.gui.jobs import JobRunner
 from sequoia.gui.results import _fill, _make_table, _NumItem, plain
+from sequoia.gui.runguard import RunGuard
 
 
 def _spin(value: float = 0.0) -> QDoubleSpinBox:
@@ -72,6 +82,8 @@ class AxisRow(QWidget):
         cand = self.candidates[index]
         self.unit.setText(cand.unit)
         cur = cand.current if cand.current is not None else 0.0
+        if cand.unit and cand.current is not None:
+            cur = float(cand.current)
         span = abs(cur) * 0.2 or 1.0
         self.start.setValue(cur - span)
         self.stop.setValue(cur + span)
@@ -89,20 +101,25 @@ class AxisRow(QWidget):
         self.target.blockSignals(True)
         self.target.clear()
         self.target.addItems([c.target for c in candidates])
-        if previous in [c.target for c in candidates]:
+        kept = previous in [c.target for c in candidates]
+        if kept:
             self.target.setCurrentText(previous)
         self.target.blockSignals(False)
+        if not kept:
+            self._reset_range()
 
 
-class SweepTab(QWidget):
+class SweepTab(RunGuard, QWidget):
     """1D/2D parameter sweeps of the open setup, plotted against a chosen result."""
 
     def __init__(self, provider, parent=None) -> None:
         super().__init__(parent)
+        self._guard_init()
         self.provider = provider
         self.runner = JobRunner(self)
         self.result = None
         self.outputs: list[str] = []
+        self.candidates: list[Candidate] = []
         self.rows = [AxisRow([]), AxisRow([])]
         self.two_d = QCheckBox("second axis (2D)")
         self.metric = QComboBox()
@@ -162,9 +179,32 @@ class SweepTab(QWidget):
         self.metric.currentIndexChanged.connect(lambda _i: self._draw())
         self.runner.progress.connect(self._progress)
         self.runner.done.connect(self._done)
-        self.runner.failed.connect(lambda m: self._end(f"failed: {m.splitlines()[0]}"))
+        self.runner.failed.connect(self._failed)
         self.runner.cancelled.connect(lambda: self._end("cancelled"))
         self.optimizer = None
+        self.status_text = ""
+
+    def _failed(self, message: str) -> None:
+        if self.run_is_current():
+            self._end(f"failed: {message.splitlines()[0]}")
+        else:
+            self._end("")
+
+    def reset(self) -> None:
+        self.invalidate()
+        self.result = None
+        self.status_text = ""
+        if self.optimizer is not None:
+            self.optimizer.close()
+            self.optimizer = None
+        self.metric.blockSignals(True)
+        self.metric.clear()
+        self.metric.blockSignals(False)
+        self.plot.clear()
+        self.status.setText("")
+        for row in self.rows:
+            row.set_candidates([])
+        self.candidates = []
 
     def reload_candidates(self) -> None:
         setup, library = self.provider()
@@ -178,6 +218,8 @@ class SweepTab(QWidget):
     def set_outcome(self, outcome) -> None:
         if not self.rows[0].candidates:
             self.reload_candidates()
+        if self.track_revision(outcome) and self.result is not None:
+            self.status.setText(self.stale_text(self.status_text))
         if outcome is not None and self.result is None:
             names = sorted(metrics_of(outcome)) if outcome.classical else []
             current = self.metric.currentText()
@@ -202,6 +244,12 @@ class SweepTab(QWidget):
         if not axes[0].target:
             self.status.setText("no parameter to sweep")
             return
+        for axis in axes:
+            problem = self._axis_problem(axis, setup, library)
+            if problem:
+                self.status.setText(problem)
+                return
+        self.begin_run()
 
         def job(should_cancel, progress):
             return run_sweep(
@@ -221,6 +269,16 @@ class SweepTab(QWidget):
         self.status.setText("running...")
         self.runner.start(job)
 
+    def _axis_problem(self, axis: Axis, setup, library) -> str:
+        if not np.all(np.isfinite(axis.values)):
+            return f"{axis.target}: the range is not finite"
+        try:
+            check_axis_unit(setup, axis.target, axis.unit)
+            with_values(setup, [(axis.target, float(axis.values[0]), axis.unit)])
+        except Exception as exc:
+            return f"{axis.target}: {str(exc).splitlines()[0]}"
+        return ""
+
     def _progress(self, done: int, total: int) -> None:
         self.progress.setRange(0, total)
         self.progress.setValue(done)
@@ -229,9 +287,13 @@ class SweepTab(QWidget):
         self.run_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.progress.setVisible(False)
+        self.status_text = text
         self.status.setText(text)
 
     def _done(self, result) -> None:
+        if not self.run_is_current():
+            self._end("")
+            return
         self.result = result
         names = sorted(result.data)
         current = self.metric.currentText()
@@ -242,7 +304,12 @@ class SweepTab(QWidget):
             self.metric.setCurrentText(current)
         self.metric.blockSignals(False)
         failed = len(result.failures)
-        self._end(f"{int(np.prod(result.shape))} points" + (f", {failed} failed" if failed else ""))
+        text = f"{int(np.prod(result.shape))} points" + (f", {failed} failed" if failed else "")
+        if failed:
+            first = next(iter(result.failures), None)
+            reason = result.failures[first] if isinstance(result.failures, dict) else first
+            text += f" (first: {str(reason)[:90]})"
+        self._end(text)
         self._draw()
 
     def _draw(self) -> None:
@@ -292,8 +359,8 @@ class SweepTab(QWidget):
         if self.result is None:
             return
         path, _ = QFileDialog.getSaveFileName(self, "Export plot", "sweep.png")
-        if path:
-            self.plot.grab().save(path)
+        if path and not self.plot.grab().save(path):
+            QMessageBox.warning(self, "Cannot save plot", f"{path} could not be written.")
 
     def open_optimizer(self) -> None:
         setup, _library = self.provider()

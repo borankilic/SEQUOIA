@@ -56,7 +56,12 @@ def _run(setup_path: str, library_path: str) -> int:
 
 
 def _run_mc(
-    setup_path: str, library_path: str, duration: float, seed: int | None, tags_path: str | None
+    setup_path: str,
+    library_path: str,
+    duration: float,
+    seed: int | None,
+    tags_path: str | None,
+    schmidt: float | None = None,
 ) -> int:
     import sequoia.components.builtin  # noqa: F401
     from sequoia.analysis.correlation import analyse_tags, write_tags
@@ -76,13 +81,15 @@ def _run_mc(
             return 1
         library = Library(library_root)
         cache = RunCache()
-        tags = simulate_timetags(setup, library, duration, seed=seed, cache=cache)
-        analyses = analyse_tags(tags.channels, tags.duration, setup.analyses, tags.repetition_rates)
+        tags = simulate_timetags(
+            setup, library, duration, seed=seed, cache=cache, schmidt_number=schmidt
+        )
+        analyses = analyse_tags(tags.channels, tags.duration, setup.analyses, tags.clock)
         rates = simulate_rates(setup, library, cache=cache)
         comparisons = compare_with_rates(tags, analyses, rates)
         if tags_path:
-            write_tags(tags_path, tags.channels, tags.duration)
-    except (SequoiaError, ValueError) as exc:
+            write_tags(tags_path, tags.channels, tags.duration, tags.clock, tags.metadata())
+    except (SequoiaError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(format_mc_report(tags, analyses, comparisons))
@@ -111,22 +118,41 @@ def _run_gaussian(setup_path: str, library_path: str, gain_scale: float) -> int:
     return 0
 
 
-def _analyze_tags(tag_path: str, setup_path: str, duration: float | None) -> int:
-    from sequoia.analysis.correlation import analyse_tags, read_tags
+def _analyze_tags(
+    tag_path: str,
+    setup_path: str,
+    duration: float | None,
+    rep_rate: float | None = None,
+    cw: bool = False,
+) -> int:
+    from sequoia.analysis.correlation import analyse_tags, read_tag_record
     from sequoia.engines.report import format_mc_report
     from sequoia.errors import SequoiaError
     from sequoia.setup.io import load_setup
 
     try:
         setup = load_setup(setup_path)
-        channels, file_duration = read_tags(tag_path)
+        record = read_tag_record(tag_path)
+        channels, file_duration = record.channels, record.duration
         span = duration or file_duration
         if span is None:
             span = max((float(t[-1]) for t in channels.values() if len(t)), default=0.0)
         if span <= 0:
             print("error: cannot determine the record duration; pass --duration", file=sys.stderr)
             return 1
-        analyses = analyse_tags(channels, span, setup.analyses)
+        if rep_rate:
+            clock = {name: rep_rate for name in channels}
+        elif cw:
+            clock = {}
+        else:
+            clock = record.repetition_rates
+            if not clock:
+                print(
+                    "note: the file records no pulse clock, so accidentals use the CW singles "
+                    "product; pass --rep-rate HZ for pulsed data or --cw to silence this",
+                    file=sys.stderr,
+                )
+        analyses = analyse_tags(channels, span, setup.analyses, clock)
     except (SequoiaError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -153,7 +179,17 @@ def main() -> None:
         parser.add_argument("--library", default="library")
         parser.add_argument("--engine", choices=("rates", "mc", "gaussian"), default="rates")
         parser.add_argument(
-            "--gain-scale", type=float, default=1.0, help="pump power factor (gaussian)"
+            "--gain-scale",
+            type=float,
+            default=1.0,
+            help="pump power factor (gaussian): scales pair gain and classical leakage, "
+            "dark counts stay fixed",
+        )
+        parser.add_argument(
+            "--schmidt",
+            type=float,
+            default=None,
+            help="effective Schmidt number K for thermal pulse statistics (mc)",
         )
         parser.add_argument("--duration", type=float, default=10.0, help="seconds (mc)")
         parser.add_argument("--seed", type=int, default=None)
@@ -162,8 +198,14 @@ def main() -> None:
         if args.engine == "gaussian":
             sys.exit(_run_gaussian(args.setup, args.library, args.gain_scale))
         if args.engine == "mc":
-            sys.exit(_run_mc(args.setup, args.library, args.duration, args.seed, args.tags))
+            sys.exit(
+                _run_mc(args.setup, args.library, args.duration, args.seed, args.tags, args.schmidt)
+            )
         sys.exit(_run(args.setup, args.library))
+    if argv and argv[0] == "fock":
+        from sequoia.fock.cli import main as fock_main
+
+        sys.exit(fock_main(argv[1:]))
     if argv and argv[0] == "analyze-tags":
         parser = argparse.ArgumentParser(
             prog="sequoia analyze-tags",
@@ -172,8 +214,10 @@ def main() -> None:
         parser.add_argument("tags")
         parser.add_argument("--setup", required=True)
         parser.add_argument("--duration", type=float, default=None)
+        parser.add_argument("--rep-rate", type=float, default=None, help="pulse clock in Hz")
+        parser.add_argument("--cw", action="store_true", help="treat the record as continuous")
         args = parser.parse_args(argv[1:])
-        sys.exit(_analyze_tags(args.tags, args.setup, args.duration))
+        sys.exit(_analyze_tags(args.tags, args.setup, args.duration, args.rep_rate, args.cw))
     from sequoia.gui.app import run as run_gui
 
     sys.exit(run_gui(argv))

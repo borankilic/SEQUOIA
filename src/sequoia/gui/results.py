@@ -250,6 +250,9 @@ TAB_HELP = {
     "for the best value.",
     "Monte Carlo": "Simulates the stream of single detector clicks a time tagger would record "
     "in the lab and checks it against the analytic numbers.",
+    "Photon states": "Fock circuits: put chosen photon numbers into the modes of a beam-splitter "
+    "network and read the output-state probabilities through threshold or number-resolving "
+    "detectors. Separate from the lab simulation; see docs/FOCK.md.",
     "Gaussian": "Exact photon statistics at higher pump power, where several pairs can be "
     "created at once: CAR falls and heralded g2 rises with pump power.",
 }
@@ -307,6 +310,7 @@ class ResultsDock(QWidget):
             PolarizationTab,
             SpectraTab,
         )
+        from sequoia.gui.fock_panel import FockTab
         from sequoia.gui.gaussian_panel import GaussianTab
         from sequoia.gui.montecarlo_panel import MonteCarloTab
         from sequoia.gui.sweep_panel import SweepTab
@@ -320,6 +324,7 @@ class ResultsDock(QWidget):
         self.sweeps = SweepTab(lambda: self.provider())
         self.montecarlo = MonteCarloTab(lambda: self.provider())
         self.gaussian = GaussianTab(lambda: self.provider())
+        self.fock = FockTab(lambda: self.provider())
         self.plot_tabs = {
             "Caustic": self.caustic,
             "Polarization": self.polarization,
@@ -329,9 +334,12 @@ class ResultsDock(QWidget):
             "Sweeps": self.sweeps,
             "Monte Carlo": self.montecarlo,
             "Gaussian": self.gaussian,
+            "Photon states": self.fock,
         }
+        self.engine_issues: dict[str, list] = {}
         for title, widget in self.plot_tabs.items():
             self.tabs.addTab(widget, title)
+            widget.on_issues = lambda issues, name=title: self.set_engine_issues(name, issues)
 
         self.help = QLabel("")
         self.help.setWordWrap(True)
@@ -375,9 +383,15 @@ class ResultsDock(QWidget):
     def outcome(self) -> SimulationOutcome | None:
         return self._outcome
 
+    def set_engine_issues(self, name: str, issues) -> None:
+        self.engine_issues[name] = list(issues)
+        if self._outcome is not None:
+            self._fill_diagnostics(self._outcome)
+
     def clear(self) -> None:
         self._outcome = None
         self._failure = None
+        self.engine_issues.clear()
         _fill(self.diagnostics, [])
         _fill(self.links, [])
         _fill(self.channels, [])
@@ -385,6 +399,9 @@ class ResultsDock(QWidget):
         self.analyses.clear()
         self.tab_errors.clear()
         for widget in self.plot_tabs.values():
+            reset = getattr(widget, "reset", None)
+            if reset is not None:
+                reset()
             widget.set_outcome(None)
         for index, title in enumerate(self.TAB_TITLES):
             self.tabs.setTabText(index, title)
@@ -471,7 +488,14 @@ class ResultsDock(QWidget):
 
     def _fill_diagnostics(self, outcome: SimulationOutcome) -> None:
         order = {"error": 0, "warning": 1}
-        issues = sorted(outcome.issues, key=lambda i: order.get(i.severity, 2))
+        from sequoia.errors import Issue
+
+        extra = [
+            Issue(i.severity, i.code, i.subject, f"[{name}] {i.message}")
+            for name, found in self.engine_issues.items()
+            for i in found
+        ]
+        issues = sorted([*outcome.issues, *extra], key=lambda i: order.get(i.severity, 2))
         rows = []
         for issue in issues:
             icon_item = _NumItem("", order.get(issue.severity, 2), issue.severity)

@@ -34,6 +34,18 @@ class TimeTags:
     issues: list[Issue] = field(default_factory=list)
     repetition_rates: list[float] = field(default_factory=list)
     truth: dict[str, Any] = field(default_factory=dict)
+    channel_clocks: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def clock(self) -> dict[str, float] | list[float]:
+        return self.channel_clocks or self.repetition_rates
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "seed": self.seed,
+            "engine": "montecarlo",
+            "sources": {k: v["rate_hz"] for k, v in self.truth.get("sources", {}).items()},
+        }
 
     def counts(self) -> dict[str, int]:
         return {name: int(len(t)) for name, t in self.channels.items()}
@@ -323,6 +335,16 @@ def simulate_timetags(
         "sources": {m.inst: {"rate_hz": m.rate, "patterns": m.patterns} for m in models},
         "detectors": engine.det_data,
     }
+    contributors: dict[str, list[float | None]] = {}
+    for m in models:
+        seen = {d for dets, _p in m.patterns for d in dets}
+        for det_id in seen:
+            contributors.setdefault(det_id, []).append(m.repetition_rate)
+    clocks: dict[str, float] = {}
+    for ch in engine.channels.values():
+        rates = contributors.get(ch.detector, [])
+        if rates and all(r for r in rates) and max(rates) <= min(rates) * (1.0 + 1e-9):
+            clocks[ch.name] = float(rates[0])
     return TimeTags(
         channels,
         duration,
@@ -330,6 +352,7 @@ def simulate_timetags(
         list(engine.issues),
         [m.repetition_rate for m in models if m.repetition_rate],
         truth,
+        clocks,
     )
 
 

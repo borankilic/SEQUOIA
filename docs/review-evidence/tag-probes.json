@@ -1,0 +1,75 @@
+{
+  "pulsed_tags_before_export": {
+    "type": "coincidences",
+    "window_s": 1e-09,
+    "center_s": 0.0,
+    "counts": 962,
+    "total_hz": 96200.0,
+    "accidental_hz": 100900.0,
+    "true_hz": -4700.0,
+    "true_sigma_hz": 3829.490827773321,
+    "car": -0.04658077304261645,
+    "car_total": 0.9534192269573836,
+    "singles_a_hz": 991600.0,
+    "singles_b_hz": 992500.0,
+    "heralding_a_given_b": -0.00473551637279597,
+    "heralding_b_given_a": -0.004739814441306979,
+    "channels": [
+      "a",
+      "b"
+    ]
+  },
+  "same_tags_after_standard_reload": {
+    "type": "coincidences",
+    "window_s": 1e-09,
+    "center_s": 0.0,
+    "counts": 962,
+    "total_hz": 96200.0,
+    "accidental_hz": 984.163,
+    "true_hz": 95215.837,
+    "true_sigma_hz": 3101.6124838541646,
+    "car": 96.7480356404376,
+    "car_total": 97.7480356404376,
+    "singles_a_hz": 991600.0,
+    "singles_b_hz": 992500.0,
+    "heralding_a_given_b": 0.09593535214105793,
+    "heralding_b_given_a": 0.09602242537313432,
+    "channels": [
+      "a",
+      "b"
+    ]
+  },
+  "delayed_herald_100ns": {
+    "type": "heralded_g2",
+    "window_s": 2e-09,
+    "herald_singles_hz": 100000.0,
+    "rate_ha_hz": 0.0,
+    "rate_hb_hz": 0.0,
+    "triples": 0,
+    "triples_hz": 0.0,
+    "triples_sigma_hz": 1000.0,
+    "g2_heralded": NaN,
+    "g2_sigma": NaN,
+    "center_a_s": 0.0,
+    "center_b_s": 0.0,
+    "herald": "h",
+    "a": "a",
+    "b": "b"
+  },
+  "empty_tags_car": {
+    "type": "coincidences",
+    "window_s": 1e-09,
+    "center_s": 0.0,
+    "counts": 0,
+    "total_hz": 0.0,
+    "accidental_hz": 0.0,
+    "true_hz": 0.0,
+    "true_sigma_hz": 0.0,
+    "car": Infinity,
+    "car_total": Infinity,
+    "singles_a_hz": 0.0,
+    "singles_b_hz": 0.0,
+    "heralding_a_given_b": 0.0,
+    "heralding_b_given_a": 0.0
+  }
+}

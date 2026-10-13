@@ -1,0 +1,105 @@
+{
+  "FockState": {
+    "results": {
+      "|0,2>": 0.5,
+      "|2,0>": 0.5
+    },
+    "global_perf": 1.0000000000000002,
+    "herald_mode0_equal2": {
+      "|2,0>": 0.5
+    }
+  },
+  "NoisyFockState": {
+    "results": {
+      "|1,1>": 0.5,
+      "|0,2>": 0.25,
+      "|2,0>": 0.25
+    },
+    "global_perf": 1.0,
+    "herald_mode0_equal2": {
+      "|2,0>": 0.25
+    }
+  },
+  "Threshold": {
+    "results": {
+      "|1,0>": 0.5,
+      "|0,2>": 0.5
+    },
+    "global_perf": 1.0000000000000002
+  },
+  "PNR": {
+    "results": {
+      "|0,2>": 0.5,
+      "|2,0>": 0.5
+    },
+    "global_perf": 1.0000000000000002
+  },
+  "PPNR": {
+    "results": {
+      "|0,2>": 0.5,
+      "|2,0>": 0.375,
+      "|1,0>": 0.125
+    },
+    "global_perf": 1.0000000000000002
+  },
+  "BSLayeredPPNR": {
+    "results": {
+      "|0,2>": 0.5,
+      "|2,0>": 0.375,
+      "|1,0>": 0.125
+    },
+    "global_perf": 1.0000000000000002
+  },
+  "4p5m.json": {
+    "modes": 5,
+    "components": 9,
+    "loss_channels_before": 37,
+    "loss_channels_after": 0,
+    "svg_chars": 7932,
+    "output_states": 50,
+    "sum_probability": 1.0000000000000002,
+    "global_perf": 1.0000000000000007
+  },
+  "4p6mcarolan.json": {
+    "modes": 6,
+    "components": 8,
+    "loss_channels_before": 32,
+    "loss_channels_after": 0,
+    "svg_chars": 7874
+  },
+  "4p8m.json": {
+    "modes": 8,
+    "components": 25,
+    "loss_channels_before": 92,
+    "loss_channels_after": 0,
+    "svg_chars": 17345
+  },
+  "6p6m_3x3dfts.json": {
+    "modes": 6,
+    "components": 23,
+    "loss_channels_before": 66,
+    "loss_channels_after": 0,
+    "svg_chars": 13631
+  },
+  "carolan_general15mzi.json": {
+    "modes": 6,
+    "components": 21,
+    "loss_channels_before": 228,
+    "loss_channels_after": 60,
+    "svg_chars": 80350
+  },
+  "generalmziBedirhan.json": {
+    "modes": 6,
+    "components": 21,
+    "loss_channels_before": 198,
+    "loss_channels_after": 0,
+    "svg_chars": 41896
+  },
+  "generalmziMehmet.json": {
+    "modes": 6,
+    "components": 21,
+    "loss_channels_before": 198,
+    "loss_channels_after": 0,
+    "svg_chars": 41862
+  }
+}

@@ -54,6 +54,12 @@ BELL = {
 }
 
 
+def ratio(numerator, denominator):
+    if denominator > 0:
+        return numerator / denominator
+    return float("nan") if numerator <= 0 else float("inf")
+
+
 def car(coincidences, accidentals):
     return coincidences / accidentals
 

@@ -168,10 +168,10 @@ def test_pnr_distribution_of_a_single_detector():
     member = _Member(1.0, [batch])
     forms["s"][id(member)] = _detector_forms([batch], h_s, h_i)
     src = GaussianSource("s", r**2, 1.0, False, [member], 1)
-    model = GaussianModel([src], forms, ["d"], np.zeros(1))
+    model = GaussianModel([src], forms, ["d"], np.zeros(1), np.zeros(1))
     from sequoia.engines.gaussian import _pnr
 
-    probs = _pnr(model, ["d"], ("d",), 1.0, 40)
+    probs, _ = _pnr(model, ["d"], ("d",), 1.0, 40)
     expected = (1 - x) * x ** np.arange(41)
     assert np.allclose(probs, expected, atol=1e-9)
 
@@ -220,13 +220,16 @@ def test_photon_number_distribution_is_consistent():
         pnr_cutoff=10,
     )
     single = g.pnr[("tagger.ch2",)]
-    assert single.sum() == pytest.approx(1.0, abs=1e-6)
+    meta = g.pnr_info[("tagger.ch2",)]
+    assert single.sum() + meta["tail"] == pytest.approx(1.0, abs=1e-6)
     assert float(np.dot(np.arange(len(single)), single)) == pytest.approx(
         g.mean_photons["tagger.ch2"], rel=1e-3
     )
     assert single[0] == pytest.approx(1.0 - g.probability("tagger.ch2"), abs=1e-9)
     joint = g.pnr[("tagger.ch2", "tagger.ch3")]
-    assert joint.sum() == pytest.approx(1.0, abs=1e-6)
+    assert joint.sum() + g.pnr_info[("tagger.ch2", "tagger.ch3")]["tail"] == pytest.approx(
+        1.0, abs=1e-6
+    )
     assert np.allclose(joint.sum(axis=1), single, atol=1e-8)
     assert single[2] > 0
 

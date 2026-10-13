@@ -18,6 +18,7 @@ from sequoia.engines.gaussian import GaussianResult, prepare_gaussian
 from sequoia.gui.analysis_tabs import style_plot
 from sequoia.gui.jobs import JobRunner
 from sequoia.gui.results import _fill, _make_table, _NumItem, eng, plain
+from sequoia.gui.runguard import RunGuard
 
 SWEEP_POINTS = 13
 
@@ -31,19 +32,26 @@ class GaussianOutcome:
     g2: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
-class GaussianTab(QWidget):
+class GaussianTab(RunGuard, QWidget):
     """Exact multimode photon statistics, and CAR / heralded g2 against pump power."""
 
     def __init__(self, provider, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._guard_init()
         self.provider = provider
         self.runner = JobRunner(self)
         self.outcome: GaussianOutcome | None = None
+        self.on_issues = None
+        self.note = ""
         self.scale = QDoubleSpinBox()
         self.scale.setRange(1e-6, 1e6)
         self.scale.setDecimals(4)
         self.scale.setValue(1.0)
         self.scale.setPrefix("pump x ")
+        self.scale.setToolTip(
+            "Multiplies the pump power: pair gain and classical leakage scale with it, "
+            "detector dark counts stay fixed."
+        )
         self.sweep = QCheckBox("sweep pump power")
         self.sweep.setChecked(True)
         self.run_button = QPushButton("Run Gaussian engine")
@@ -81,11 +89,29 @@ class GaussianTab(QWidget):
         self.cancel_button.clicked.connect(self.runner.cancel)
         self.runner.progress.connect(self._progress)
         self.runner.done.connect(self._done)
-        self.runner.failed.connect(lambda m: self._end(f"failed: {m.splitlines()[0]}"))
+        self.runner.failed.connect(self._failed)
         self.runner.cancelled.connect(lambda: self._end("cancelled"))
 
-    def set_outcome(self, _outcome) -> None:
-        pass
+    def set_outcome(self, outcome) -> None:
+        if self.track_revision(outcome) and self.outcome is not None:
+            self.status.setText(self.stale_text(self.note))
+
+    def reset(self) -> None:
+        self.invalidate()
+        self.outcome = None
+        self.note = ""
+        if self.on_issues is not None:
+            self.on_issues([])
+        _fill(self.table, [])
+        self.car_curve.setData([], [])
+        self.g2_curve.setData([], [])
+        self.status.setText("")
+
+    def _failed(self, message: str) -> None:
+        if self.run_is_current():
+            self._end(f"failed: {message.splitlines()[0]}")
+        else:
+            self._end("")
 
     def run(self) -> None:
         setup, library = self.provider()
@@ -93,6 +119,7 @@ class GaussianTab(QWidget):
             return
         scale = self.scale.value()
         sweep = self.sweep.isChecked()
+        self.begin_run()
 
         def job(should_cancel, progress):
             progress(0, 0)
@@ -138,6 +165,9 @@ class GaussianTab(QWidget):
         self.status.setText(text)
 
     def _done(self, outcome: GaussianOutcome) -> None:
+        if not self.run_is_current():
+            self._end("")
+            return
         self.outcome = outcome
         r = outcome.result
         rows = []
@@ -173,6 +203,11 @@ class GaussianTab(QWidget):
             self.g2_curve.setData([], [])
         modes = sum(v["modes"] for v in r.sources.values())
         note = f"window {eng(r.window, 's')}, {modes} Schmidt modes"
-        if any(i.code == "gaussian_truncated" for i in r.issues):
-            note += "; truncated, see diagnostics"
+        warnings = [i for i in r.issues if i.severity in ("warning", "error")]
+        if warnings:
+            note += f"; {len(warnings)} note(s): " + "; ".join(str(i) for i in warnings[:2])
+        self.note = note
+        if self.on_issues is not None:
+            self.on_issues(r.issues)
+        self.status.setToolTip("\n".join(str(i) for i in r.issues))
         self._end(note)

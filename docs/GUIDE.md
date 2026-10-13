@@ -35,8 +35,8 @@ Numbers from the shipped example (10 mW pump, generic placeholder parts):
 | **Readouts and probes** | What detectors and probes read. | Photocurrent for a photodiode, power for a power meter. |
 | **Counts** | Clicks per second per detector, then the coincidence analyses you defined. | CAR, heralding efficiency and window fractions are the figures of merit of a pair source. |
 | **Caustic** | Beam radius along the path. | A dip is a focus. Check that the beam is not larger than the next part. |
-| **Polarization** | Polarization of the light on a link, as an ellipse and as a point on the Poincare sphere (drag to rotate). | Linear states sit on the equator, circular at the poles, a point inside means partially polarized. |
-| **Spectra** | Power versus wavelength on a link. | Filters show up as cut or narrowed spectra. |
+| **Polarization** | Polarization of the light on a link, as an ellipse and as a point on the Poincare sphere (drag to rotate). The second selector switches between the classical field and the pair photons (per source and signal/idler); a single photon of an entangled pair is unpolarized, the correlation lives in the pair. | Linear states sit on the equator, circular at the poles, a point inside means partially polarized. |
+| **Spectra** | Power versus wavelength on a link, or the photon-rate spectrum of the signal/idler photons (second selector). | Filters show up as cut or narrowed spectra. |
 | **Histograms** | Arrival-time difference between two detectors. | A peak at zero delay is correlated pairs; the flat floor is accidentals. Its height over the floor is the CAR. |
 | **Budget** | Power or photon flux along a path, plus what the result would be with each part replaced by an ideal one. | Parts at the top of the list cost the most; improve those first. |
 | **Sweeps** | Vary one setting (a wave-plate angle, a lens distance) and plot a result; the optimizer finds the best value. | A sweep of the half-wave plate in the Bell test shows the polarization fringe. |

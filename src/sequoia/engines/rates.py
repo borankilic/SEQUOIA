@@ -520,18 +520,25 @@ class _Engine:
         rho = src.rho[role]
         for link_id, beams in ends.items():
             flux = 0.0
+            coherency = np.zeros(rho.shape, dtype=complex)
             for beam in beams:
                 j = beam.jones
                 if len(j) != len(rho):
                     continue
                 flux += _quadratic_trace(j, rho)
+                coherency += j @ rho @ np.conj(np.swapaxes(j, -1, -2))
             flux *= src.rate
             if flux <= 0.0:
                 continue
             entry = self.link_photons.setdefault(
-                link_id, {"by_source": {}, "coupling_efficiency": {}, "transmission": {}}
+                link_id,
+                {"by_source": {}, "coupling_efficiency": {}, "transmission": {}, "quantum": {}},
             )
             entry["by_source"].setdefault(src.inst, {})[role] = flux
+            entry["quantum"][f"{src.inst} {role}"] = {
+                "nu": np.asarray(src.grid[role], dtype=float) * src.dnu,
+                "coherency": coherency * src.rate,
+            }
             info = states[link_id].info
             if "coupling_efficiency" in info:
                 entry["coupling_efficiency"][role] = info["coupling_efficiency"]

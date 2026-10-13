@@ -218,10 +218,17 @@ detector and tagger dead times event by event. What to expect:
   10% in a HOM dip). The comparison table accounts for this.
 - Dead times of different detectors are correlated for coincident pairs; the rate engine treats
   them independently, so coincidences differ by about 0.5% at 50 ns and 600 kHz.
-- Pair numbers are Poissonian. Pulsed sources accept `schmidt_number` for thermal
-  (negative-binomial) pairs per pulse; thermal bunching of continuous sources on the
-  coherence-time scale is not modelled (the rate engine includes it, so heralded g2 differs
-  slightly). Exact multi-pair statistics are the job of the planned Gaussian engine (M8).
+- Pair numbers are Poissonian unless a Schmidt number K is given (GUI: "Pairs per pulse, K";
+  CLI: `--schmidt K`): pulsed sources then emit thermal (negative-binomial) pair numbers of K
+  equally weighted modes. Thermal bunching of continuous sources on the coherence-time scale is
+  not modelled (the rate engine includes it, so heralded g2 differs slightly). A single K is an
+  effective description; exact multi-pair statistics are the job of the Gaussian engine.
+- Saved tag files (`.npz`, format 2) carry the per-channel pulse clock and the seed. Older files
+  and CSV files carry no clock: pass `--rep-rate HZ` (pulsed) or `--cw` to `analyze-tags`, otherwise
+  accidentals use the CW singles product and a note says so. The coincidence peak is searched
+  within +-50 ns, widened to 1 us and 20 us when nothing stands out; set `search`, `center`,
+  `center_a`, `center_b` in an analysis entry to override.
+- Zero true coincidences and zero accidentals give a CAR of NaN (undefined), not infinity.
 
 ## Gaussian multimode statistics
 
@@ -231,7 +238,8 @@ high-gain regime where multi-pair events matter. The pair amplitude is decompose
 independent two-mode squeezers (Schmidt modes; for CW sources one small problem per frequency
 pair), the rate engine's detector efficiency and path operators act as loss and linear optics,
 and threshold-click probabilities, coincidences, heralded g2 and photon-number distributions
-(`pnr=`) follow from the Gaussian generating function. `gain_scale` multiplies the pump power.
+(`pnr=`) follow from the Gaussian generating function. `gain_scale` multiplies the pump power:
+pair gain and classical (pump) leakage scale with it, detector dark counts do not.
 
 - Statistics are per window: one pulse for pulsed sources, 1/dnu (the lattice period of the
   pair source) for CW sources; coincidences are same-window clicks, so CAR and g2 depend on that
@@ -239,10 +247,27 @@ and threshold-click probabilities, coincidences, heralded g2 and photon-number d
 - At low gain it reproduces the rate engine (singles as photon rates, coincidence rates within
   0.5% for HBT, Bell and HOM); at higher pump power CAR falls as 1/(pairs per window) and the
   heralded g2(0) rises, as expected for thermal multi-pair statistics.
+- Photon-number distributions are extracted on an adaptively enlarged contour with an alias
+  bound; the result reports the retained probability and the tail above the cutoff, and a
+  warning is raised when the contour did not converge.
+- All sources must share one time window (the same repetition rate, or the same CW bandwidth);
+  otherwise the engine stops with an explicit error instead of reporting inconsistent rates.
 - Not supported: sources whose signal and idler leave through one port (exchange
   symmetrisation), and mixed states with more than a few members are computed member by member.
 - Needs no extra packages; `thewalrus` (the `gaussian` extra) is only used by the tests as an
   independent check of the covariance formulas.
+
+## Photon-number circuits (Fock backend)
+
+The results dock has a Photon states tab (Run > Photon states...) and `sequoia fock FILE
+[--input 1,1,0] [--shots N] [--backend native|perceval]` runs the same engine headless. You put
+chosen photon numbers (with optional distinguishability tags) into the modes of a beam-splitter
+and phase network with loss, and read output-state probabilities, shot counts, conditional
+(heralded) distributions with their success probability, through threshold, ideal PNR or
+pseudo-PNR detectors. Circuits from the Perceval GUI (version 2 JSON) import directly. A SEQUOIA
+setup of passive optics can be compiled to such a circuit with `sequoia.fock.compile`. The
+native engine needs no extra packages and is cross-checked against Perceval 1.3.1 (extra
+`perceval`). SPDC sources are not converted to Fock states; see [docs/FOCK.md](docs/FOCK.md).
 
 ## Sweeps, optimization and budgets
 

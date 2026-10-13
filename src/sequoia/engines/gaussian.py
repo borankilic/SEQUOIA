@@ -8,10 +8,11 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse import csgraph
 
+from sequoia.analysis.metrics import ratio
 from sequoia.engines.cache import ResourceLimitError, RunCache, check_cancel
 from sequoia.engines.classical import SimulationResult
 from sequoia.engines.rates import _Engine, _Source
-from sequoia.errors import Issue
+from sequoia.errors import Issue, SetupError
 from sequoia.library.store import Library
 from sequoia.setup.model import Setup
 
@@ -20,7 +21,14 @@ MAX_DENSE_SIDE = 2500
 MAX_MODES = 160
 SCHMIDT_CUTOFF = 1e-10
 MAX_DETECTORS = 6
-PNR_TAIL = 1e-9
+PNR_ALIAS_TOL = 1e-10
+PNR_MAX_GRID = 4096
+PNR_MAX_POINTS = 150_000
+WINDOW_RTOL = 1e-9
+
+
+class IncompatibleWindowsError(SetupError):
+    pass
 
 
 @dataclass
@@ -69,6 +77,7 @@ class GaussianResult:
     issues: list[Issue] = field(default_factory=list)
     analyses: dict[str, dict[str, Any]] = field(default_factory=dict)
     pnr: dict[tuple[str, ...], np.ndarray] = field(default_factory=dict)
+    pnr_info: dict[tuple[str, ...], dict[str, Any]] = field(default_factory=dict)
     gain_scale: float = 1.0
 
     def probability(self, *names: str) -> float:
@@ -319,15 +328,26 @@ def _detector_forms(batches: list[_Batch], h_s: np.ndarray, h_i: np.ndarray) -> 
 
 
 class GaussianModel:
-    def __init__(self, sources: list[GaussianSource], forms, channels: list[str], background):
+    def __init__(
+        self,
+        sources: list[GaussianSource],
+        forms,
+        channels: list[str],
+        dark: np.ndarray,
+        leakage: np.ndarray,
+    ):
         self.sources = sources
         self.forms = forms
         self.channels = channels
-        self.background = background
+        self.dark = dark
+        self.leakage = leakage
+
+    def background(self, gain_scale: float = 1.0) -> np.ndarray:
+        return self.dark + self.leakage * gain_scale
 
     def mean_photons(self, d: int, gain_scale: float = 1.0) -> float:
         """Mean detected photon number of detector ``d`` per window (pairs plus background)."""
-        total = float(self.background[d])
+        total = float(self.background(gain_scale)[d])
         for src in self.sources:
             c = math.sqrt(src.pairs_per_window * gain_scale)
             for member in src.members:
@@ -348,7 +368,7 @@ class GaussianModel:
                     log_g += log_generating_function(k, batch.sigma, c, lam)
                 value += member.weight * np.exp(log_g)
             total += np.log(value)
-        total -= complex(np.dot(lam, self.background))
+        total -= complex(np.dot(lam, self.background(gain_scale)))
         return complex(np.exp(total))
 
 
@@ -388,9 +408,22 @@ class GaussianSetup:
                         p += (-1) ** k * no_click[frozenset(sub)]
                 clicks[tuple(names[i] for i in subset)] = max(p, 0.0)
         mean = {name: model.mean_photons(i, gain_scale) for i, name in enumerate(names)}
-        pnr_out = {}
+        pnr_out, pnr_info = {}, {}
         for group in pnr or []:
-            pnr_out[tuple(group)] = _pnr(model, names, group, gain_scale, pnr_cutoff)
+            probs, meta = _pnr(model, names, group, gain_scale, pnr_cutoff, self.should_cancel)
+            pnr_out[tuple(group)] = probs
+            pnr_info[tuple(group)] = meta
+            if not meta["converged"]:
+                self.issues.append(
+                    Issue(
+                        "warning",
+                        "gaussian_pnr_unconverged",
+                        ", ".join(group),
+                        f"the photon-number distribution did not converge within a "
+                        f"{PNR_MAX_GRID}-point contour (alias bound {meta['alias_bound']:.2g}); "
+                        "reduce the pump multiplier or the mean photon number",
+                    )
+                )
         info = {
             k: {**v, "pairs_per_window": v["pairs_per_window"] * gain_scale}
             for k, v in self.source_info.items()
@@ -404,6 +437,7 @@ class GaussianSetup:
             list(self.issues),
             gain_scale=gain_scale,
             pnr=pnr_out,
+            pnr_info=pnr_info,
         )
         result.analyses = analyse(result, self.specs)
         return result
@@ -427,6 +461,23 @@ def prepare_gaussian(
     ge = _GaussianEngine(engine, should_cancel)
     dets = list(ge.tagged)
     names = [ge.tagged[d] for d in dets]
+    if not dets:
+        engine.issue(
+            "warning",
+            "gaussian_no_detectors",
+            "setup",
+            "no photon detector is connected to a time-tagger channel; connect a detector output "
+            "to a tagger channel to get Gaussian statistics",
+        )
+        return GaussianSetup(
+            GaussianModel([], {}, [], np.zeros(0), np.zeros(0)),
+            [],
+            1.0,
+            list(setup.analyses),
+            list(engine.issues),
+            {},
+            should_cancel,
+        )
     if len(dets) > MAX_DETECTORS:
         raise ResourceLimitError(f"{len(dets)} tagged detectors; the limit is {MAX_DETECTORS}")
     sources, forms = [], {}
@@ -438,19 +489,26 @@ def prepare_gaussian(
         h_i = np.stack([src.h[d]["idler"] for d in dets])
         forms[gs.inst] = {id(m): _detector_forms(m.batches, h_s, h_i) for m in gs.members}
         sources.append(gs)
-    windows = {s.window for s in sources}
-    window = min(windows) if windows else 1.0
-    if len(windows) > 1:
+    windows = sorted(s.window for s in sources)
+    if windows and windows[-1] > windows[0] * (1.0 + WINDOW_RTOL):
+        listing = ", ".join(f"'{s.inst}': {s.window:.6g} s" for s in sources)
+        raise IncompatibleWindowsError(
+            f"the pair sources have different time windows ({listing}); per-window statistics "
+            "of independent sources cannot be combined exactly. Give the sources the same "
+            "repetition rate or bandwidth, or simulate them in separate setups"
+        )
+    window = windows[0] if windows else 1.0
+    if not windows:
         engine.issue(
             "warning",
-            "gaussian_mixed_windows",
+            "gaussian_no_pair_source",
             "setup",
-            "sources have different time windows; statistics use the shortest one",
+            "no pair source reaches a tagged detector; statistics are per 1 s of background "
+            "light only",
         )
-    background = np.array(
-        [(engine.det_data[d]["dark_hz"] + engine.det_data[d]["leakage_hz"]) * window for d in dets]
-    )
-    model = GaussianModel(sources, forms, names, background)
+    dark = np.array([engine.det_data[d]["dark_hz"] * window for d in dets])
+    leakage = np.array([engine.det_data[d]["leakage_hz"] * window for d in dets])
+    model = GaussianModel(sources, forms, names, dark, leakage)
     info = {
         s.inst: {
             "pairs_per_window": s.pairs_per_window,
@@ -500,19 +558,59 @@ def simulate_gaussian(
     return prepared.evaluate(gain_scale, pnr, pnr_cutoff)
 
 
-def _pnr(model, names, group, gain_scale, cutoff) -> np.ndarray:
+def _pnr(model, names, group, gain_scale, cutoff, should_cancel=None):
     idx = [names.index(g) for g in group]
-    m = cutoff + 1
-    grid = np.exp(2j * np.pi * np.arange(m) / m)
-    shape = (m,) * len(idx)
-    values = np.zeros(shape, dtype=complex)
-    for point in np.ndindex(*shape):
-        lam = np.zeros(len(names), dtype=complex)
-        for slot, d in enumerate(idx):
-            lam[d] = 1.0 - grid[point[slot]]
-        values[point] = model.no_click(lam, gain_scale)
-    probs = np.fft.fftn(values) / values.size
-    return np.clip(probs.real, 0.0, None)
+    size = cutoff + 1
+
+    def contour(point_lengths, indices):
+        shape = tuple(point_lengths)
+        values = np.zeros(shape, dtype=complex)
+        grids = [np.exp(2j * np.pi * np.arange(n) / n) for n in shape]
+        for point in np.ndindex(*shape):
+            check_cancel(should_cancel)
+            lam = np.zeros(len(names), dtype=complex)
+            for slot, d in enumerate(indices):
+                lam[d] = 1.0 - grids[slot][point[slot]]
+            values[point] = model.no_click(lam, gain_scale)
+        return np.clip((np.fft.fftn(values) / values.size).real, 0.0, None)
+
+    lengths, bounds, converged = [], [], True
+    for d in idx:
+        length = max(16, 2 * size)
+        previous = contour([length], [d])
+        while True:
+            doubled = contour([2 * length], [d])
+            diff = float(np.max(np.abs(doubled[:size] - previous[:size])))
+            if diff < PNR_ALIAS_TOL:
+                break
+            if 2 * length >= PNR_MAX_GRID:
+                converged = False
+                length = 2 * length
+                break
+            length, previous = 2 * length, doubled
+        lengths.append(length)
+        bounds.append(diff)
+    points = int(np.prod(lengths, dtype=np.int64))
+    if len(idx) > 1 and points > PNR_MAX_POINTS:
+        raise ResourceLimitError(
+            f"the joint photon-number distribution needs {points} generating-function "
+            f"evaluations (limit {PNR_MAX_POINTS}); lower the pump multiplier, the cutoff or "
+            "the number of channels"
+        )
+    probs = contour(lengths, idx)
+    view = tuple(slice(0, size) for _ in idx)
+    kept = probs[view]
+    kept = np.pad(kept, [(0, size - n) for n in kept.shape])
+    retained = float(kept.sum())
+    meta = {
+        "cutoff": cutoff,
+        "retained": retained,
+        "tail": max(1.0 - retained, 0.0),
+        "grid": tuple(int(n) for n in lengths),
+        "alias_bound": float(max(bounds)) if bounds else 0.0,
+        "converged": converged,
+    }
+    return kept, meta
 
 
 def analyse(result: GaussianResult, specs) -> dict[str, dict[str, Any]]:
@@ -536,8 +634,8 @@ def analyse(result: GaussianResult, specs) -> dict[str, dict[str, Any]]:
                     "coincidence_rate_hz": pab / w,
                     "accidental_hz": acc / w,
                     "true_hz": (pab - acc) / w,
-                    "car": (pab - acc) / acc if acc > 0 else math.inf,
-                    "car_total": pab / acc if acc > 0 else math.inf,
+                    "car": ratio(pab - acc, acc),
+                    "car_total": ratio(pab, acc),
                     "heralding_a_given_b": (pab / pb) if pb > 0 else 0.0,
                     "heralding_b_given_a": (pab / pa) if pa > 0 else 0.0,
                 }

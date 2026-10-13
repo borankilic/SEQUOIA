@@ -13,7 +13,7 @@ from sequoia.errors import SequoiaError
 from sequoia.library.store import Library
 from sequoia.setup.io import setup_from_dict, setup_to_dict
 from sequoia.setup.model import Setup
-from sequoia.units import from_si
+from sequoia.units import from_si, unit_dimension
 
 MAX_POINTS = 10_000
 
@@ -90,6 +90,26 @@ def get_value(setup: Setup, target: str, unit: str = "") -> float | None:
             return None
         return from_si(scalar.si, unit) if unit else scalar.value
     return None
+
+
+def check_axis_unit(setup: Setup, target: str, unit: str) -> None:
+    kind, owner, name = _parse_target(target)
+    value = _holder(setup_to_dict(setup), kind, owner).get(name)
+    current = None
+    if isinstance(value, Scalar):
+        current = value.unit
+    elif isinstance(value, str):
+        try:
+            current = Scalar.model_validate(value).unit
+        except ValueError:
+            current = None
+    given = unit.strip()
+    if current is None or current.strip() in ("", "1"):
+        return
+    if given in ("", "1"):
+        raise SweepError(f"{target} needs a unit such as '{current}'")
+    if unit_dimension(given) != unit_dimension(current):
+        raise SweepError(f"unit '{given}' does not fit {target} (a quantity in '{current}')")
 
 
 def with_values(setup: Setup, assignments: Sequence[tuple[str, float, str]]) -> Setup:
@@ -208,6 +228,14 @@ def run_sweep(
             raise SweepError(f"axis {axis.target} has no values")
         if not np.all(np.isfinite(axis.values)):
             raise SweepError(f"axis {axis.target} has non-finite values")
+    try:
+        for a in axes:
+            check_axis_unit(setup, a.target, a.unit)
+        with_values(setup, [(a.target, float(a.values[0]), a.unit) for a in axes])
+    except Exception as exc:
+        if isinstance(exc, Cancelled):
+            raise
+        raise SweepError(f"{axes[0].target}: {str(exc).splitlines()[0]}") from exc
     shape = tuple(len(a.values) for a in axes)
     total = math.prod(shape)
     if total > MAX_POINTS:

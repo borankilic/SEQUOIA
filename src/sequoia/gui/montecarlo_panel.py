@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sequoia.analysis.correlation import analyse_tags, write_tags
+from sequoia.analysis.correlation import CorrelationError, analyse_tags, write_tags
 from sequoia.engines.cache import RunCache
 from sequoia.engines.montecarlo import (
     Comparison,
@@ -29,6 +30,7 @@ from sequoia.engines.rates import simulate_rates
 from sequoia.gui.analysis_tabs import style_plot
 from sequoia.gui.jobs import JobRunner
 from sequoia.gui.results import _fill, _make_table, _NumItem, eng, plain
+from sequoia.gui.runguard import RunGuard
 
 
 @dataclass
@@ -39,14 +41,17 @@ class McOutcome:
     note: str = ""
 
 
-class MonteCarloTab(QWidget):
+class MonteCarloTab(RunGuard, QWidget):
     """Run the Monte Carlo time-tag engine on the open setup and compare with the rate engine."""
 
     def __init__(self, provider, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._guard_init()
         self.provider = provider
         self.runner = JobRunner(self)
         self.outcome: McOutcome | None = None
+        self.on_issues = None
+        self.note = ""
         self.duration = QDoubleSpinBox()
         self.duration.setRange(0.001, 3600.0)
         self.duration.setDecimals(3)
@@ -56,6 +61,14 @@ class MonteCarloTab(QWidget):
         self.seed.setRange(-1, 2_000_000_000)
         self.seed.setValue(-1)
         self.seed.setSpecialValueText("random")
+        self.schmidt = QDoubleSpinBox()
+        self.schmidt.setRange(0.0, 1e4)
+        self.schmidt.setDecimals(2)
+        self.schmidt.setSpecialValueText("Poisson")
+        self.schmidt.setToolTip(
+            "Pair-number statistics of pulsed sources. Poisson: independent pairs. "
+            "K >= 1: thermal statistics of K equally weighted modes (negative binomial)."
+        )
         self.run_button = QPushButton("Run Monte Carlo")
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setEnabled(False)
@@ -82,6 +95,8 @@ class MonteCarloTab(QWidget):
             self.duration,
             QLabel("Seed"),
             self.seed,
+            QLabel("Pairs per pulse, K"),
+            self.schmidt,
             self.run_button,
             self.cancel_button,
             self.export_button,
@@ -112,11 +127,29 @@ class MonteCarloTab(QWidget):
         self.analysis.currentIndexChanged.connect(lambda _i: self._draw())
         self.runner.progress.connect(self._progress)
         self.runner.done.connect(self._done)
-        self.runner.failed.connect(lambda m: self._end(f"failed: {m.splitlines()[0]}"))
+        self.runner.failed.connect(self._failed)
         self.runner.cancelled.connect(lambda: self._end("cancelled"))
 
-    def set_outcome(self, _outcome) -> None:
-        pass
+    def set_outcome(self, outcome) -> None:
+        if self.track_revision(outcome) and self.outcome is not None:
+            self.status.setText(self.stale_text(self.note))
+
+    def reset(self) -> None:
+        self.invalidate()
+        self.outcome = None
+        self.note = ""
+        if self.on_issues is not None:
+            self.on_issues([])
+        _fill(self.table, [])
+        self.analysis.clear()
+        self.curve.setData([0, 1], [0])
+        self.status.setText("")
+
+    def _failed(self, message: str) -> None:
+        if self.run_is_current():
+            self._end(f"failed: {message.splitlines()[0]}")
+        else:
+            self._end("")
 
     def run(self) -> None:
         setup, library = self.provider()
@@ -124,6 +157,9 @@ class MonteCarloTab(QWidget):
             return
         duration = self.duration.value()
         seed = None if self.seed.value() < 0 else self.seed.value()
+        k = self.schmidt.value()
+        schmidt = k if k >= 1.0 else None
+        self.begin_run()
 
         def job(should_cancel, progress):
             cache = RunCache()
@@ -135,10 +171,9 @@ class MonteCarloTab(QWidget):
                 cache=cache,
                 should_cancel=should_cancel,
                 progress=progress,
+                schmidt_number=schmidt,
             )
-            analyses = analyse_tags(
-                tags.channels, tags.duration, setup.analyses, tags.repetition_rates
-            )
+            analyses = analyse_tags(tags.channels, tags.duration, setup.analyses, tags.clock)
             rates = simulate_rates(setup, library, cache=cache, should_cancel=should_cancel)
             return McOutcome(tags, analyses, compare_with_rates(tags, analyses, rates))
 
@@ -160,6 +195,9 @@ class MonteCarloTab(QWidget):
         self.status.setText(text)
 
     def _done(self, outcome: McOutcome) -> None:
+        if not self.run_is_current():
+            self._end("")
+            return
         self.outcome = outcome
         rows = []
         for c in outcome.comparisons:
@@ -199,6 +237,13 @@ class MonteCarloTab(QWidget):
                 "; dead-time loss above 1%: the rate engine treats detector dead times as "
                 "independent, so differences of about 1% in coincidences are expected"
             )
+        issues = [str(i) for i in outcome.tags.issues]
+        if issues:
+            text += f"; {len(issues)} note(s): " + "; ".join(issues[:2])
+        self.note = text
+        if self.on_issues is not None:
+            self.on_issues(outcome.tags.issues)
+        self.status.setToolTip("\n".join(issues))
         self._end(text)
         self._draw()
 
@@ -217,5 +262,12 @@ class MonteCarloTab(QWidget):
         if self.outcome is None:
             return
         path, _ = QFileDialog.getSaveFileName(self, "Save time tags", "tags.npz", "NumPy (*.npz)")
-        if path:
-            write_tags(path, self.outcome.tags.channels, self.outcome.tags.duration)
+        if not path:
+            return
+        tags = self.outcome.tags
+        try:
+            write_tags(path, tags.channels, tags.duration, tags.clock, tags.metadata())
+        except (OSError, ValueError, CorrelationError) as exc:
+            QMessageBox.warning(self, "Cannot save time tags", f"{path}\n\n{exc}")
+            return
+        self.status.setText(f"saved {path}")

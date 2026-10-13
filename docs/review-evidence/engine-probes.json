@@ -1,0 +1,234 @@
+{
+  "pnr_thermal_mean_10_cutoff_12": {
+    "reported_p0": 0.12798047615209288,
+    "exact_p0": 0.09090909090909091,
+    "reported_sum": 1.0,
+    "exact_retained_mass": 0.7103356202633121,
+    "exact_tail": 0.2896643797366879,
+    "reported_mean": 4.698791910250717,
+    "exact_mean": 10
+  },
+  "independent_source_changes_existing_rate": {
+    "single_source_window": 1e-09,
+    "two_source_window": 5e-10,
+    "old_channel_alone_Hz": 100000.00484603441,
+    "old_channel_with_independent_source_Hz": 200000.00969206882,
+    "issues": [
+      "pair_delay_window",
+      "pair_delay_window",
+      "gaussian_mixed_windows"
+    ]
+  },
+  "pair_source_without_detectors": "ValueError: need at least one array to stack",
+  "gain_scale_background": {
+    "0": {
+      "t.ch1": 3926.610922683314
+    },
+    "1": {
+      "t.ch1": 3926.610922683314
+    },
+    "10": {
+      "t.ch1": 3926.610922683314
+    }
+  },
+  "zero_light_car": {
+    "ab": {
+      "type": "coincidences",
+      "channels": [
+        "a",
+        "b"
+      ],
+      "window_s": 1.0,
+      "singles_a_hz": 0.0,
+      "singles_b_hz": 0.0,
+      "coincidence_rate_hz": 0.0,
+      "accidental_hz": 0.0,
+      "true_hz": 0.0,
+      "car": Infinity,
+      "car_total": Infinity,
+      "heralding_a_given_b": 0.0,
+      "heralding_b_given_a": 0.0
+    }
+  },
+  "baseline_bell_test": {
+    "classical_links": 18,
+    "channels": 4,
+    "issues": [],
+    "analyses": {
+      "tt": {
+        "type": "coincidences",
+        "window_s": 2e-10,
+        "center_s": 5.374447429413437e-17,
+        "peak_s": 5.374447429413437e-17,
+        "window_fraction": 0.9999996832492768,
+        "coincidence_rate_hz": 28618.063952980934,
+        "true_hz": 28618.05488818848,
+        "accidental_hz": 0.34114889824236294,
+        "total_hz": 28618.39603708672,
+        "car": 83887.28509935655,
+        "car_total": 83888.28509935655,
+        "singles_a_hz": 41300.65969463218,
+        "singles_b_hz": 41300.65969463217,
+        "heralding_a_given_b": 0.6929200429190228,
+        "heralding_b_given_a": 0.6929200429190226
+      },
+      "tr": {
+        "type": "coincidences",
+        "window_s": 2e-10,
+        "center_s": -1.410446162875042e-15,
+        "peak_s": -1.410446162875042e-15,
+        "window_fraction": 0.9999996832498916,
+        "coincidence_rate_hz": 5331.959361767317,
+        "true_hz": 5331.9576728686125,
+        "accidental_hz": 0.34114889824236294,
+        "total_hz": 5332.298821766854,
+        "car": 15629.414898712706,
+        "car_total": 15630.414898712705,
+        "singles_a_hz": 41300.65969463218,
+        "singles_b_hz": 41300.65969463217,
+        "heralding_a_given_b": 0.1291010291915895,
+        "heralding_b_given_a": 0.12910102919158947
+      },
+      "rt": {
+        "type": "coincidences",
+        "window_s": 2e-10,
+        "center_s": 1.4104461717055668e-15,
+        "peak_s": 1.4104461717055668e-15,
+        "window_fraction": 0.9999996832498903,
+        "coincidence_rate_hz": 5331.959361767316,
+        "true_hz": 5331.957672868604,
+        "accidental_hz": 0.34114889824236294,
+        "total_hz": 5332.298821766846,
+        "car": 15629.414898712683,
+        "car_total": 15630.414898712681,
+        "singles_a_hz": 41300.65969463218,
+        "singles_b_hz": 41300.65969463217,
+        "heralding_a_given_b": 0.1291010291915893,
+        "heralding_b_given_a": 0.12910102919158928
+      },
+      "rr": {
+        "type": "coincidences",
+        "window_s": 2e-10,
+        "center_s": -5.3744465436758876e-17,
+        "peak_s": -5.3744465436758876e-17,
+        "window_fraction": 0.9999996832492756,
+        "coincidence_rate_hz": 28618.063952980934,
+        "true_hz": 28618.054888188442,
+        "accidental_hz": 0.34114889824236294,
+        "total_hz": 28618.396037086684,
+        "car": 83887.28509935645,
+        "car_total": 83888.28509935645,
+        "singles_a_hz": 41300.65969463218,
+        "singles_b_hz": 41300.65969463217,
+        "heralding_a_given_b": 0.6929200429190219,
+        "heralding_b_given_a": 0.6929200429190218
+      }
+    }
+  },
+  "bell_polarization_link": {
+    "classical_end_is_none": true,
+    "pair_photons_Hz": 100000.0
+  },
+  "baseline_hom": {
+    "classical_links": 15,
+    "channels": 2,
+    "issues": [],
+    "analyses": {
+      "hom": {
+        "type": "coincidences",
+        "window_s": 1e-09,
+        "center_s": 0.0,
+        "peak_s": 0.0,
+        "window_fraction": 0.9825640408072659,
+        "coincidence_rate_hz": 127032.84521035592,
+        "true_hz": 124817.90570513124,
+        "accidental_hz": 323.8533704147024,
+        "total_hz": 125141.75907554594,
+        "car": 385.4148732350655,
+        "car_total": 386.4148732350655,
+        "singles_a_hz": 569081.1632928139,
+        "singles_b_hz": 569081.1632928139,
+        "heralding_a_given_b": 0.21933234441096353,
+        "heralding_b_given_a": 0.21933234441096353
+      }
+    }
+  },
+  "baseline_hbt_heralded": {
+    "classical_links": 15,
+    "channels": 3,
+    "issues": [],
+    "analyses": {
+      "herald_a": {
+        "type": "coincidences",
+        "window_s": 1e-09,
+        "center_s": -9.791195182529447e-09,
+        "peak_s": -9.791195182529447e-09,
+        "window_fraction": 0.9825705117846208,
+        "coincidence_rate_hz": 128045.51766820533,
+        "true_hz": 125813.74982697523,
+        "accidental_hz": 166.00671196573012,
+        "total_hz": 125979.75653894096,
+        "car": 757.883511679623,
+        "car_total": 758.883511679623,
+        "singles_a_hz": 586629.8715249018,
+        "singles_b_hz": 282983.7347597177,
+        "heralding_a_given_b": 0.4445971070874587,
+        "heralding_b_given_a": 0.21446870664790987
+      },
+      "herald_b": {
+        "type": "coincidences",
+        "window_s": 1e-09,
+        "center_s": -9.791195182529447e-09,
+        "peak_s": -9.791195182529447e-09,
+        "window_fraction": 0.9825705117846208,
+        "coincidence_rate_hz": 128045.51766820533,
+        "true_hz": 125813.74982697523,
+        "accidental_hz": 166.0067119657301,
+        "total_hz": 125979.75653894096,
+        "car": 757.8835116796231,
+        "car_total": 758.8835116796231,
+        "singles_a_hz": 586629.8715249018,
+        "singles_b_hz": 282983.73475971766,
+        "heralding_a_given_b": 0.4445971070874588,
+        "heralding_b_given_a": 0.21446870664790987
+      },
+      "hbt": {
+        "type": "heralded_g2",
+        "herald": "tagger.ch1",
+        "a": "tagger.ch2",
+        "b": "tagger.ch3",
+        "window_s": 1e-09,
+        "herald_singles_hz": 586629.8715249018,
+        "rate_ha_hz": 125979.75653894096,
+        "rate_hb_hz": 125979.75653894096,
+        "true_ha_hz": 125813.74982697523,
+        "true_hb_hz": 125813.74982697523,
+        "triples_hz": 71.43337854863317,
+        "multimode_bunching": 0.0,
+        "herald_saturation": 1.0,
+        "cw_bunching": 0.0025272058864478164,
+        "cw_bunching_accidental": 0.0021404647392032627,
+        "g2_heralded": 0.0026403641991837243
+      },
+      "g2_ab": {
+        "type": "g2",
+        "bin_width_s": 1e-10,
+        "center_s": -1.7601434006910177e-23,
+        "g2_peak": 3.9383540561681594,
+        "g2_at_center": 3.938354056168146
+      }
+    }
+  },
+  "baseline_mzi": {
+    "classical_links": 7,
+    "channels": 0,
+    "issues": [],
+    "analyses": {}
+  },
+  "baseline_laser_fiber_coupling": {
+    "classical_links": 7,
+    "channels": 0,
+    "issues": [],
+    "analyses": {}
+  }
+}
