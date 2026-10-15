@@ -2,8 +2,11 @@
 
 Optional backend in `sequoia.fock` for experiments that are a linear-optical circuit with
 Fock-state inputs (HOM, boson sampling, heralding logic). It is separate from the rate, Monte Carlo
-and Gaussian engines and never converts a source: SPDC, multi-pair statistics, spectral
-entanglement and timing/jitter are **not** supported. Photons enter as an explicit Fock input.
+and Gaussian engines. The circuit engine itself does not convert a source: SPDC rates, spectral
+entanglement and timing/jitter are not modelled by it; the setup integration (see "SEQUOIA
+setups") derives pair-number statistics and polarization states from the rate engine. Photons
+enter as an explicit Fock input, a coherent superposition, or a statistical mixture of those (see
+"Input model").
 
 ## Conventions
 
@@ -37,17 +40,126 @@ entanglement and timing/jitter are **not** supported. Photons enter as an explic
 - Conditioning: `condition(dist, {mode: value | (op, value)})` returns `success_probability`, the
   unnormalized `joint` and the normalized `probs` separately.
 
+## Input model (`sequoia.fock.inputs`)
+
+- `Term(amplitude, photons)`: one Fock configuration, `photons = ((mode, tag), ...)`. Equal tags
+  interfere, different tags are distinguishable species.
+- `PureState(terms)`: coherent superposition; identical configurations are merged; every term must
+  hold the same photon number in every tag class (else `FockError`). The engine normalises it.
+- `InputMixture(branches=[(weight, PureState)], notes)`: classical mixture; `omitted_weight = 1 -
+  sum(weights)` (e.g. truncated pair numbers) is carried to `Distribution.omitted_weight`, so
+  `mass + omitted_weight = 1`.
+- `bell_pair(s_h, s_v, i_h, i_v, phase, visibility, kind='phi'|'psi', tag)`: `(|HH> +
+  e^{i phase}|VV>)/sqrt2` or `(|HV> + e^{i phase}|VH>)/sqrt2` (signal first). Visibility is the
+  Werner form `V|B><B| + (1 - V) I/4`, `I/4` being the uniform mixture of the four product states
+  `|HH>,|HV>,|VH>,|VV>` (weights `V` and `(1 - V)/4`). `product_pair(s, i, tag)` is `|s i>`.
+- `pair_number_mixture(builder, mean_pairs, schmidt_number=1, n_max=4, statistics='auto')`:
+  `builder(tag)` returns the one-pair state with all photons in class `tag`. Pair number:
+  `thermal` (`auto`) is negative binomial with mean `mu` and `K` modes,
+  `P(n) = C(n+K-1,n) (mu/K)^n (1+mu/K)^-(K+n)` (`K=1`: `mu^n/(1+mu)^(n+1)`; unheralded `g2 = 1 +
+  1/K`); `poisson` is `e^-mu mu^n/n!`. Given `n`, the pairs are distributed over the `K`
+  equal-weight Schmidt modes (Bose-Einstein = uniform over occupations for thermal, multinomial for
+  Poisson); each Schmidt mode is one tag class shared by the partners of a pair and by all pairs in
+  that mode, so pairs in the same mode bunch (`K=1`: everything interferes). Occupation patterns
+  that differ only by relabelling are merged. `omitted_weight` is the tail beyond `n_max`.
+
+Approximations: non-integer `K` is rounded for tag assignment while the pair-number weights keep
+the exact `K` (a note is recorded); a mixed single-pair state (visibility < 1) is combined pair by
+pair as independent branch choices; all Schmidt modes have equal weight; no spectral or temporal
+structure. Perceval cannot superpose annotated (multi-tag) states, so the Perceval backend accepts
+multi-term branches only with one tag class (else `FockError`); the native engine has no such limit.
+
+Engine (`output_distribution_mixture(circuit_or_T, mixture, limits, should_cancel)`): per
+branch and per tag class the amplitude is `perm(U[o, c]) / sqrt(prod o! prod c!)` over system and
+environment output modes; the term amplitudes are added coherently for every species-resolved
+output pattern, squared and summed over splits and environment modes (loss). Single-term branches
+use the original `output_distribution` path unchanged. Work grows as the product of the per-class
+pattern counts, so many photons spread over many tag classes hit `Limits.max_work` first.
+
+## Counts
+
+Probabilities are per detection window. `expected_counts(dist | conditional, rate_hz, window_s,
+duration_s)`: windows per second is `rate_hz` (repetition rate), else `1/window_s`; per second =
+probability x windows per second; total over `duration_s` with Poisson `sigma = sqrt(N)`. For a
+`Conditional` the unnormalised joint is used, giving the accepted-event rate. `outcome_table(dist,
+detectors, top, n_windows)` lists states by probability with expected counts `N p` and binomial
+`sigma = sqrt(N p (1 - p))`. An `Experiment` takes `input_mixture`, `rate_hz`, `window_s`,
+`duration_s` (document keys `input_mixture` and `counts: {rate_hz, window_s, duration_s}`);
+`run_experiment` then fills `FockResult.counts` (default duration 1 s). Old documents load as
+before.
+
 ## SEQUOIA setups
 
 `compile_setup_network(setup, library, wavelength, inputs=["pbs.in", ...])` builds the
 transfer from an H/V (or `input_basis="DA"|"RL"`) mode pair per input port to an H/V pair per
 detector, reusing the components' own Jones transfers and the conventions of `docs/conventions.md`.
-Only free-space optics, wave plates, polarizers, filters, fibers, fiber splitters and
-single-photon detectors reachable from the inputs are converted; sources and nonlinear crystals
-raise `FockCompileError`. Spatial-mode overlap between recombining paths is taken as perfect;
-fiber coupling uses `seed_mode`. Path phases `2 pi OPL / lambda` are included at the single given
-wavelength; there is no spectral or temporal structure, so a HOM *delay scan* is not available
-(use the rate engine).
+Free-space optics, wave plates, phase shifters, polarizers, filters, fibers, fiber splitters and
+single-photon detectors reachable from the inputs are converted. A source output port (FockSource,
+pair-source signal/idler port) is a valid input; other sources and nonlinear crystals reached
+downstream raise `FockCompileError`. Extra arguments: `wavelengths` (one per input, so signal,
+idler and Fock photons accumulate `2 pi OPL / lambda` at their own wavelength), `bases` (per-input
+Jones basis, first column = the photon polarization), `seed_modes`, `species` labels and
+`detector_kind` (`"pnr"`, `"threshold"` or a dict per detector). Spatial-mode overlap between
+recombining paths is taken as perfect; fiber coupling uses the source mode. There is no spectral
+or temporal structure, so a HOM *delay scan* is not available (use the rate engine); a timing
+offset such as the crystal walk-off is not seen.
+
+### The drawn circuit as an experiment (`sequoia.fock.from_setup`)
+
+`build_experiment_from_setup(setup, library, wavelength=None, n_max=None, duration=1.0,
+detectors_mode="setup", should_cancel=None, cache=None, classical=None, limits=None,
+sources=None) -> SetupExperiment` finds the inputs and detectors itself and
+`run_setup_experiment(se, shots, seed, backend)` returns a `SetupResult` (detected-state
+probabilities, photons arriving per detector and per mode, expected counts, samples).
+
+- **FockSource**: `photons_per_pulse` N photons, `distinguishability_tag` (equal tags interfere),
+  polarization from `polarization_angle` (the photon polarization is the first mode of the input
+  basis, so a single-term Fock state), own wavelength; window = `1 / repetition_rate`.
+- **Pair sources** (SPDC crystal, entangled source), via the rate engine's emission: the
+  single-pair polarization state is the polarization density matrix of the pair amplitude summed
+  over members and frequencies, normalised; a mixed state becomes an `InputMixture` of its
+  eigenstates. Signal photons enter at `emission.signal_port`, idler photons at `idler_port`
+  (both in the same port for a collinear source, in different polarization modes). Pair number:
+  `pair_number_mixture` with mean `mu = rate * window` (window `1/repetition_rate` if pulsed, else
+  `1/dnu`, as in the Gaussian engine) and `K` = Schmidt number of the pair amplitude with
+  polarization traced out (`1 / Tr rho^2`, sparse; `K = 1` with a note if unavailable). A CW source
+  has K of the order of the number of lattice frequencies, i.e. nearly Poissonian pair numbers
+  and separate modes for separate pairs. `n_max` is chosen as the smallest number of pairs with an
+  omitted tail below `1e-4` within `Limits.max_photons`; the omitted weight is reported in the
+  result, the inputs table and the Notes.
+- **Signal-idler distinguishability**: `eta` = squared overlap of the normalised signal and idler
+  spectral intensity amplitudes on the common frequency lattice (phases are not available, so
+  this is an upper bound). Each idler photon shares its Schmidt-mode tag with the signal with
+  probability `eta`, otherwise it carries a private tag (scalar indistinguishability model).
+- Several sources are independent product inputs and must share one window; otherwise
+  `IncompatibleWindowsError` lists them (`sources=[ids]` selects a subset). Tags of different pair
+  sources never clash with Fock tags.
+- **Detectors**: the setup's single-photon detectors reachable from the inputs; SPAD and SNSPD are
+  `Threshold(efficiency, dark = 1 - exp(-dark_rate * window))` on the summed H+V photons
+  (`detectors_mode="pnr"` gives ideal PNR). Dead time, jitter and afterpulsing are not modelled.
+  Counts per second are `probability * windows per second`.
+
+Approximations: one wavelength per photon species (path phase `2 pi OPL / lambda`); perfect
+spatial overlap at recombination; no timing, jitter or dead time; equal-weight Schmidt modes;
+pairs in one Schmidt mode are fully bunched, different modes are mutually distinguishable;
+the same thermal pair-number law is used for collinear (same-port) sources; a pump power
+change only rescales `mu`.
+
+### Listing and extracting the circuit
+
+`list_components(setup, library)` returns one `ComponentRow` per instance (id, type, category,
+part, settings and key parameters, ports) and per link. `extract_circuit(setup, library,
+wavelength)` / `extraction_experiment(se)` decompose the network on a register with one mode per
+(link, polarization) path (a component reuses its input modes): beam splitters become
+`BeamSplitter` elements (per polarization), phase shifters and scalar transmissions become
+`PhaseShifter` + `Loss`, free-space and fiber links `PhaseShifter(2 pi OPL / lambda)` + `Loss`,
+other components one `Block` on their ports' H/V modes, a FockSource at a polarization angle a
+rotation block. Elements carry a `label` (component or link id; serialised, shown in the editor).
+The transfer matrix is checked against the exact compilation (`Extraction.verified`, deviation
+`max_error`); on a mismatch one block holding the compiled transfer replaces it (`fallback`).
+The extracted experiment carries the input mixture and detector groups, so it runs unchanged in the
+circuit editor; the editor shows a mixture read-only and can drop it (`Use the occupation table
+instead`). Extraction uses a single wavelength for all photons.
 
 ## Using it
 

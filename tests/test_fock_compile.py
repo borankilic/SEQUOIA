@@ -189,3 +189,40 @@ def test_compiled_distribution_matches_manual_permanent(lab):
     net = compile_setup_network(bs_setup("0 deg"), lab, WL, inputs=["wp.in"])
     d = output_distribution(net.circuit, [(0, 0), (1, 0)])
     assert d.mass == pytest.approx(1.0)
+
+
+def test_source_ports_species_and_threshold_detectors(lab):
+    from sequoia.fock.compile import ModeLabel
+
+    put(
+        lab, "src", "FockSource", wavelength="810 nm", repetition_rate="80 MHz", waist_radius="1 mm"
+    )
+    setup = setup_from_dict(
+        {
+            "instances": [
+                inst("s", "src"),
+                inst("bs", "bs"),
+                inst("da", "spad", {"input": "free_space"}),
+                inst("db", "spad", {"input": "free_space"}),
+            ],
+            "links": [
+                fs("l0", "s.out", "bs.in_a"),
+                fs("l1", "bs.out_a", "da.in"),
+                fs("l2", "bs.out_b", "db.in"),
+            ],
+        }
+    )
+    net = compile_setup_network(
+        setup,
+        lab,
+        inputs=["s.out"],
+        wavelengths=[WL],
+        species=["photons"],
+        detector_kind="threshold",
+        gate_window=1e-8,
+    )
+    assert net.input_modes[0] == ModeLabel("s", "out", "H", "photons")
+    assert str(net.input_modes[1]) == "s.out:V (photons)"
+    assert type(net.detectors[0].model).__name__ == "Threshold"
+    assert net.input_index("s", "out", "V") == 1
+    assert net.input_wavelengths == [WL]

@@ -215,3 +215,18 @@ def test_import_matches_gui_builder_on_lossy_circuits():
         got = run_experiment(imp.experiment).probabilities
         assert max(abs(got.get(k, 0.0) - ref.get(k, 0.0)) for k in set(got) | set(ref)) < 1e-9
         assert math.isclose(sum(got.values()), 1.0, abs_tol=1e-9)
+
+
+def test_perceval_superposition_matches_native():
+    from sequoia.fock import PureState, Term, bell_pair, output_distribution_mixture
+    from sequoia.fock.perceval_bridge import perceval_mixture_distribution
+
+    c = Circuit(4).beam_splitter(0, 2).beam_splitter(1, 3, 0.9).loss(1, 0.2)
+    state = PureState(
+        (Term(0.6, ((0, 0), (1, 0))), Term(0.5j, ((2, 0), (3, 0))), Term(0.3, ((0, 0), (0, 0))))
+    )
+    for mix in (state, bell_pair(0, 1, 2, 3, phase=0.4, visibility=0.8)):
+        a = output_distribution_mixture(c, mix)
+        b = perceval_mixture_distribution(c, mix)
+        keys = set(a.probs) | set(b.probs)
+        assert max(abs(a.probs.get(k, 0.0) - b.probs.get(k, 0.0)) for k in keys) < 1e-9

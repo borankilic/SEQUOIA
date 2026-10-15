@@ -1,0 +1,23 @@
+type: FockSource
+manufacturer: generic
+model: idealised Fock source, exactly 2 photons per pulse, 810 nm, 80 MHz
+description: 'Idealised model part: deterministic photon number, no loss, no multi-photon noise.'
+params:
+  wavelength:
+    value: 810.0
+    unit: nm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  photons_per_pulse: 2
+  repetition_rate:
+    value: 80.0
+    unit: MHz
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  pulse_width:
+    value: 1.0
+    unit: ps
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  waist_radius:
+    value: 0.4
+    unit: mm
+    provenance: {source: model, note: 'typical class value, not a specific catalogue item'}
+  distinguishability_tag: 0

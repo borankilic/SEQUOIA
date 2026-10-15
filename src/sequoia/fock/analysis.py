@@ -121,3 +121,81 @@ def parse_state(text: str) -> State:
         return tuple(int(x) for x in t.replace(" ", "").split(",") if x != "")
     except ValueError as exc:
         raise FockError(f"cannot read {text!r} as a photon-number state") from exc
+
+
+@dataclass
+class ExpectedCounts:
+    """Expected events from per-window probabilities. ``per_window`` is the probability (or mean
+    number) of each outcome in one detection window; ``per_second = per_window *
+    windows_per_second``; ``total`` is over ``duration_s`` with Poisson ``sigma = sqrt(total)``."""
+
+    per_window: dict[State, float]
+    windows_per_second: float | None = None
+    duration_s: float | None = None
+    per_second: dict[State, float] | None = None
+    total: dict[State, float] | None = None
+    sigma: dict[State, float] | None = None
+    n_windows: float | None = None
+
+
+def windows_per_second(rate_hz: float | None, window_s: float | None) -> float | None:
+    if rate_hz is not None:
+        if rate_hz <= 0.0:
+            raise FockError("rate_hz must be positive")
+        return float(rate_hz)
+    if window_s is not None:
+        if window_s <= 0.0:
+            raise FockError("window_s must be positive")
+        return 1.0 / float(window_s)
+    return None
+
+
+def expected_counts(
+    dist: "Distribution | Conditional | Mapping[State, float]",
+    rate_hz: float | None = None,
+    window_s: float | None = None,
+    duration_s: float | None = None,
+) -> ExpectedCounts:
+    """``rate_hz`` is the number of windows per second (repetition rate); without it
+    ``1 / window_s`` is used (back-to-back windows). A Conditional contributes its joint
+    (unnormalised) probabilities, i.e. the rate of the accepted events."""
+    if isinstance(dist, Conditional):
+        probs = dist.joint
+    elif isinstance(dist, Distribution):
+        probs = dist.probs
+    else:
+        probs = dist
+    per_window = dict(probs)
+    wps = windows_per_second(rate_hz, window_s)
+    if duration_s is not None and duration_s < 0.0:
+        raise FockError("duration_s must not be negative")
+    if wps is None:
+        if duration_s is not None:
+            raise FockError("duration_s needs rate_hz or window_s")
+        return ExpectedCounts(per_window)
+    per_second = {s: p * wps for s, p in per_window.items()}
+    if duration_s is None:
+        return ExpectedCounts(per_window, wps, None, per_second)
+    total = {s: r * duration_s for s, r in per_second.items()}
+    sigma = {s: float(np.sqrt(v)) for s, v in total.items()}
+    return ExpectedCounts(per_window, wps, duration_s, per_second, total, sigma, wps * duration_s)
+
+
+def outcome_table(
+    dist: Distribution,
+    detectors: Any = None,
+    top: int | None = None,
+    n_windows: float | None = None,
+) -> list[dict[str, Any]]:
+    """Rows sorted by probability. ``detectors`` is a DetectorLayout applied first. Counts and
+    the binomial sigma sqrt(N p (1 - p)) use ``n_windows`` (default ``dist.info['n_windows']``)."""
+    d = detectors.apply(dist) if detectors is not None else dist
+    n_win = n_windows if n_windows is not None else dist.info.get("n_windows")
+    rows = []
+    for s, p in sorted(d.probs.items(), key=lambda kv: (-kv[1], kv[0])):
+        row: dict[str, Any] = {"state": s, "label": format_state(s), "probability": p}
+        if n_win is not None:
+            row["counts"] = p * n_win
+            row["sigma"] = float(np.sqrt(n_win * p * (1.0 - p)))
+        rows.append(row)
+    return rows[:top] if top is not None else rows

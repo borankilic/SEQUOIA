@@ -42,6 +42,7 @@ Numbers from the shipped example (10 mW pump, generic placeholder parts):
 | **Sweeps** | Vary one setting (a wave-plate angle, a lens distance) and plot a result; the optimizer finds the best value. | A sweep of the half-wave plate in the Bell test shows the polarization fringe. |
 | **Monte Carlo** | A simulated stream of individual detector clicks with jitter, dead time and noise. | It should match the analytic Counts within the shown error (z within 3). Use it when dead time or timing matters. |
 | **Gaussian** | Exact photon statistics when several pairs can be created at once. | CAR falls and heralded g2 rises as you turn up the pump; this is why the pump power is kept low in these experiments. |
+| **Photon counts** | Photon-number statistics of the drawn circuit. *Import from setup* lists every part and link and the photon inputs (Fock sources: N photons, tag; pair sources: mean pairs per window mu from the pump, Schmidt number K). *Run* gives the output-state probabilities through the setup's SPAD/SNSPD detectors with rates and expected counts over a duration (Poisson sigma), click patterns, photon-number marginals, heralded (conditional) distributions with their success probability, seeded samples, a plot and the approximations used. *Extract to circuit editor* converts the circuit to editable beam-splitter, phase, loss and block elements (labelled with the part or link id). | Equal photons on one beam splitter bunch (no coincidence); a phase shifter in an interferometer arm moves the two-photon fringe; with an SPDC source at higher pump power the 2-pair terms appear as extra photons and the omitted-weight note tells you when the truncation matters. Timing and spectral shape are not modelled (use the rate engine for a HOM delay scan). |
 
 ## Moving around the canvas
 
@@ -72,6 +73,9 @@ Every optic can carry the quality data of a catalogue "specifications" tab:
 | `order`, `retardance_error` | wave plates | multi-order plates are far more sensitive to wavelength; as-built tolerance such as lambda/300 |
 | `beat_length`, `polarization_extinction_db` | PM fibers | the fiber acts as a long retarder along its slow axis, with polarization crosstalk |
 | `transmission`, `reflectance`, ... curves | filters, mirrors, splitters | full spectral dependence; `angle_of_incidence` blue-shifts filter edges |
+
+| `FockSource` (`photons_per_pulse`, `distinguishability_tag`) | sources | exactly N photons per pulse: classically a pulsed beam of mean power N h nu f, and the occupation read by the Fock backend; emits no pairs |
+| `PhaseShifter` (`phase`, `axis` both/H/V) | polarization | explicit phase e^{i phi} on both polarizations or on one linear component; a phase of pi equals a lambda/2 change of the link length in that arm (path phase is already modelled, do not add both) |
 
 Splitters whose transmitted and reflected fractions add up to more than 1 are rejected.
 `scripts/make_catalog.py` regenerates the typical-class parts (filters, lenses, mirrors, wave

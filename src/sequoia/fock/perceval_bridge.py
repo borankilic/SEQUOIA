@@ -11,7 +11,13 @@ from sequoia.fock.circuit import (
     Permutation,
     PhaseShifter,
 )
-from sequoia.fock.engine import Distribution, Photon, mixed_distribution
+from sequoia.fock.engine import (
+    Distribution,
+    Photon,
+    mixed_distribution,
+    output_distribution_mixture,
+)
+from sequoia.fock.inputs import InputMixture, PureState
 
 INSTALL_HINT = (
     "Perceval is not installed; install the optional extra with: pip install 'sequoia[perceval]'"
@@ -139,6 +145,62 @@ def perceval_mixed_distribution(
         backend=lambda m, ph: perceval_distribution(
             circuit if isinstance(circuit, Circuit) else m, ph, backend
         ),
+    )
+
+
+def _perceval_pure_distribution(circuit: Circuit, state: PureState, backend: str) -> Distribution:
+    n = circuit.n_modes
+    if not any(state.tag_counts.values()):
+        return Distribution({(0,) * n: 1.0}, n, {"backend": f"perceval-{backend}", "photons": 0})
+    if len(state.terms) == 1:
+        return perceval_distribution(circuit, list(state.terms[0].photons), backend)
+    if len(state.tag_counts) > 1:
+        raise FockError(
+            "Perceval cannot superpose terms with several distinguishability classes; "
+            "use the native backend"
+        )
+    pcvl = require_perceval()
+    from perceval.algorithm import Sampler
+
+    sv = None
+    for term in state.terms:
+        occ = [0] * n
+        for m, _ in term.photons:
+            occ[m] += 1
+        part = term.amplitude * pcvl.StateVector(pcvl.BasicState(occ))
+        sv = part if sv is None else sv + part
+    sv.normalize()
+    proc = to_perceval_processor(circuit, backend)
+    proc.min_detected_photons_filter(0)
+    proc.with_input(sv)
+    out = Sampler(proc).probs()
+    if out is None:
+        raise FockError("Perceval could not evaluate this circuit")
+    probs: dict[tuple[int, ...], float] = {}
+    for st, p in out["results"].items():
+        key = tuple(int(x) for x in st)
+        probs[key] = probs.get(key, 0.0) + float(p)
+    return Distribution(
+        dict(sorted(probs.items())),
+        n,
+        {
+            "backend": f"perceval-{backend}",
+            "photons": sum(state.tag_counts.values()),
+        },
+    )
+
+
+def perceval_mixture_distribution(
+    circuit: Circuit,
+    mixture: InputMixture | PureState,
+    backend: str = "SLOS",
+) -> Distribution:
+    """Per-branch Perceval StateVector superpositions. Supported only when every branch with
+    several terms has a single tag class (Perceval cannot split annotated superpositions)."""
+    return output_distribution_mixture(
+        circuit,
+        mixture,
+        backend=lambda m, st: _perceval_pure_distribution(circuit, st, backend),
     )
 
 

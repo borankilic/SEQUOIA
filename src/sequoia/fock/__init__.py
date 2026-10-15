@@ -1,9 +1,12 @@
 from sequoia.fock.analysis import (
     Conditional,
+    ExpectedCounts,
     Samples,
     condition,
+    expected_counts,
     format_state,
     marginal,
+    outcome_table,
     parse_state,
     sample,
 )
@@ -31,6 +34,7 @@ from sequoia.fock.engine import (
     Limits,
     mixed_distribution,
     output_distribution,
+    output_distribution_mixture,
 )
 from sequoia.fock.experiment import (
     DetectorSpec,
@@ -40,6 +44,15 @@ from sequoia.fock.experiment import (
     run_experiment,
     save_experiment,
 )
+from sequoia.fock.inputs import (
+    InputMixture,
+    PureState,
+    Term,
+    bell_pair,
+    pair_number_mixture,
+    product_mixture,
+    product_pair,
+)
 
 __all__ = [
     "BeamSplitter",
@@ -47,6 +60,17 @@ __all__ = [
     "Circuit",
     "Conditional",
     "Detector",
+    "ExpectedCounts",
+    "InputMixture",
+    "PureState",
+    "Term",
+    "bell_pair",
+    "expected_counts",
+    "outcome_table",
+    "output_distribution_mixture",
+    "pair_number_mixture",
+    "product_mixture",
+    "product_pair",
     "DetectorLayout",
     "DetectorSpec",
     "Distribution",

@@ -7,6 +7,7 @@ import numpy as np
 
 from sequoia.engines.cache import Cancelled
 from sequoia.fock.circuit import Circuit, FockError
+from sequoia.fock.inputs import InputMixture, PureState
 
 State = tuple[int, ...]
 Photon = tuple[int, Hashable]
@@ -32,6 +33,8 @@ class Distribution:
     probs: dict[State, float]
     n_modes: int
     info: dict = field(default_factory=dict)
+    omitted_weight: float = 0.0
+    notes: list[str] = field(default_factory=list)
 
     @property
     def mass(self) -> float:
@@ -285,3 +288,180 @@ def mixed_distribution(
             total[s] = total.get(s, 0.0) + w * p
     info["photons"] = len(photons)
     return Distribution(dict(sorted(total.items())), t.shape[0], info)
+
+
+def _class_amplitudes(
+    iso: np.ndarray,
+    cols: Sequence[int],
+    rows: np.ndarray,
+    width: int,
+    should_cancel: Callable[[], bool] | None,
+) -> np.ndarray:
+    cols_a = np.asarray(cols)
+    a = iso[rows[:, :, None], cols_a[None, None, :]]
+    in_fact = float(np.prod([math.factorial(c) for c in np.bincount(cols_a)]))
+    return permanents(a, should_cancel) / np.sqrt(_factorials(rows, width) * in_fact)
+
+
+def _pure_distribution(
+    iso: np.ndarray,
+    n_sys: int,
+    state: PureState,
+    limits: Limits,
+    should_cancel: Callable[[], bool] | None,
+    stats: dict,
+) -> dict[State, float]:
+    norm = state.norm2
+    tags = sorted(state.tag_counts)
+    tags = [t for t in tags if state.tag_counts[t] > 0]
+    if not tags:
+        return {(0,) * n_sys: 1.0}
+    width = iso.shape[0]
+    rows_by_tag = {t: _multisets(width, state.tag_counts[t]) for t in tags}
+    sizes = [rows_by_tag[t].shape[0] for t in tags]
+    full = float(np.prod(sizes, dtype=float))
+    work = full * len(state.terms)
+    for t in tags:
+        n_t = state.tag_counts[t]
+        work += rows_by_tag[t].shape[0] * (2 ** max(n_t - 1, 0)) * n_t * len(state.terms)
+    stats["work"] += work
+    if stats["work"] > limits.max_work:
+        raise FockResourceError(
+            f"estimated work {stats['work']:.3g} exceeds the limit {limits.max_work:.3g} "
+            f"({len(state.terms)} terms, {len(tags)} tag classes, {n_sys} modes); reduce photons "
+            "or modes, simplify the circuit or raise Limits.max_work"
+        )
+    amp_cache: dict[tuple[int, tuple[int, ...]], np.ndarray] = {}
+    total = np.zeros(sizes, dtype=complex)
+    for term in state.terms:
+        _check(should_cancel)
+        per_tag: dict[int, list[int]] = {t: [] for t in tags}
+        for m, t in term.photons:
+            per_tag[t].append(m)
+        vec = None
+        for t in tags:
+            key = (t, tuple(sorted(per_tag[t])))
+            if key not in amp_cache:
+                amp_cache[key] = _class_amplitudes(
+                    iso, key[1], rows_by_tag[t], width, should_cancel
+                )
+                stats["permanents"] += rows_by_tag[t].shape[0]
+            a = amp_cache[key]
+            vec = a if vec is None else np.multiply.outer(vec, a)
+        total += term.amplitude * vec
+    p = (np.abs(total) ** 2 / norm).ravel()
+    n_photons = sum(state.tag_counts.values())
+    base = n_photons + 1
+    sys_counts = []
+    for t in tags:
+        r = rows_by_tag[t]
+        sys_counts.append(_counts(np.where(r < n_sys, r, -1), n_sys + 1)[:, :n_sys])
+    out: dict[State, float] = {}
+    if float(base) ** n_sys < 2.0**62:
+        weights = base ** np.arange(n_sys, dtype=np.int64)
+        keys = None
+        for c in sys_counts:
+            k = c @ weights
+            keys = k if keys is None else np.add.outer(keys, k)
+        uniq, inv = np.unique(keys.ravel(), return_inverse=True)
+        sums = np.bincount(inv, weights=p)
+        for u, val in zip(uniq.tolist(), sums.tolist(), strict=True):
+            if val > 1e-18:
+                digits = []
+                for _ in range(n_sys):
+                    u, d = divmod(u, base)
+                    digits.append(d)
+                out[tuple(digits)] = val
+        return out
+    pats = None
+    for c in sys_counts:
+        pats = c if pats is None else (pats[:, None, :] + c[None, :, :]).reshape(-1, n_sys)
+    uniq, inv = np.unique(pats, axis=0, return_inverse=True)
+    sums = np.bincount(inv.ravel(), weights=p)
+    for u, val in zip(uniq.tolist(), sums.tolist(), strict=True):
+        if val > 1e-18:
+            out[tuple(u)] = val
+    return out
+
+
+def pure_state_distribution(
+    transfer: Circuit | np.ndarray,
+    state: PureState,
+    *,
+    limits: Limits | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> Distribution:
+    limits = limits or Limits()
+    t = transfer.matrix() if isinstance(transfer, Circuit) else np.asarray(transfer, dtype=complex)
+    n = t.shape[0]
+    if t.shape != (n, n):
+        raise FockError("transfer matrix must be square")
+    n_ph = sum(state.tag_counts.values())
+    for term in state.terms:
+        for m, _ in term.photons:
+            if not 0 <= m < n:
+                raise FockError(f"input mode {m} outside 0..{n - 1}")
+    if n_ph > limits.max_photons:
+        raise FockResourceError(
+            f"{n_ph} photons exceed the limit of {limits.max_photons}; raise Limits.max_photons"
+        )
+    iso = transfer_isometry(t)
+    stats = {"work": 0.0, "permanents": 0}
+    probs = _pure_distribution(iso, n, state, limits, should_cancel, stats)
+    return Distribution(
+        dict(sorted(probs.items())),
+        n,
+        {
+            "backend": "native",
+            "photons": n_ph,
+            "classes": len(state.tag_counts),
+            "terms": len(state.terms),
+            "permanents": stats["permanents"],
+            "work": stats["work"],
+            "loss_modes": iso.shape[0] - n,
+        },
+    )
+
+
+def output_distribution_mixture(
+    transfer: Circuit | np.ndarray,
+    mixture: InputMixture | PureState,
+    limits: Limits | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    backend: Callable[[np.ndarray, PureState], Distribution] | None = None,
+) -> Distribution:
+    """Exact output distribution of a classical mixture of coherent superpositions.
+
+    Per branch and per tag class the amplitude is perm(U[out, in]) / sqrt(prod o! prod c!) over
+    sys+environment output modes; amplitudes of the terms are added coherently for every
+    species-resolved output pattern, squared, and summed over splits and environment modes.
+    Single-term branches use :func:`output_distribution`."""
+    limits = limits or Limits()
+    mix = InputMixture.from_state(mixture) if isinstance(mixture, PureState) else mixture
+    t = transfer.matrix() if isinstance(transfer, Circuit) else np.asarray(transfer, dtype=complex)
+    n = t.shape[0]
+    total: dict[State, float] = {}
+    info: dict = {"permanents": 0, "work": 0.0, "branches": len(mix.branches)}
+    max_photons = 0
+    for w, state in mix.branches:
+        _check(should_cancel)
+        if w == 0.0:
+            continue
+        if backend is not None:
+            d = backend(t, state.normalised())
+        elif len(state.terms) == 1:
+            d = output_distribution(
+                t, list(state.terms[0].photons), limits=limits, should_cancel=should_cancel
+            )
+        else:
+            d = pure_state_distribution(t, state, limits=limits, should_cancel=should_cancel)
+        max_photons = max(max_photons, d.info.get("photons", 0))
+        for k in ("permanents", "work"):
+            info[k] += d.info.get(k, 0)
+        info["loss_modes"] = max(info.get("loss_modes", 0), d.info.get("loss_modes", 0))
+        info["backend"] = d.info.get("backend", "native")
+        for s, p in d.probs.items():
+            total[s] = total.get(s, 0.0) + w * p
+    info["photons"] = max_photons
+    info["omitted_weight"] = mix.omitted_weight
+    return Distribution(dict(sorted(total.items())), n, info, mix.omitted_weight, list(mix.notes))

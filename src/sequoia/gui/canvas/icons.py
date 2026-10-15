@@ -180,6 +180,28 @@ def _laser(k: _Ctx):
     k.arrow(0.34, 0, 0.95, 0, k.accent, 1.3)
 
 
+@_icon("FockSource")
+def _fock(k: _Ctx):
+    body = _alpha(k.color, 38)
+    k.rect(-0.9, -0.3, -0.1, 0.3, body, r=0.07)
+    for i, x in enumerate((-0.72, -0.5, -0.28)):
+        h = 0.18 if i != 1 else 0.24
+        k.line(x, h, x, -h, k.accent, 1.4)
+    k.ellipse(0.25, 0, 0.14, 0.14, _alpha(k.accent, 90), k.accent)
+    k.arrow(-0.1, 0, 0.95, 0, k.accent, 1.1)
+
+
+@_icon("PhaseShifter")
+def _phase_shifter(k: _Ctx):
+    k.axis()
+    k.rect(-0.18, -0.55, 0.18, 0.55, _alpha(k.accent, 45))
+    k.line(-0.95, 0.2, -0.18, 0.2, k.accent, 1.0)
+    path = QPainterPath(QPointF(0.18, -0.2))
+    path.lineTo(0.95, -0.2)
+    k.stroke(path, k.accent, 1.0)
+    k.arrow(0.05, 0.4, 0.05, -0.4, _alpha(k.color, 150), 0.8, 0.1)
+
+
 @_icon("SPDCCrystal")
 def _spdc(k: _Ctx):
     k.beam(-0.95, 0, -0.55, 0)

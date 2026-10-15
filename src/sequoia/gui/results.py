@@ -250,9 +250,11 @@ TAB_HELP = {
     "for the best value.",
     "Monte Carlo": "Simulates the stream of single detector clicks a time tagger would record "
     "in the lab and checks it against the analytic numbers.",
-    "Photon states": "Fock circuits: put chosen photon numbers into the modes of a beam-splitter "
-    "network and read the output-state probabilities through threshold or number-resolving "
-    "detectors. Separate from the lab simulation; see docs/FOCK.md.",
+    "Photon counts": "Photon-number statistics of the drawn circuit: Import from setup lists its "
+    "parts and photon inputs (Fock sources, SPDC pairs); Run gives output-state probabilities, "
+    "counts per second, detector click patterns, marginals and heralded distributions through the "
+    "setup's detectors. Extract to circuit editor turns the circuit into editable elements. "
+    "See docs/FOCK.md.",
     "Gaussian": "Exact photon statistics at higher pump power, where several pairs can be "
     "created at once: CAR falls and heralded g2 rises with pump power.",
 }
@@ -334,7 +336,7 @@ class ResultsDock(QWidget):
             "Sweeps": self.sweeps,
             "Monte Carlo": self.montecarlo,
             "Gaussian": self.gaussian,
-            "Photon states": self.fock,
+            "Photon counts": self.fock,
         }
         self.engine_issues: dict[str, list] = {}
         for title, widget in self.plot_tabs.items():

@@ -271,15 +271,18 @@ threshold or pseudo-PNR response models.
 
 ## Photon-number circuits (Fock backend)
 
-The results dock has a Photon states tab (Run > Photon states...) and `sequoia fock FILE
-[--input 1,1,0] [--shots N] [--backend native|perceval]` runs the same engine headless. You put
-chosen photon numbers (with optional distinguishability tags) into the modes of a beam-splitter
-and phase network with loss, and read output-state probabilities, shot counts, conditional
-(heralded) distributions with their success probability, through threshold, ideal PNR or
-pseudo-PNR detectors. Circuits from the Perceval GUI (version 2 JSON) import directly. A SEQUOIA
-setup of passive optics can be compiled to such a circuit with `sequoia.fock.compile`. The
-native engine needs no extra packages and is cross-checked against Perceval 1.3.1 (extra
-`perceval`). SPDC sources are not converted to Fock states; see [docs/FOCK.md](docs/FOCK.md).
+The results dock has a **Photon counts** tab (Run > Photon counts...) that works on the drawn
+setup: it finds the photon inputs itself (`FockSource` parts with N photons per pulse, and SPDC
+or entangled-pair sources with thermal pair-number statistics from the pump power), pushes them
+through the drawn beam splitters, wave plates, phase shifters, PBS, fibers and filters (path
+length contributes `2 pi OPL / lambda`) and reads the setup's own SPAD/SNSPD detectors. It gives
+output-state probabilities, expected counts per window and per second (Poisson sigma over a
+duration), click patterns, marginals, heralded distributions and samples; *Import from setup*
+lists the components and inputs, *Extract to circuit editor* turns the drawn circuit into
+editable circuit elements. `sequoia fock FILE [--input 1,1,0] [--shots N] [--backend
+native|perceval]` runs the circuit engine headless; Perceval GUI circuits (version 2 JSON) import
+directly. The native engine needs no extra packages and is cross-checked against Perceval 1.3.1
+(extra `perceval`). See [docs/FOCK.md](docs/FOCK.md); `templates/fock_hom.yaml` is a ready example.
 
 ## Sweeps, optimization and budgets
 

@@ -384,3 +384,17 @@ def test_importer_mirrors_gui_loss_and_flags_unsupported():
 def test_loss_validation():
     with pytest.raises(FockError):
         Loss(0, 1.5)
+
+
+def test_element_labels_roundtrip_and_do_not_change_the_matrix():
+    from sequoia.fock import Circuit, PhaseShifter
+
+    c = Circuit(2).beam_splitter(0, 1)
+    c.add(PhaseShifter(0, 0.3, "link_1"))
+    c.loss(1, 0.1, label="part_x")
+    c.block([0, 1], np.eye(2) * 0.9, label="blk")
+    d = c.to_dict()
+    assert [e.get("label") for e in d["elements"]] == [None, "link_1", "part_x", "blk"]
+    back = Circuit.from_dict(d)
+    assert [e.label for e in back.elements] == [None, "link_1", "part_x", "blk"]
+    assert np.allclose(back.matrix(), c.matrix())

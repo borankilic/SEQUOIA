@@ -13,7 +13,7 @@ EXPECTED = {
     "DichroicMirror", "Iris", "BeamDump", "WavePlate", "Polarizer", "PBS", "FiberPaddleController",
     "SpectralFilter", "NDFilter", "OpticalFiber", "FiberCoupler", "FiberBeamSplitter",
     "Photodiode", "SPAD", "SNSPD", "TimeTagger", "PowerMeter", "BeamProfiler", "Polarimeter",
-    "Spectrometer",
+    "Spectrometer", "FockSource", "PhaseShifter",
 }  # fmt: skip
 
 

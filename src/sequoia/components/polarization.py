@@ -1,3 +1,5 @@
+from typing import Literal
+
 import numpy as np
 from pydantic import Field, model_validator
 
@@ -64,6 +66,34 @@ class WavePlate(Component):
             waves = (p.retardance.si + p.order + p.retardance_error) * p.design_wavelength.si / w
         amplitude = sqrt_power(spectral(p.transmission, w))
         jones = amplitude[:, None, None] * retarder(waves, self.settings.angle.si)
+        return [("out", beam.through(ctx.subject, jones))]
+
+
+class PhaseShifterParams(OpticParams):
+    transmission: Dimensionless | Curve = Unity
+
+
+class PhaseShifterSettings(Settings):
+    phase: Angle = Scalar(value=0.0, unit="deg")
+    axis: Literal["both", "H", "V"] = "both"
+
+
+@register("polarization", "PhaseShifter")
+class PhaseShifter(Component):
+    Params = PhaseShifterParams
+    Settings = PhaseShifterSettings
+
+    def ports(self):
+        return (PortSpec("in", FREE, IN), PortSpec("out", FREE, OUT))
+
+    def propagate(self, port, beam, ctx):
+        s = self.settings
+        amplitude = sqrt_power(spectral(self.params.transmission, beam.wavelengths))
+        phase = np.full(len(beam.wavelengths), np.exp(1j * s.phase.si))
+        ones = np.ones(len(beam.wavelengths))
+        dh = ones if s.axis == "V" else phase
+        dv = ones if s.axis == "H" else phase
+        jones = amplitude[:, None, None] * diag_jones(dh, dv)
         return [("out", beam.through(ctx.subject, jones))]
 
 

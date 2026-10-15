@@ -1,0 +1,5 @@
+type: PhaseShifter
+manufacturer: generic
+model: ideal optical phase shifter (lossless)
+description: 'Idealised model part: explicit phase on both polarizations or on one linear component.'
+params: {}

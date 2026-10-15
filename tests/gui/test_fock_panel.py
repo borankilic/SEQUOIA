@@ -151,3 +151,33 @@ def test_loads_experiment_object(tab, tmp_path, qtbot):
     assert tab.n_modes.value() == 3
     run_and_wait(tab, qtbot)
     assert tab.result.mass == pytest.approx(1.0)
+
+
+def test_labels_and_detector_groups_survive_the_editor(tab):
+    from sequoia.fock import DetectorSpec, PhaseShifter, Threshold
+
+    c = Circuit(2).beam_splitter(0, 1)
+    c.add(PhaseShifter(0, 0.5, "arm"))
+    exp = Experiment(
+        c, [1, 1], detectors=[DetectorSpec((0, 1), Threshold(efficiency=0.7))], name="grouped"
+    )
+    tab.set_experiment(exp)
+    assert tab.circuit_table.item(1, 4).text() == "arm"
+    out = tab.experiment()
+    assert out.circuit.elements[1].label == "arm"
+    assert [s.modes for s in out.detectors] == [(0, 1)]
+    assert isinstance(out.detectors[0].model, Threshold)
+    assert out.detectors[0].model.efficiency == pytest.approx(0.7)
+
+
+def test_open_and_save_keep_element_labels(tab, tmp_path):
+    from sequoia.fock import PhaseShifter
+
+    c = Circuit(2).beam_splitter(0, 1)
+    c.add(PhaseShifter(1, 0.25, "link_a"))
+    tab.set_experiment(Experiment(c, [1, 0], name="labelled"))
+    path = tmp_path / "c.yaml"
+    assert tab.save_path(path)
+    tab.set_experiment(Experiment(Circuit(2).beam_splitter(0, 1), [1, 1]))
+    assert tab.open_path(path)
+    assert tab.circuit_table.item(1, 4).text() == "link_a"

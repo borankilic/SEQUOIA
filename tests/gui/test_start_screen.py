@@ -28,6 +28,7 @@ EXPECTED = {
     "hbt_heralded",
     "hom",
     "bell_test",
+    "fock_hom",
 }
 
 

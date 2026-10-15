@@ -236,7 +236,7 @@ class MainWindow(QMainWindow):
         self.act_optimize = self._action("Optimize parameters...", self.show_optimizer)
         self.act_montecarlo = self._action("Monte Carlo time tags...", self.show_montecarlo)
         self.act_gaussian = self._action("Gaussian multimode statistics...", self.show_gaussian)
-        self.act_fock = self._action("Photon states (Fock circuits)...", self.show_fock)
+        self.act_fock = self._action("Photon counts...", self.show_fock)
         self.act_autorun = self._action(
             "Auto-run", self.set_auto_run, checkable=True, checked=self.controller.auto_run
         )

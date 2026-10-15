@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -43,6 +43,7 @@ class BeamSplitter:
     phi_tr: float = 0.0
     phi_br: float = 0.0
     convention: str = "Rx"
+    label: str | None = None
 
     def matrix(self) -> np.ndarray:
         return bs_matrix(
@@ -54,12 +55,14 @@ class BeamSplitter:
 class PhaseShifter:
     mode: int
     phase: float
+    label: str | None = None
 
 
 @dataclass(frozen=True)
 class Permutation:
     modes: tuple[int, ...]
     perm: tuple[int, ...]
+    label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,7 @@ class Loss:
     mode: int
     loss: float
     kind: str = "optical"
+    label: str | None = None
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.loss <= 1.0:
@@ -78,6 +82,7 @@ class Block:
     modes: tuple[int, ...]
     matrix: np.ndarray
     kind: str = "block"
+    label: str | None = None
 
     def __post_init__(self) -> None:
         self.matrix = np.asarray(self.matrix, dtype=complex)
@@ -92,6 +97,13 @@ Element = BeamSplitter | PhaseShifter | Permutation | Loss | Block
 
 
 def _element_to_dict(e: Element) -> dict[str, Any]:
+    d = _element_core_dict(e)
+    if e.label is not None:
+        d["label"] = e.label
+    return d
+
+
+def _element_core_dict(e: Element) -> dict[str, Any]:
     if isinstance(e, BeamSplitter):
         return {
             "type": "beam_splitter",
@@ -118,6 +130,12 @@ def _element_to_dict(e: Element) -> dict[str, Any]:
 
 
 def _element_from_dict(d: dict[str, Any]) -> Element:
+    e = _element_from_core(d)
+    label = d.get("label")
+    return replace(e, label=str(label)) if label is not None else e
+
+
+def _element_from_core(d: dict[str, Any]) -> Element:
     t = d.get("type")
     try:
         if t == "beam_splitter":
@@ -173,17 +191,17 @@ class Circuit:
     def beam_splitter(self, a: int, b: int, theta: float = math.pi / 2, **kw) -> "Circuit":
         return self.add(BeamSplitter((a, b), theta, **kw))
 
-    def phase_shifter(self, mode: int, phase: float) -> "Circuit":
-        return self.add(PhaseShifter(mode, phase))
+    def phase_shifter(self, mode: int, phase: float, label: str | None = None) -> "Circuit":
+        return self.add(PhaseShifter(mode, phase, label))
 
-    def permutation(self, modes, perm) -> "Circuit":
-        return self.add(Permutation(tuple(modes), tuple(perm)))
+    def permutation(self, modes, perm, label: str | None = None) -> "Circuit":
+        return self.add(Permutation(tuple(modes), tuple(perm), label))
 
-    def loss(self, mode: int, loss: float, kind: str = "optical") -> "Circuit":
-        return self.add(Loss(mode, loss, kind))
+    def loss(self, mode: int, loss: float, kind: str = "optical", label: str | None = None):
+        return self.add(Loss(mode, loss, kind, label))
 
-    def block(self, modes, matrix) -> "Circuit":
-        return self.add(Block(tuple(modes), matrix))
+    def block(self, modes, matrix, label: str | None = None) -> "Circuit":
+        return self.add(Block(tuple(modes), matrix, label=label))
 
     def matrix(self) -> np.ndarray:
         t = np.eye(self.n_modes, dtype=complex)

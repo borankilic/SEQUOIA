@@ -536,12 +536,39 @@ def detectors_and_sources():
         },
     )
 
+    for n in (1, 2):
+        add(
+            f"sources/fock_{n}photon_810",
+            "FockSource",
+            f"idealised Fock source, exactly {n} photon{'s' * (n > 1)} per pulse, 810 nm, 80 MHz",
+            {
+                "wavelength": q(810, "nm"),
+                "photons_per_pulse": n,
+                "repetition_rate": q(80, "MHz"),
+                "pulse_width": q(1, "ps"),
+                "waist_radius": q(0.4, "mm"),
+                "distinguishability_tag": 0,
+            },
+            "Idealised model part: deterministic photon number, no loss, no multi-photon noise.",
+        )
+
+
+def phase_shifters():
+    add(
+        "polarization/phase_shifter_ideal",
+        "PhaseShifter",
+        "ideal optical phase shifter (lossless)",
+        {},
+        "Idealised model part: explicit phase on both polarizations or on one linear component.",
+    )
+
 
 def main() -> None:
     filters()
     lenses()
     mirrors()
     polarization()
+    phase_shifters()
     fibers()
     detectors_and_sources()
     print(f"created {len(CREATED)} parts")

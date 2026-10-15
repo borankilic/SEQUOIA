@@ -1,0 +1,32 @@
+name: Two-photon interference of Fock-state photons
+description: >
+  Two single-photon Fock sources (exactly one 810 nm photon per pulse, 80 MHz) meet on a first
+  50:50 beam splitter (Hong-Ou-Mandel bunching), pass through a phase shifter in one arm and are
+  recombined on a second 50:50 beam splitter read by two SPADs and a time tagger. With equal
+  photons the probability that both detectors see a photon is cos^2 of the phase set on the
+  phase shifter (1 at 0 deg, 0 at 90 deg: the photons leave together, the N00N-state fringe);
+  distinguishable photons give 1 - sin^2/2 and no full contrast. Open the Photon counts tab: it
+  reads the drawn circuit, lists its components and gives output-state probabilities, expected
+  counts and detector click patterns. Change a source's distinguishability_tag to make the
+  photons distinguishable. All parts are generic placeholders; replace them with the lab's
+  measured parts.
+instances:
+  - {id: photon_a, part: sources/fock_1photon_810, position: [0, 0]}
+  - {id: photon_b, part: sources/fock_1photon_810, position: [0, 6]}
+  - {id: bs1, part: freespace/beamsplitter_50_50, position: [6, 3]}
+  - {id: phase, part: polarization/phase_shifter_ideal, position: [12, 0]}
+  - {id: bs2, part: freespace/beamsplitter_50_50, position: [18, 3]}
+  - {id: spad_1, part: detectors/spad_si_generic, position: [24, 0], settings: {input: free_space}}
+  - {id: spad_2, part: detectors/spad_si_generic, position: [24, 6], settings: {input: free_space}}
+  - {id: tagger, part: electronics/tagger_generic_4ch, position: [30, 3]}
+links:
+  - {id: s_a, kind: free_space, from: photon_a.out, to: bs1.in_a, length: 100 mm}
+  - {id: s_b, kind: free_space, from: photon_b.out, to: bs1.in_b, length: 100 mm}
+  - {id: s_arm1, kind: free_space, from: bs1.out_a, to: phase.in, length: 50 mm}
+  - {id: s_arm2, kind: free_space, from: phase.out, to: bs2.in_a, length: 50 mm}
+  - {id: s_arm3, kind: free_space, from: bs1.out_b, to: bs2.in_b, length: 100 mm}
+  - {id: s_1, kind: free_space, from: bs2.out_a, to: spad_1.in, length: 50 mm}
+  - {id: s_2, kind: free_space, from: bs2.out_b, to: spad_2.in, length: 50 mm}
+  - {id: c_1, kind: cable, from: spad_1.out, to: tagger.ch1, delay: 0 ns}
+  - {id: c_2, kind: cable, from: spad_2.out, to: tagger.ch2, delay: 0 ns}
+analyses: []

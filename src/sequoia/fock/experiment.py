@@ -5,7 +5,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sequoia.fock.analysis import Conditional, Samples, condition, format_state, sample
+from sequoia.fock.analysis import (
+    Conditional,
+    ExpectedCounts,
+    Samples,
+    condition,
+    expected_counts,
+    format_state,
+    sample,
+)
 from sequoia.fock.circuit import Circuit, FockError
 from sequoia.fock.detectors import (
     Detector,
@@ -17,7 +25,9 @@ from sequoia.fock.engine import (
     Distribution,
     Limits,
     mixed_distribution,
+    output_distribution_mixture,
 )
+from sequoia.fock.inputs import InputMixture
 
 BACKENDS = ("native", "perceval")
 FORMAT_VERSION = 1
@@ -45,9 +55,15 @@ class Experiment:
     description: str = ""
     mode_labels: list[str] | None = None
     limits: Limits = field(default_factory=Limits)
+    input_mixture: InputMixture | None = None
+    rate_hz: float | None = None
+    window_s: float | None = None
+    duration_s: float | None = None
 
     def photons(self) -> list[tuple[int, Hashable]]:
         n = self.circuit.n_modes
+        if self.input_mixture is not None:
+            return []
         if len(self.occupations) != n:
             raise FockError(f"{len(self.occupations)} occupations for {n} modes")
         out = []
@@ -89,6 +105,19 @@ class Experiment:
         }
         if self.mode_labels:
             d["mode_labels"] = list(self.mode_labels)
+        if self.input_mixture is not None:
+            d["input_mixture"] = self.input_mixture.to_dict()
+        counts = {
+            k: v
+            for k, v in (
+                ("rate_hz", self.rate_hz),
+                ("window_s", self.window_s),
+                ("duration_s", self.duration_s),
+            )
+            if v is not None
+        }
+        if counts:
+            d["counts"] = counts
         return d
 
     @classmethod
@@ -109,6 +138,9 @@ class Experiment:
             backend = raw.get("backend", "native")
             if backend not in BACKENDS:
                 raise FockError(f"backend must be one of {BACKENDS}, got {backend!r}")
+            mix_raw = raw.get("input_mixture")
+            mixture = InputMixture.from_dict(mix_raw) if mix_raw else None
+            cnt = raw.get("counts") or {}
             exp = cls(
                 circuit,
                 occ,
@@ -123,11 +155,19 @@ class Experiment:
                 raw.get("name", "photonic circuit experiment"),
                 raw.get("description", ""),
                 raw.get("mode_labels"),
+                input_mixture=mixture,
+                rate_hz=_opt_float(cnt.get("rate_hz")),
+                window_s=_opt_float(cnt.get("window_s")),
+                duration_s=_opt_float(cnt.get("duration_s")),
             )
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise FockError(f"invalid experiment document: {exc}") from exc
         exp.photons()
         return exp
+
+
+def _opt_float(v: Any) -> float | None:
+    return None if v is None else float(v)
 
 
 def _spec_to_plain(v: Any) -> Any:
@@ -185,6 +225,7 @@ class FockResult:
     seed: int | None
     resources: dict[str, Any]
     messages: list[str] = field(default_factory=list)
+    counts: ExpectedCounts | None = None
 
     @property
     def mass(self) -> float:
@@ -197,6 +238,11 @@ class FockResult:
             row: dict[str, Any] = {"state": format_state(s), "probability": p}
             if self.samples:
                 row["counts"] = counts.get(s, 0)
+            if self.counts and self.counts.per_second is not None:
+                row["per_second"] = self.counts.per_second.get(s, 0.0)
+                if self.counts.total is not None:
+                    row["expected_counts"] = self.counts.total.get(s, 0.0)
+                    row["sigma"] = self.counts.sigma.get(s, 0.0)
             rows.append(row)
         return rows
 
@@ -223,6 +269,15 @@ class FockResult:
         if self.samples:
             d["counts"] = {format_state(s): c for s, c in self.samples.counts.items()}
             d["shots"] = self.samples.shots
+        if self.raw.omitted_weight:
+            d["omitted_weight"] = self.raw.omitted_weight
+        if self.counts and self.counts.per_second is not None:
+            d["expected_per_second"] = {
+                format_state(s): v for s, v in self.counts.per_second.items()
+            }
+            if self.counts.total is not None:
+                d["expected_counts"] = {format_state(s): v for s, v in self.counts.total.items()}
+                d["duration_s"] = self.counts.duration_s
         return d
 
 
@@ -258,7 +313,17 @@ def run_experiment(
     backend = exp.backend
     if progress:
         progress(0, 4)
-    if backend == "perceval":
+    mixture = exp.input_mixture
+    if mixture is not None:
+        if backend == "perceval":
+            from sequoia.fock.perceval_bridge import perceval_mixture_distribution
+
+            raw = perceval_mixture_distribution(exp.circuit, mixture)
+        else:
+            raw = output_distribution_mixture(
+                exp.circuit, mixture, limits=exp.limits, should_cancel=should_cancel
+            )
+    elif backend == "perceval":
         from sequoia.fock.perceval_bridge import perceval_mixed_distribution
 
         raw = perceval_mixed_distribution(
@@ -279,21 +344,34 @@ def run_experiment(
     if progress:
         progress(1, 4)
     detected = layout.apply(raw)
+    detected.omitted_weight = raw.omitted_weight
+    detected.notes = list(raw.notes)
     if progress:
         progress(2, 4)
-    if abs(detected.mass - 1.0) > 1e-9:
+    if abs(detected.mass + detected.omitted_weight - 1.0) > 1e-9:
         messages.append(f"total probability {detected.mass:.12g} differs from 1")
+    if detected.omitted_weight > 1e-12:
+        messages.append(
+            f"input weight beyond the truncation, not simulated: {detected.omitted_weight:.3g}"
+        )
+    messages.extend(detected.notes)
     lost = raw.lost_mass(len(photons))
-    if lost > 0.0 and exp.brightness == 1.0:
+    if mixture is None and lost > 0.0 and exp.brightness == 1.0:
         messages.append(f"probability of losing at least one photon: {lost:.6g}")
     conditionals = {k: condition(detected, c) for k, c in exp.conditions.items()}
     samples = None
     if exp.shots > 0:
         samples = sample(detected, exp.shots, exp.seed)
+    counts = None
+    if exp.rate_hz is not None or exp.window_s is not None:
+        counts = expected_counts(
+            detected, exp.rate_hz, exp.window_s, exp.duration_s if exp.duration_s else 1.0
+        )
+        detected.info["n_windows"] = counts.n_windows
     if progress:
         progress(4, 4)
     res = {
-        "photons": len(photons),
+        "photons": raw.info.get("photons", len(photons)),
         "modes": exp.circuit.n_modes,
         "permanents": raw.info.get("permanents", 0),
         "estimated_work": raw.info.get("work", 0),
@@ -312,4 +390,5 @@ def run_experiment(
         exp.seed,
         res,
         messages,
+        counts,
     )
