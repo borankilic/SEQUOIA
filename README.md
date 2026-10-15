@@ -257,6 +257,18 @@ pair gain and classical (pump) leakage scale with it, detector dark counts do no
 - Needs no extra packages; `thewalrus` (the `gaussian` extra) is only used by the tests as an
   independent check of the covariance formulas.
 
+## CHSH test
+
+`sequoia chsh setups/bell_test.yaml --a settings:hwp_a.angle --b settings:hwp_b.angle
+--a-values 0,22.5 --b-values 11.25,33.75 [--time 10]` runs the four analyser settings through the
+rate engine, builds E(a, b) from the four coincidence analyses (`tt, tr, rt, rr`) and prints S with
+a Poisson uncertainty for the integration time. The values are those of the analyser parameters
+(a half-wave plate angle is half the polarizer angle); `--quantity total_hz` keeps accidentals.
+From Python: `sequoia.analysis.chsh.run_chsh`. The Monte Carlo comparison marks rows compared with
+an analytic model (heralded triples) as `(model)`, since a large z there can be a model difference.
+`sequoia.engines.gaussian.detector_response` pushes a Gaussian photon-number distribution through
+threshold or pseudo-PNR response models.
+
 ## Photon-number circuits (Fock backend)
 
 The results dock has a Photon states tab (Run > Photon states...) and `sequoia fock FILE

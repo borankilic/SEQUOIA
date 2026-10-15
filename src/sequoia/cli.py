@@ -118,6 +118,42 @@ def _run_gaussian(setup_path: str, library_path: str, gain_scale: float) -> int:
     return 0
 
 
+def _run_chsh(args) -> int:
+    import sequoia.components.builtin  # noqa: F401
+    from sequoia.analysis.chsh import format_chsh, run_chsh
+    from sequoia.errors import SequoiaError
+    from sequoia.library.store import Library
+    from sequoia.setup.io import load_setup
+
+    try:
+        setup = load_setup(args.setup)
+        library_root = resolve_library(args.library, args.setup)
+        if not library_root.is_dir():
+            print(f"error: library folder {args.library!r} not found", file=sys.stderr)
+            return 1
+        names = [n.strip() for n in args.outcomes.split(",")]
+        if len(names) != 4:
+            print("error: --outcomes needs four names", file=sys.stderr)
+            return 1
+        result = run_chsh(
+            setup,
+            Library(library_root),
+            args.a,
+            args.b,
+            [float(x) for x in args.a_values.split(",")],
+            [float(x) for x in args.b_values.split(",")],
+            args.unit,
+            [names[:2], names[2:]],
+            args.quantity,
+            args.time,
+        )
+    except (SequoiaError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(format_chsh(result))
+    return 0
+
+
 def _analyze_tags(
     tag_path: str,
     setup_path: str,
@@ -202,6 +238,24 @@ def main() -> None:
                 _run_mc(args.setup, args.library, args.duration, args.seed, args.tags, args.schmidt)
             )
         sys.exit(_run(args.setup, args.library))
+    if argv and argv[0] == "chsh":
+        parser = argparse.ArgumentParser(
+            prog="sequoia chsh", description="CHSH S from four analyser settings (rate engine)"
+        )
+        parser.add_argument("setup")
+        parser.add_argument("--library", default="library")
+        parser.add_argument("--a", required=True, help="arm-a target, e.g. settings:hwp_a.angle")
+        parser.add_argument("--b", required=True, help="arm-b target, e.g. settings:hwp_b.angle")
+        parser.add_argument("--a-values", required=True, help="two values, e.g. 0,22.5")
+        parser.add_argument("--b-values", required=True, help="two values, e.g. 11.25,33.75")
+        parser.add_argument("--unit", default="deg")
+        parser.add_argument(
+            "--outcomes", default="tt,tr,rt,rr", help="four coincidence analysis names"
+        )
+        parser.add_argument("--quantity", choices=("true_hz", "total_hz"), default="true_hz")
+        parser.add_argument("--time", type=float, default=10.0, help="integration time per setting")
+        args = parser.parse_args(argv[1:])
+        sys.exit(_run_chsh(args))
     if argv and argv[0] == "fock":
         from sequoia.fock.cli import main as fock_main
 

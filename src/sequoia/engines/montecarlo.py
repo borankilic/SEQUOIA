@@ -363,6 +363,7 @@ class Comparison:
     monte_carlo: float
     sigma: float
     expected: float
+    basis: str = "statistical"
 
     @property
     def z(self) -> float:
@@ -436,6 +437,13 @@ def compare_with_rates(
                 + ref["herald_singles_hz"] * s_a * s_b * w * w
             )
             rows.append(
-                Comparison(name, "triples_hz", mc["triples_hz"], mc["triples_sigma_hz"], expected)
+                Comparison(
+                    name,
+                    "triples_hz",
+                    mc["triples_hz"],
+                    mc["triples_sigma_hz"],
+                    expected,
+                    basis="model",
+                )
             )
     return rows

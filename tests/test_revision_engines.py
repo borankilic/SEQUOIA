@@ -243,3 +243,40 @@ def test_monte_carlo_clock_is_per_channel():
     assert all(v == pytest.approx(50e6) for v in tags.clock.values())
     cw = simulate_timetags(setup_from_dict(hbt(0.02)), LIB, 0.01, seed=3)
     assert not cw.clock
+
+
+def test_detector_response_matches_the_wire_rule():
+    from sequoia.engines.gaussian import GaussianResult, detector_response
+    from sequoia.fock.detectors import IdealPNR, PseudoPNR, Threshold
+
+    probs = np.zeros(5)
+    probs[2] = 1.0
+    result = GaussianResult(["d"], 1.0, {}, {}, {}, pnr={("d",): probs})
+    thr = detector_response(result, ("d",), {"d": Threshold()})
+    assert thr[1] == pytest.approx(1.0)
+    pnr = detector_response(result, ("d",), {"d": IdealPNR()})
+    assert pnr[2] == pytest.approx(1.0)
+    four = detector_response(result, ("d",), {"d": PseudoPNR(wires=4)})
+    assert four[2] == pytest.approx(0.75) and four[1] == pytest.approx(0.25)
+    with pytest.raises(ValueError):
+        detector_response(result, ("d",), {"d": Threshold(efficiency=0.5)})
+
+
+def test_chsh_on_the_bell_template_reaches_visibility_times_tsirelson():
+    from sequoia.analysis.chsh import run_chsh
+
+    setup = load_setup(ROOT / "setups" / "bell_test.yaml")
+    r = run_chsh(
+        setup,
+        LIB,
+        "settings:hwp_a.angle",
+        "settings:hwp_b.angle",
+        [0.0, 22.5],
+        [11.25, 33.75],
+    )
+    assert r.s == pytest.approx(2 * math.sqrt(2) * 0.97, rel=2e-3)
+    assert r.violates and r.s_sigma > 0
+    classical = run_chsh(
+        setup, LIB, "settings:hwp_a.angle", "settings:hwp_b.angle", [0.0, 0.0], [0.0, 0.0]
+    )
+    assert abs(classical.s) <= 2.0

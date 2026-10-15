@@ -208,7 +208,16 @@ class MonteCarloTab(RunGuard, QWidget):
                     _NumItem(plain(c.monte_carlo), c.monte_carlo),
                     _NumItem(plain(c.sigma, 3), c.sigma),
                     _NumItem(plain(c.expected), c.expected),
-                    _NumItem(f"{c.z:+.2f}" + ("" if c.ok else "  !"), c.z),
+                    _NumItem(
+                        f"{c.z:+.2f}"
+                        + ("" if c.ok else "  !")
+                        + ("  (model)" if c.basis == "model" else ""),
+                        c.z,
+                        "Compared with an analytic Poisson-multipair model, not a "
+                        "like-for-like statistic: a large z can be a model difference."
+                        if c.basis == "model"
+                        else "",
+                    ),
                 ]
             )
         for name, a in outcome.analyses.items():

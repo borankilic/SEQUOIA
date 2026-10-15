@@ -613,6 +613,30 @@ def _pnr(model, names, group, gain_scale, cutoff, should_cancel=None):
     return kept, meta
 
 
+def detector_response(
+    result: GaussianResult, group: tuple[str, ...], detectors: dict[str, Any]
+) -> np.ndarray:
+    """Click-count distribution of a PNR group seen through multiplexed or threshold detectors.
+
+    ``detectors`` maps a channel name to a ``sequoia.fock.detectors`` model. The Gaussian result
+    already contains each detector's efficiency and dark counts, so the models must be ideal
+    (efficiency 1, no dark clicks); only their response matrix D(k|n) is applied.
+    """
+    probs = np.array(result.pnr[tuple(group)], dtype=float)
+    for axis, name in enumerate(group):
+        det = detectors.get(name)
+        if det is None:
+            continue
+        if det.efficiency != 1.0 or det.dark != 0.0:
+            raise ValueError(
+                f"detector model for {name} has efficiency {det.efficiency} / dark {det.dark}; "
+                "efficiency and dark counts are already part of the Gaussian statistics"
+            )
+        matrix = det.response_matrix(probs.shape[axis] - 1)
+        probs = np.moveaxis(np.tensordot(probs, matrix, axes=([axis], [0])), -1, axis)
+    return probs
+
+
 def analyse(result: GaussianResult, specs) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     w = result.window
