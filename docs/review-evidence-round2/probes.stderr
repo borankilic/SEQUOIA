@@ -1,0 +1,21 @@
+/Users/borankilic/Desktop/Research/Quantum Technologies/SEQUOIA/venv/lib/python3.12/site-packages/perceval/utils/persistent_data.py:71: UserWarning: Can't read or write in default folder /Users/borankilic/Library/Application Support/perceval-quandela.
+  warnings.warn(UserWarning(f"Can't read or write in default folder {self._directory}."))
+/Users/borankilic/Desktop/Research/Quantum Technologies/SEQUOIA/venv/lib/python3.12/site-packages/perceval/utils/persistent_data.py:73: UserWarning: Using temp folder /var/folders/73/qbtgrjk170gbr1jv1z208qg00000gn/T.
+  warnings.warn(UserWarning(f"Using temp folder {self._directory}."))
+/Users/borankilic/Desktop/Research/Quantum Technologies/SEQUOIA/venv/lib/python3.12/site-packages/perceval/utils/persistent_data.py:71: UserWarning: Can't read or write in default folder /Users/borankilic/Library/Application Support/perceval-quandela.
+  warnings.warn(UserWarning(f"Can't read or write in default folder {self._directory}."))
+/Users/borankilic/Desktop/Research/Quantum Technologies/SEQUOIA/venv/lib/python3.12/site-packages/perceval/utils/persistent_data.py:73: UserWarning: Using temp folder /var/folders/73/qbtgrjk170gbr1jv1z208qg00000gn/T.
+  warnings.warn(UserWarning(f"Using temp folder {self._directory}."))
+/Users/borankilic/.matplotlib is not a writable directory
+Matplotlib created a temporary cache directory at /var/folders/73/qbtgrjk170gbr1jv1z208qg00000gn/T/matplotlib-iee7g6o2 because there was an issue with the default path (/Users/borankilic/.matplotlib); it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+
+Fontconfig error: No writable cache directories
+	/opt/homebrew/var/cache/fontconfig
+	/Users/borankilic/.cache/fontconfig
+	/Users/borankilic/.fontconfig
+Matplotlib is building the font cache; this may take a moment.
+/Users/borankilic/Desktop/Research/Quantum Technologies/SEQUOIA/venv/lib/python3.12/site-packages/perceval/utils/persistent_data.py:71: UserWarning: Can't read or write in default folder /Users/borankilic/Library/Application Support/perceval-quandela.
+  warnings.warn(UserWarning(f"Can't read or write in default folder {self._directory}."))
+/Users/borankilic/Desktop/Research/Quantum Technologies/SEQUOIA/venv/lib/python3.12/site-packages/perceval/utils/persistent_data.py:73: UserWarning: Using temp folder /var/folders/73/qbtgrjk170gbr1jv1z208qg00000gn/T.
+  warnings.warn(UserWarning(f"Using temp folder {self._directory}."))
+qt.qpa.fonts: Populating font family aliases took 64 ms. Replace uses of missing font family "Sans Serif" with one that exists to avoid this cost. 

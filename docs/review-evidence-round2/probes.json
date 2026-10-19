@@ -1,0 +1,66 @@
+{
+  "truncated_sampling": {
+    "mass": 0.25,
+    "omitted": 0.75,
+    "probabilities": "{(1,): np.float64(0.25)}",
+    "samples": "{(1,): 100}",
+    "expected_counts": "{(1,): np.float64(25.0)}"
+  },
+  "zero_duration": {
+    "requested": 0,
+    "actual": 1.0,
+    "counts": "{(1,): np.float64(100.0)}"
+  },
+  "uncertainty": {
+    "expected_counts_sigma": 10.0,
+    "outcome_table_sigma": 0.0
+  },
+  "empty_channel_clocks": {
+    "clock": [
+      50000000.0,
+      80000000.0
+    ],
+    "accidental_model": "sideband",
+    "reloaded_clock": {
+      "a": 80000000.0,
+      "b": 80000000.0
+    }
+  },
+  "chsh_duration_0.0": {
+    "s": 2.7435742210360377,
+    "sigma": "nan",
+    "violates": true,
+    "text": "CHSH  S = 2.7436 +- nan  (violates S <= 2; Tsirelson bound 2.8284; true_hz, 0 s)\nsettings a = (0.0, 22.5) deg, b = (11.25, 33.75) deg\nE(a_i, b_j):\n  +0.6859  -0.6859\n  +0.6859  +0.6859\nnote: no coincidences for setting pair (0, 0)\nnote: no coincidences for setting pair (0, 1)\nnote: no coincidences for setting pair (1, 0)\nnote: no coincidences for setting pair (1, 1)"
+  },
+  "chsh_duration_-1.0": {
+    "s": 2.7435742210360377,
+    "sigma": "nan",
+    "violates": true,
+    "text": "CHSH  S = 2.7436 +- nan  (violates S <= 2; Tsirelson bound 2.8284; true_hz, -1 s)\nsettings a = (0.0, 22.5) deg, b = (11.25, 33.75) deg\nE(a_i, b_j):\n  +0.6859  -0.6859\n  +0.6859  +0.6859\nnote: no coincidences for setting pair (0, 0)\nnote: no coincidences for setting pair (0, 1)\nnote: no coincidences for setting pair (1, 0)\nnote: no coincidences for setting pair (1, 1)"
+  },
+  "chsh_duration_10.0": {
+    "s": 2.7435742210360377,
+    "sigma": "0.0017662351645298577",
+    "violates": true,
+    "text": "CHSH  S = 2.7436 +- 0.0018  (violates S <= 2; Tsirelson bound 2.8284; true_hz, 10 s)\nsettings a = (0.0, 22.5) deg, b = (11.25, 33.75) deg\nE(a_i, b_j):\n  +0.6859  -0.6859\n  +0.6859  +0.6859"
+  },
+  "edit_during_run": {
+    "run_revision": 1,
+    "latest_revision": 2,
+    "accepted": true,
+    "status": "window 1 s, 0 Schmidt modes"
+  },
+  "editor_conditions_roundtrip": {
+    "original": {
+      "keep": {
+        "0": 1
+      }
+    },
+    "collected": {}
+  },
+  "editor_reset": {
+    "rows_before": 1,
+    "result_survives": true,
+    "rows_after_refresh": 1
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "pnr": {
+    "vacuum_response": [
+      [
+        1.0
+      ]
+    ],
+    "one_photon_response": [
+      [
+        0.8,
+        0.2
+      ],
+      [
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "ppnr": {
+    "vacuum_response": [
+      [
+        1.0
+      ]
+    ],
+    "one_photon_response": [
+      [
+        0.8,
+        0.2
+      ],
+      [
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "threshold": {
+    "vacuum_response": [
+      [
+        0.8,
+        0.19999999999999996
+      ]
+    ],
+    "one_photon_response": [
+      [
+        0.8,
+        0.19999999999999996
+      ],
+      [
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "editor_roundtrip": {
+    "before_detector": {
+      "kind": "ppnr",
+      "efficiency": 1.0,
+      "dark": 0.2,
+      "wires": 2,
+      "weights": [
+        0.9,
+        0.1
+      ],
+      "wire_efficiencies": [
+        0.5,
+        0.8
+      ]
+    },
+    "after_detector": {
+      "kind": "ppnr",
+      "efficiency": 1.0,
+      "dark": 0.0,
+      "wires": 2
+    },
+    "before_conditions": {
+      "herald": {
+        "0": 1
+      }
+    },
+    "after_conditions": {},
+    "description": ""
+  }
+}
