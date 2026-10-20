@@ -386,7 +386,7 @@ def test_document_fuzz_keeps_invariants(seed, tmp_path):
 
 
 def test_all_templates_run_all_engines_briefly():
-    from sequoia.engines.gaussian import simulate_gaussian
+    from sequoia.engines.gaussian import UnsupportedSourceError, simulate_gaussian
     from sequoia.engines.montecarlo import simulate_timetags
     from sequoia.engines.rates import has_rate_devices
 
@@ -397,10 +397,16 @@ def test_all_templates_run_all_engines_briefly():
         if has_rate_devices(setup, LIB, None, result.network):
             rates = simulate_rates(setup, LIB, classical=result)
             assert not [i for i in rates.issues if i.severity == "error"], path.name
-            tags = simulate_timetags(setup, LIB, 0.05, seed=1)
+            fock = any(d.get("fock_hz", 0.0) > 0 for d in rates.detectors.values())
+            if fock:
+                with pytest.raises(UnsupportedSourceError):
+                    simulate_timetags(setup, LIB, 1e-4, seed=1)
+            tags = simulate_timetags(
+                setup, LIB, 0.05 if not fock else 1e-4, seed=1, fock_as_poisson=fock
+            )
             assert all(np.all(np.diff(t) >= 0) for t in tags.channels.values())
             if any(a.get("type") for a in setup.analyses):
-                simulate_gaussian(setup, LIB)
+                simulate_gaussian(setup, LIB, fock_as_poisson=fock)
 
 
 def test_yaml_roundtrip_of_every_setup_and_template():
