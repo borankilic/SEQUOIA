@@ -13,6 +13,7 @@ WAIT = 30000
 @pytest.fixture
 def tab(qtbot):
     t = FockTab()
+    t.confirm_replace = lambda _t: "discard"
     qtbot.addWidget(t)
     t.show()
     yield t

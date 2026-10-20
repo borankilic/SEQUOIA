@@ -1,6 +1,8 @@
+import copy
+import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from sequoia.engines.cache import Cancelled
 from sequoia.errors import Issue, SequoiaError
-from sequoia.fock.analysis import condition, format_state
+from sequoia.fock.analysis import condition, count_variance, format_state
 from sequoia.fock.circuit import (
     BeamSplitter,
     Block,
@@ -107,6 +109,13 @@ def _parse_ints(text: str, what: str) -> tuple[int, ...]:
         raise FockError(f"{what}: {text!r} is not a list of integers") from None
 
 
+def _parse_int(text: str, what: str) -> int:
+    try:
+        return int(text.strip())
+    except ValueError:
+        raise FockError(f"{what}: {text!r} is not a whole number") from None
+
+
 def _parse_float(text: str, what: str) -> float:
     try:
         return float(text)
@@ -171,6 +180,12 @@ class FockTab(RunGuard, QWidget):
         self._dirty: set[int] = set()
         self._building = False
         self._stale_note = ""
+        self._base: Experiment | None = None
+        self._shown: dict = {}
+        self._saved_key: str | None = None
+        self._result_key: str | None = None
+        self._run_key: str | None = None
+        self.confirm_replace = None
 
         self.mode_box = QComboBox()
         self.mode_box.addItems(["From setup", "Circuit editor"])
@@ -184,7 +199,7 @@ class FockTab(RunGuard, QWidget):
             "and open it in the circuit editor."
         )
         self.duration = QDoubleSpinBox()
-        self.duration.setRange(1e-6, 1e9)
+        self.duration.setRange(0.0, 1e9)
         self.duration.setDecimals(6)
         self.duration.setValue(1.0)
         self.duration.setPrefix("duration ")
@@ -262,17 +277,21 @@ class FockTab(RunGuard, QWidget):
         self.new_type = QComboBox()
         self.new_type.addItems(ELEMENT_TYPES[:4])
 
-        self.input_table = QTableWidget(0, 7)
+        self.input_table = QTableWidget(0, 8)
         self.input_table.setHorizontalHeaderLabels(
-            ["Mode", "Photons", "Tags", "Detector", "Efficiency", "Wires", "Group"]
+            ["Mode", "Photons", "Tags", "Detector", "Efficiency", "Wires", "Group", "Dark / window"]
         )
         self.input_table.horizontalHeader().setStretchLastSection(True)
         self.input_table.verticalHeader().setVisible(False)
         self.input_table.setToolTip(
             "Tags: one label per photon, e.g. '0,1'. Equal tags interfere, different tags do not.\n"
             "Detector efficiency is applied once, in the detector response.\n"
-            "Group: modes with the same group name are read by one detector (summed photons)."
+            "Group: modes with the same group name are read by one detector (summed photons).\n"
+            "Dark / window: probability of one dark click per detection window."
         )
+        self.preserved_label = QLabel("")
+        self.preserved_label.setWordWrap(True)
+        self.preserved_label.setStyleSheet("color: palette(placeholder-text);")
         self.mixture_label = QLabel("")
         self.mixture_label.setWordWrap(True)
         self.mixture_label.setVisible(False)
@@ -317,7 +336,7 @@ class FockTab(RunGuard, QWidget):
                 "Probability / window",
                 "Rate (1/s)",
                 "Counts in duration",
-                "Sigma (Poisson)",
+                "Sigma (binomial, fixed windows)",
                 "Conditional probability",
             ]
         )
@@ -418,6 +437,7 @@ class FockTab(RunGuard, QWidget):
         il.addWidget(self.mixture_label)
         il.addWidget(self.clear_mixture_button)
         il.addWidget(self.input_table, 1)
+        il.addWidget(self.preserved_label)
         self.editor_tabs = QTabWidget()
         self.editor_tabs.addTab(circuit_page, "Circuit")
         self.editor_tabs.addTab(input_page, "Input and detectors")
@@ -520,8 +540,20 @@ class FockTab(RunGuard, QWidget):
         self.runner.done.connect(self._done)
         self.runner.failed.connect(self._failed)
         self.runner.cancelled.connect(lambda: self._end("cancelled"))
+        for w in (self.duration, self.n_max_pairs, self.shots, self.seed, self.max_photons):
+            w.valueChanged.connect(self.refresh_stale)
+        for w in (self.detector_mode, self.backend):
+            w.currentIndexChanged.connect(self.refresh_stale)
+        for w in (self.n_modes, self.shots, self.seed, self.max_photons):
+            w.valueChanged.connect(self._editor_changed)
+        for w in (self.brightness, self.indist):
+            w.valueChanged.connect(self._editor_changed)
+        self.backend.currentIndexChanged.connect(self._editor_changed)
+        self.circuit_table.itemChanged.connect(self._editor_changed)
+        self.input_table.itemChanged.connect(self._editor_changed)
         self._resize_modes(2)
         self.set_experiment(self._default_experiment())
+        self._saved_key = self.editor_key()
         self.mode_box.setCurrentIndex(0 if provider is not None else 1)
         self._mode_changed()
 
@@ -556,12 +588,33 @@ class FockTab(RunGuard, QWidget):
         c = Circuit(2).beam_splitter(0, 1)
         return Experiment(c, [1, 1], name="HOM beam splitter")
 
+    def config_key(self):
+        return (
+            self.duration.value(),
+            self.n_max_pairs.value(),
+            self.detector_mode.currentIndex(),
+            self.shots.value(),
+            self.seed.value(),
+            self.backend.currentText(),
+            self.max_photons.value(),
+        )
+
     def set_outcome(self, outcome) -> None:
         if self.track_revision(outcome) and (self.setup_result is not None or self.setup_exp):
-            self.status.setText(self.stale_text(self._stale_note))
+            text = self.stale_text(self._stale_note)
+            if self.setup_mode:
+                self.status.setText(text)
+            if self.setup_result is not None:
+                self.state_summary.setText(text)
 
     def reset(self) -> None:
         self.invalidate()
+        self.result = None
+        self._result_key = None
+        self.results_table.setRowCount(0)
+        if self.bars is not None:
+            self.plot.removeItem(self.bars)
+            self.bars = None
         self.setup_exp = None
         self.setup_result = None
         self.extraction = None
@@ -615,10 +668,12 @@ class FockTab(RunGuard, QWidget):
         self.input_table.setItem(r, 2, QTableWidgetItem(""))
         combo = QComboBox()
         combo.addItems(DETECTOR_CHOICES)
+        combo.currentIndexChanged.connect(self._editor_changed)
         self.input_table.setCellWidget(r, 3, combo)
         self.input_table.setItem(r, 4, QTableWidgetItem("1"))
         self.input_table.setItem(r, 5, QTableWidgetItem("4"))
         self.input_table.setItem(r, 6, QTableWidgetItem(""))
+        self.input_table.setItem(r, 7, QTableWidgetItem("0"))
 
     def _item_changed(self, item: QTableWidgetItem) -> None:
         if not self._building:
@@ -680,6 +735,7 @@ class FockTab(RunGuard, QWidget):
         self._elements = self._collect_elements(strict=False)
         self._elements.append(e)
         self._fill_circuit_table()
+        self._editor_changed()
 
     def remove_element(self) -> None:
         row = self.circuit_table.currentRow()
@@ -688,6 +744,7 @@ class FockTab(RunGuard, QWidget):
         self._elements = self._collect_elements(strict=False)
         del self._elements[row]
         self._fill_circuit_table()
+        self._editor_changed()
 
     def move_element(self, step: int) -> None:
         row = self.circuit_table.currentRow()
@@ -698,6 +755,7 @@ class FockTab(RunGuard, QWidget):
         self._elements[row], self._elements[new] = self._elements[new], self._elements[row]
         self._fill_circuit_table()
         self.circuit_table.selectRow(new)
+        self._editor_changed()
 
     def _text(self, table: QTableWidget, r: int, c: int) -> str:
         item = table.item(r, c)
@@ -758,62 +816,195 @@ class FockTab(RunGuard, QWidget):
                 out.append(old)
         return out
 
+    def _snapshot(self) -> dict:
+        snap: dict = {
+            "n_modes": self.n_modes.value(),
+            "brightness": self.brightness.value(),
+            "indist": self.indist.value(),
+            "shots": self.shots.value(),
+            "seed": self.seed.value(),
+            "backend": self.backend.currentText(),
+            "max_photons": self.max_photons.value(),
+        }
+        for r in range(self.input_table.rowCount()):
+            combo = self.input_table.cellWidget(r, 3)
+            snap[r] = (
+                self._text(self.input_table, r, 1),
+                self._text(self.input_table, r, 2),
+                combo.currentText() if combo is not None else "",
+                self._text(self.input_table, r, 4),
+                self._text(self.input_table, r, 5),
+                self._text(self.input_table, r, 6),
+                self._text(self.input_table, r, 7),
+            )
+        return snap
+
     def experiment(self) -> Experiment:
-        n = self.n_modes.value()
+        """The editor's experiment: the loaded document with only the edited fields replaced.
+        Fields the editor does not show (conditions, description, count settings, custom wire
+        parameters, the seed's None) are kept from the document."""
+        base = self._base if self._base is not None else self._default_experiment()
+        shown, now = self._shown, self._snapshot()
+        n = now["n_modes"]
+        base_n = base.circuit.n_modes
+
+        def same(key, cols=None) -> bool:
+            if key not in shown or key not in now:
+                return False
+            if cols is None:
+                return shown[key] == now[key]
+            return all(shown[key][c] == now[key][c] for c in cols)
+
         circuit = Circuit(n)
         for e in self._collect_elements(strict=True):
             circuit.add(e)
-        occ, tags = [], []
+        if n == base_n and all(same(r, (0, 1)) for r in range(n)):
+            occ, tags = list(base.occupations), copy.deepcopy(base.tags)
+        else:
+            occ, tags = [], []
+            for r in range(n):
+                if r < base_n and same(r, (0, 1)):
+                    k = base.occupations[r]
+                    t = list(base.tags[r]) if base.tags and r < len(base.tags) else [0] * k
+                else:
+                    k = _parse_int(self._text(self.input_table, r, 1) or "0", f"mode {r} photons")
+                    if k < 0:
+                        raise FockError(f"mode {r}: negative photon number")
+                    raw = self._text(self.input_table, r, 2)
+                    t = [x.strip() for x in raw.split(",") if x.strip()]
+                    if t and len(t) != k:
+                        raise FockError(f"mode {r}: {k} photons but {len(t)} tags")
+                    t = [int(x) if str(x).lstrip("-").isdigit() else x for x in t] or [0] * k
+                occ.append(k)
+                tags.append(t)
+        det_cols = (2, 3, 4, 5, 6)
+        if n == base_n and all(same(r, det_cols) for r in range(n)):
+            detectors = copy.deepcopy(base.detectors)
+        else:
+            detectors = self._detectors_from_table(base, n, same)
+        limits = base.limits
+        if not same("max_photons"):
+            limits = replace(limits, max_photons=self.max_photons.value())
+        labels = base.mode_labels
+        if labels is not None and len(labels) != n:
+            labels = (list(labels) + [""] * n)[:n]
+        return Experiment(
+            circuit,
+            occ,
+            tags,
+            base.brightness if same("brightness") else self.brightness.value(),
+            base.indistinguishability if same("indist") else self.indist.value(),
+            detectors,
+            base.shots if same("shots") else self.shots.value(),
+            base.seed if same("seed") else self.seed.value(),
+            base.backend if same("backend") else self.backend.currentText(),
+            copy.deepcopy(base.conditions),
+            base.name,
+            base.description,
+            labels,
+            limits,
+            self._mixture,
+            base.rate_hz,
+            base.window_s,
+            base.duration_s,
+            base.acquisition,
+        )
+
+    def _detectors_from_table(self, base: Experiment, n: int, same) -> list[DetectorSpec]:
+        by_mode = {m: spec.model for spec in base.detectors for m in spec.modes}
         singles: list[DetectorSpec] = []
         groups: dict[str, list[int]] = {}
         models: dict[int, object] = {}
         for r in range(n):
-            k = int(_parse_float(self._text(self.input_table, r, 1) or "0", f"mode {r} photons"))
-            raw = self._text(self.input_table, r, 2)
-            t: list = [x.strip() for x in raw.split(",") if x.strip()]
-            if t and len(t) != k:
-                raise FockError(f"mode {r}: {k} photons but {len(t)} tags")
-            if not t:
-                t = [0] * k
-            occ.append(k)
-            tags.append([int(x) if str(x).lstrip("-").isdigit() else x for x in t])
-            combo = self.input_table.cellWidget(r, 3)
-            choice = combo.currentText() if combo is not None else DETECTOR_CHOICES[0]
-            eff = _parse_float(self._text(self.input_table, r, 4) or "1", f"mode {r} efficiency")
-            if choice == "threshold":
-                model = Threshold(efficiency=eff)
-            elif choice == "pseudo-PNR":
-                wires = int(_parse_float(self._text(self.input_table, r, 5) or "4", "wires"))
-                model = PseudoPNR(wires=wires, efficiency=eff)
+            old = by_mode.get(r) if r < base.circuit.n_modes else None
+            if old is not None and same(r, (2, 3, 4, 6)):
+                model = old
             else:
-                model = IdealPNR(efficiency=eff)
+                combo = self.input_table.cellWidget(r, 3)
+                choice = combo.currentText() if combo is not None else DETECTOR_CHOICES[0]
+                eff = _parse_float(
+                    self._text(self.input_table, r, 4) or "1", f"mode {r} efficiency"
+                )
+                dark = _parse_float(self._text(self.input_table, r, 7) or "0", f"mode {r} dark")
+                if choice == "threshold":
+                    model = Threshold(efficiency=eff, dark=dark)
+                elif choice == "pseudo-PNR":
+                    wires = _parse_int(self._text(self.input_table, r, 5) or "4", "wires")
+                    if isinstance(old, PseudoPNR) and old.wires == wires:
+                        model = replace(old, efficiency=eff, dark=dark)
+                    else:
+                        model = PseudoPNR(wires=wires, efficiency=eff, dark=dark)
+                else:
+                    model = IdealPNR(efficiency=eff, dark=dark)
             models[r] = model
             group = self._text(self.input_table, r, 6)
             if group:
                 groups.setdefault(group, []).append(r)
             else:
                 singles.append(DetectorSpec((r,), model))
-        detectors = singles + [
-            DetectorSpec(tuple(modes), models[modes[0]]) for modes in groups.values()
+        return singles + [DetectorSpec(tuple(m), models[m[0]]) for m in groups.values()]
+
+    def editor_key(self) -> str | None:
+        try:
+            return json.dumps(self.experiment().to_dict(), sort_keys=True, default=str)
+        except (SequoiaError, ValueError, TypeError):
+            return None
+
+    @property
+    def editor_dirty(self) -> bool:
+        return self.editor_key() != self._saved_key
+
+    def _editor_changed(self, *_args) -> None:
+        if self._building:
+            return
+        self._update_preserved()
+        if self.result is not None:
+            self._mark_editor_stale()
+
+    def _editor_result_outdated(self) -> bool:
+        return self.result is not None and self.editor_key() != self._result_key
+
+    def _mark_editor_stale(self) -> None:
+        if self._editor_result_outdated():
+            self.success_label.setText(
+                "outdated - the circuit or its inputs were edited since this run; run again"
+            )
+
+    def _update_preserved(self) -> None:
+        base = self._base
+        if base is None:
+            self.preserved_label.setText("")
+            return
+        parts = []
+        if base.conditions:
+            parts.append("named conditions " + ", ".join(base.conditions))
+        if base.description:
+            parts.append("description")
+        counts = [
+            f"{k} {v:g}"
+            for k, v in (
+                ("rate_hz", base.rate_hz),
+                ("window_s", base.window_s),
+                ("duration_s", base.duration_s),
+            )
+            if v is not None
         ]
-        rate, window, duration = self._counts_keys
-        return Experiment(
-            circuit,
-            occ,
-            tags,
-            self.brightness.value(),
-            self.indist.value(),
-            detectors,
-            self.shots.value(),
-            self.seed.value(),
-            self.backend.currentText(),
-            name=getattr(self, "_name", "photonic circuit experiment"),
-            mode_labels=getattr(self, "_mode_labels", None),
-            limits=Limits(max_photons=self.max_photons.value()),
-            input_mixture=self._mixture,
-            rate_hz=rate,
-            window_s=window,
-            duration_s=duration,
+        if counts:
+            parts.append("counts " + ", ".join(counts))
+        for spec in base.detectors:
+            m = spec.model
+            if isinstance(m, PseudoPNR) and (m.weights or m.wire_efficiencies):
+                parts.append(f"custom wire weights/efficiencies on modes {spec.modes}")
+        if base.seed is None:
+            parts.append("random seed (none set)")
+        if base.limits.max_work != Limits().max_work:
+            parts.append(f"max work {base.limits.max_work:g}")
+        if base.limits.max_photons > self.max_photons.maximum():
+            parts.append(f"max photons {base.limits.max_photons}")
+        self.preserved_label.setText(
+            "Kept from the document and not editable here: " + "; ".join(parts) + "."
+            if parts
+            else ""
         )
 
     def set_experiment(self, exp: Experiment) -> None:
@@ -827,6 +1018,7 @@ class FockTab(RunGuard, QWidget):
         self._building = True
         self._elements = list(exp.circuit.elements)
         self._fill_circuit_table()
+        self._building = True
         by_mode = {}
         group_of: dict[int, str] = {}
         for g, spec in enumerate(exp.detectors):
@@ -845,6 +1037,7 @@ class FockTab(RunGuard, QWidget):
             )
             model = by_mode.get(r, IdealPNR())
             combo = self.input_table.cellWidget(r, 3)
+            combo.blockSignals(True)
             if isinstance(model, Threshold):
                 combo.setCurrentIndex(1)
             elif isinstance(model, PseudoPNR):
@@ -852,16 +1045,24 @@ class FockTab(RunGuard, QWidget):
                 self.input_table.item(r, 5).setText(str(model.wires))
             else:
                 combo.setCurrentIndex(0)
+            combo.blockSignals(False)
             self.input_table.item(r, 4).setText(f"{model.efficiency:.10g}")
             self.input_table.item(r, 6).setText(group_of.get(r, ""))
+            self.input_table.item(r, 7).setText(f"{model.dark:.10g}")
         self.brightness.setValue(exp.brightness)
         self.indist.setValue(exp.indistinguishability)
         self.shots.setValue(exp.shots)
         self.seed.setValue(int(exp.seed) if exp.seed is not None else 0)
         idx = self.backend.findText(exp.backend)
         self.backend.setCurrentIndex(max(idx, 0))
+        self.max_photons.setValue(exp.limits.max_photons)
+        self._base = copy.deepcopy(exp)
+        self._shown = self._snapshot()
         self._building = False
         self._show_mixture()
+        self._update_preserved()
+        if self.result is not None:
+            self._mark_editor_stale()
 
     def _show_mixture(self) -> None:
         mix = self._mixture
@@ -878,6 +1079,7 @@ class FockTab(RunGuard, QWidget):
     def clear_mixture(self) -> None:
         self._mixture = None
         self._show_mixture()
+        self._editor_changed()
 
     def _start(self, text: str) -> None:
         self.run_button.setEnabled(False)
@@ -955,7 +1157,7 @@ class FockTab(RunGuard, QWidget):
         self.runner.start(job)
 
     def extract_to_editor(self) -> None:
-        if self.runner.busy:
+        if self.runner.busy or not self._may_replace():
             return
         job = self._setup_job("extract")
         if job is None:
@@ -981,6 +1183,7 @@ class FockTab(RunGuard, QWidget):
         except (SequoiaError, ValueError) as exc:
             self._end(f"invalid input: {exc}")
             return
+        self._run_key = self.editor_key()
 
         def job(should_cancel, progress):
             return run_experiment(exp, should_cancel, progress)
@@ -1017,6 +1220,7 @@ class FockTab(RunGuard, QWidget):
             self._payload_done(result)
             return
         self.result = result
+        self._result_key = self._run_key
         r = result.resources
         self._end(
             f"{r['output_states']} states in {r['seconds']:.3g} s ({result.backend}, "
@@ -1029,6 +1233,7 @@ class FockTab(RunGuard, QWidget):
             self.on_issues([Issue("warning", "photon_counts", "photon counts", t) for t in texts])
 
     def _payload_done(self, p: _Payload) -> None:
+        outdated = self.accept_run()
         self.components = p.components
         self.inputs = p.inputs
         self._fill_components()
@@ -1065,11 +1270,14 @@ class FockTab(RunGuard, QWidget):
                 note += f"; omitted input weight {p.result.omitted_weight:.3g}"
             self._stale_note = note
             self._issues(warnings)
-            self._end(note)
+            self._end(self.stale_text(note) if outdated else note)
+            if outdated:
+                self.state_summary.setText(self.stale_text(note))
         elif p.kind == "extract" and p.extraction is not None:
             exp, ex = p.extraction
             self.extraction = ex
             self.set_experiment(exp)
+            self._saved_key = None
             self.mode_box.setCurrentIndex(1)
             self.editor_tabs.setCurrentIndex(0)
             note = (
@@ -1079,13 +1287,19 @@ class FockTab(RunGuard, QWidget):
             )
             if ex.notes:
                 note += "; " + "; ".join(ex.notes)
+            note += (
+                "; the editor holds a copy: later edits to the canvas do not reach it, and edits "
+                "here do not change the canvas"
+            )
+            if outdated:
+                note = "the setup changed while extracting; extract again. " + note
             self._issues(warnings + list(ex.notes))
             self._end(note)
         else:
             self.notes_view.setPlainText("\n".join(se.notes))
             self._stale_note = f"{len(p.components)} components, {len(p.inputs)} input source(s)"
             self._issues(warnings)
-            self._end(self._stale_note)
+            self._end(self.stale_text(self._stale_note) if outdated else self._stale_note)
 
     def _clear_results(self) -> None:
         for table in (
@@ -1150,6 +1364,7 @@ class FockTab(RunGuard, QWidget):
             mean = sum(s[k] * p for s, p in res.detected.items())
             rate = p_click * cnt.windows_per_second
             total = rate * cnt.duration_s
+            sig = math.sqrt(count_variance(p_click, cnt.n_windows))
             model = models[d]
             row = (
                 (d, None),
@@ -1160,7 +1375,7 @@ class FockTab(RunGuard, QWidget):
                 (_num(mean), mean),
                 (f"{rate:.6g}", rate),
                 (f"{total:.6g}", total),
-                (f"{math.sqrt(total):.4g}", math.sqrt(total)),
+                (f"{sig:.4g}", sig),
             )
             for c, (text, key) in enumerate(row):
                 dt.setItem(k, c, _SortItem(text, key))
@@ -1178,12 +1393,13 @@ class FockTab(RunGuard, QWidget):
         for r, (label, p) in enumerate(sorted(patterns.items(), key=lambda kv: -kv[1])):
             rate = p * cnt.windows_per_second
             total = rate * cnt.duration_s
+            sig = math.sqrt(count_variance(p, cnt.n_windows))
             row = (
                 (label, float(r)),
                 (_num(p), p),
                 (f"{rate:.6g}", rate),
                 (f"{total:.6g}", total),
-                (f"{math.sqrt(total):.4g}", math.sqrt(total)),
+                (f"{sig:.4g}", sig),
             )
             for c, (text, key) in enumerate(row):
                 ct.setItem(r, c, _SortItem(text, key))
@@ -1324,7 +1540,13 @@ class FockTab(RunGuard, QWidget):
             )
             return
         sm = res.samples
-        self.samples_note.setText(f"{sm.shots} shots, seed {sm.seed}")
+        note = f"{sm.shots} shots, seed {sm.seed}"
+        if sm.unresolved_probability:
+            note += (
+                f"; {sm.unresolved} shots fell in the unresolved input weight "
+                f"({sm.unresolved_probability:.3g}, truncated pair numbers) and are not listed"
+            )
+        self.samples_note.setText(note)
         rows = sorted(sm.counts.items(), key=lambda kv: -kv[1])
         t.setRowCount(len(rows))
         for r, (s, c) in enumerate(rows):
@@ -1376,13 +1598,14 @@ class FockTab(RunGuard, QWidget):
             rate = p * cnt.windows_per_second
             total = rate * cnt.duration_s
             cp = cond.probs.get(s) if cond is not None else None
+            sig = math.sqrt(count_variance(p, cnt.n_windows))
             vals = (
                 (format_state(s), float(r)),
                 (self._pattern(s, ids), None),
                 (_num(p), p),
                 (f"{rate:.6g}", rate),
                 (f"{total:.6g}", total),
-                (f"{math.sqrt(total):.4g}", math.sqrt(total)),
+                (f"{sig:.4g}", sig),
                 ("" if cp is None else _num(cp), -1.0 if cp is None else cp),
             )
             for c, (text_, key) in enumerate(vals):
@@ -1477,6 +1700,7 @@ class FockTab(RunGuard, QWidget):
         else:
             shown = rows
         self.bars = self._draw_bars(self.plot, self.bars, shown, None)
+        self._mark_editor_stale()
 
     def open_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1503,12 +1727,41 @@ class FockTab(RunGuard, QWidget):
         self.status.setText(f"{title}: {message.splitlines()[0] if message else ''}")
         QMessageBox.warning(self, title, message)
 
+    def _may_replace(self) -> bool:
+        """Ask before an edited, unsaved circuit is replaced: save, discard or cancel."""
+        if not self.editor_dirty:
+            return True
+        if self.confirm_replace is not None:
+            answer = self.confirm_replace(self)
+        else:
+            box = QMessageBox.question(
+                self,
+                "Unsaved circuit",
+                "The circuit in the editor has unsaved changes. Save them first?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+            )
+            answer = {
+                QMessageBox.StandardButton.Save: "save",
+                QMessageBox.StandardButton.Discard: "discard",
+            }.get(box, "cancel")
+        if answer == "save":
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save circuit experiment", "", "Circuit experiment (*.yaml *.yml *.json)"
+            )
+            return bool(path) and self.save_path(path)
+        return answer == "discard"
+
     def open_path(self, path: str | Path) -> bool:
+        if not self._may_replace():
+            return False
         try:
             self.set_experiment(load_experiment(path))
         except (SequoiaError, OSError, ValueError) as exc:
             self._problem("Cannot open circuit", str(exc))
             return False
+        self._saved_key = self.editor_key()
         self.status.setText(f"opened {Path(path).name}")
         return True
 
@@ -1518,12 +1771,15 @@ class FockTab(RunGuard, QWidget):
         except (SequoiaError, OSError, ValueError) as exc:
             self._problem("Cannot save circuit", str(exc))
             return False
+        self._saved_key = self.editor_key()
         self.status.setText(f"saved {Path(path).name}")
         return True
 
     def import_path(self, path: str | Path) -> bool:
         from sequoia.fock.import_perceval_gui import import_perceval_gui
 
+        if not self._may_replace():
+            return False
         try:
             imp = import_perceval_gui(path, strict=False)
         except (SequoiaError, OSError, ValueError) as exc:
@@ -1532,6 +1788,7 @@ class FockTab(RunGuard, QWidget):
         n = imp.circuit.n_modes
         imp.experiment.occupations = [1 if i < min(2, n) else 0 for i in range(n)]
         self.set_experiment(imp.experiment)
+        self._saved_key = None
         note = f"imported {Path(path).name}: {n} modes, {imp.n_components} components"
         if imp.warnings:
             note += f"; {len(imp.warnings)} warning(s): " + "; ".join(imp.warnings)
