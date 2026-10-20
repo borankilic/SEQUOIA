@@ -7,6 +7,7 @@ import numpy as np
 
 from sequoia.engines.cache import ResourceLimitError, RunCache, check_cancel
 from sequoia.engines.classical import SimulationResult
+from sequoia.engines.gaussian import UnsupportedSourceError
 from sequoia.engines.rates import (
     FWHM_TO_SIGMA,
     ROLES,
@@ -228,6 +229,7 @@ def simulate_timetags(
     max_events: int = MAX_EVENTS,
     max_memory_bytes: float | None = None,
     schmidt_number: float | None = None,
+    fock_as_poisson: bool = False,
 ) -> TimeTags:
     """Monte Carlo time tags for every tagger channel of ``setup``.
 
@@ -252,6 +254,22 @@ def simulate_timetags(
     builder = _Builder(engine)
     rng = np.random.default_rng(seed)
 
+    fock = {d: engine.det_data[d].get("fock_hz", 0.0) for d in builder.tagged}
+    if any(v > 0 for v in fock.values()):
+        names = ", ".join(f"'{n}'" for n in engine.fock_sources())
+        if not fock_as_poisson:
+            raise UnsupportedSourceError(
+                f"Fock-state source {names} reaches the detectors; this engine would replace "
+                "its number statistics by Poisson light. Use the Photon counts tab, or pass "
+                "fock_as_poisson=True to accept the approximation explicitly"
+            )
+        engine.issue(
+            "warning",
+            "fock_as_poisson",
+            names,
+            "approximation: the Fock-state light is simulated as Poisson background at its "
+            "mean flux (no antibunching, no two-photon interference)",
+        )
     models = []
     for src in engine.sources:
         if src.rate > 0 and builder.tagged:
@@ -299,7 +317,7 @@ def simulate_timetags(
         dm = engine.detectors[det_id].model
         parts = list(arrivals[det_id])
         parts.append(_poisson_times(rng, info["dark_hz"], duration))
-        parts.append(_poisson_times(rng, info["leakage_hz"], duration))
+        parts.append(_poisson_times(rng, info["leakage_hz"] + fock[det_id], duration))
         base = np.sort(np.concatenate(parts)) if parts else np.empty(0)
         registered = dead_time_filter(base, dm.dead_time)
         if dm.afterpulse_probability > 0.0 and dm.afterpulse_tau > 0.0 and len(registered):

@@ -35,7 +35,7 @@ from sequoia.library.store import Library
 from sequoia.light.detection import DetectorModel, TaggerModel
 from sequoia.light.gaussian import aperture_transmission, overlap
 from sequoia.light.pairs import PairEmission
-from sequoia.light.state import Beam
+from sequoia.light.state import Beam, combine
 from sequoia.setup.model import Setup
 
 C_LIGHT = constants.c
@@ -720,10 +720,26 @@ class _Engine:
                     )
                     return
 
+    def fock_sources(self) -> list[str]:
+        return [k for k, s in self.classical.sources.items() if s.statistics == "fock"]
+
+    def port_fock_light(self, inst_id: str, port: str):
+        fock = set(self.fock_sources())
+        if not fock:
+            return None, set()
+        for state in self.classical.links.values():
+            if state.dst == f"{inst_id}.{port}":
+                beams = [b for b in state.end_beams if b.source in fock]
+                if beams:
+                    return combine(beams, self.classical.sources), {b.source for b in beams}
+        return None, set()
+
     def background(self) -> None:
+        fock_seen: set[str] = set()
         for det_id, det in self.detectors.items():
             model = det.model
             leak = 0.0
+            fock_hz = 0.0
             radius_of = getattr(self.net.components[det_id], "aperture_radius", None)
             radius = radius_of() if radius_of is not None else None
             for port in det.ports:
@@ -738,6 +754,18 @@ class _Engine:
                 rate = np.einsum("nab,nba->n", eff, light.coherency).real / energy
                 collected = 1.0 if radius is None else aperture_transmission(radius, light.mode)
                 leak += float(np.sum(rate)) * collected
+                fock_light, fock_ids = self.port_fock_light(det_id, port)
+                if fock_light is not None:
+                    f_eff = np.asarray(model.efficiency(fock_light.wavelengths), dtype=complex)
+                    f_energy = constants.h * C_LIGHT / fock_light.wavelengths
+                    f_rate = np.einsum("nab,nba->n", f_eff, fock_light.coherency).real / f_energy
+                    f_col = (
+                        1.0 if radius is None else aperture_transmission(radius, fock_light.mode)
+                    )
+                    fock_hz += float(np.sum(f_rate)) * f_col
+                    fock_seen |= fock_ids
+            fock_hz = min(fock_hz, leak)
+            classical_leak = leak - fock_hz
             pair = {s.inst: sum(s.singles[det_id].values()) for s in self.sources}
             pair_total = sum(pair.values())
             dark = model.dark_count_rate
@@ -760,7 +788,8 @@ class _Engine:
                 "incident_pair_hz": pair_total,
                 "incident_background_hz": incident_bg,
                 "dark_hz": dark,
-                "leakage_hz": leak,
+                "leakage_hz": classical_leak,
+                "fock_hz": fock_hz,
                 "afterpulse_hz": after,
                 "dead_time_s": dead,
                 "dead_time_detector_s": model.dead_time,
@@ -769,15 +798,28 @@ class _Engine:
                 "survival": survival,
                 "pair_by_source": pair,
             }
-            self.saturation_issues(det_id, incident, leak, survival, dead, model.dead_time)
-            if incident > 0 and leak > LEAKAGE_FRACTION * incident:
+            self.saturation_issues(
+                det_id, incident, classical_leak, survival, dead, model.dead_time
+            )
+            if incident > 0 and classical_leak > LEAKAGE_FRACTION * incident:
                 self.issue(
                     "warning",
                     "pump_leakage",
                     f"'{det_id}'",
-                    f"classical light reaching the detector produces {leak:.4g} counts/s, "
-                    f"{100 * leak / incident:.1f}% of its singles",
+                    f"classical light reaching the detector produces {classical_leak:.4g} "
+                    f"counts/s, {100 * classical_leak / incident:.1f}% of its singles",
                 )
+        if fock_seen:
+            names = ", ".join(f"'{n}'" for n in sorted(fock_seen))
+            self.issue(
+                "warning",
+                "fock_source_mean_flux",
+                names,
+                f"Fock-state source {names}: this engine carries only its mean photon flux "
+                "(photons per pulse x repetition rate) and counts it as detector singles without "
+                "number statistics (no antibunching, no two-photon interference); use the "
+                "Photon counts tab for its photon-number statistics",
+            )
 
     def source_diagnostics(self) -> None:
         if not self.detectors:
@@ -1930,7 +1972,10 @@ def simulate_rates(
             "warning",
             "no_pair_source",
             "setup",
-            "no component emitted photon pairs; only classical leakage and dark counts are "
+            "no component emitted photon pairs; only the mean flux of the Fock-state sources, "
+            "classical leakage and dark counts are reported"
+            if engine.fock_sources()
+            else "no component emitted photon pairs; only classical leakage and dark counts are "
             "reported",
         )
     links = {}

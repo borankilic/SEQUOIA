@@ -153,6 +153,15 @@ probabilities, photons arriving per detector and per mode, expected counts, samp
   `Threshold(efficiency, dark = 1 - exp(-dark_rate * window))` on the summed H+V photons
   (`detectors_mode="pnr"` gives ideal PNR). Dead time, jitter and afterpulsing are not modelled.
   Counts per second are `probability * windows per second`.
+  Each detector's potential click rate times its dead time is checked
+  (`SetupResult.dead_time_load`); above 0.1 the result carries a message and the GUI a
+  "regime not modelled" line, since the numbers are potential clicks before dead time, not
+  recorded counts.
+- **Other engines**: a FockSource's light is marked `statistics="fock"`. The rate engine counts
+  only its mean flux (`det_data[...]["fock_hz"]`, separate from classical `leakage_hz`) and says
+  so (`fock_source_mean_flux`) instead of reporting pump leakage. The Gaussian and Monte Carlo
+  engines refuse such setups (`UnsupportedSourceError`) unless `fock_as_poisson=True`, which
+  records the Poisson approximation as a `fock_as_poisson` warning.
 
 Approximations: one wavelength per photon species (path phase `2 pi OPL / lambda`); perfect
 spatial overlap at recombination; no timing, jitter or dead time; equal-weight Schmidt modes;

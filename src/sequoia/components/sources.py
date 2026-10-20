@@ -215,6 +215,7 @@ class FockSource(Component):
             coherency=np.outer(jones, jones.conj()),
             repetition_rate=p.repetition_rate.si,
             pulse_width=p.pulse_width.si,
+            statistics="fock",
         )
         ctx.sources[ctx.instance_id] = source
         mode = _launch_mode(p, wavelength, "a Fock source")
