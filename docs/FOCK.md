@@ -37,6 +37,10 @@ enter as an explicit Fock input, a coherent superposition, or a statistical mixt
   that adds one count (saturating). The compiler puts SEQUOIA detector efficiency here, not in the
   circuit, unless it is polarization dependent (then its square root is part of the transfer and
   listed in `efficiency_in_circuit`).
+  The input cutoff `n_max` of `response_matrix(n_max)` only sets the rows; the columns are the
+  detector's own outputs: ideal PNR reads up to `n_max + 1` with a dark click, pseudo-PNR always
+  has `wires + 1` outputs (a dark click adds one count, saturating at `wires`), threshold two. So
+  dark counts survive on vacuum and one photon plus a dark click reads 2 on a PNR.
 - Conditioning: `condition(dist, {mode: value | (op, value)})` returns `success_probability`, the
   unnormalized `joint` and the normalized `probs` separately.
 
@@ -79,14 +83,25 @@ pattern counts, so many photons spread over many tag classes hit `Limits.max_wor
 ## Counts
 
 Probabilities are per detection window. `expected_counts(dist | conditional, rate_hz, window_s,
-duration_s)`: windows per second is `rate_hz` (repetition rate), else `1/window_s`; per second =
-probability x windows per second; total over `duration_s` with Poisson `sigma = sqrt(N)`. For a
+duration_s, acquisition)`: windows per second is `rate_hz` (repetition rate), else `1/window_s`;
+per second = probability x windows per second; total over `duration_s`, i.e. `N = windows per
+second x duration` windows. `sigma` is the predicted spread of the count. The default acquisition
+`fixed_windows` treats the N windows as independent trials, so counts are multinomial: `Var N_i =
+N p_i (1 - p_i)`, `Cov(N_i, N_j) = -N p_i p_j` (`ExpectedCounts.covariance`, `sigma_sum` for a
+sum of outcomes); `acquisition="poisson"` is the rare-event approximation `Var N_i = N p_i`. For a
 `Conditional` the unnormalised joint is used, giving the accepted-event rate. `outcome_table(dist,
-detectors, top, n_windows)` lists states by probability with expected counts `N p` and binomial
-`sigma = sqrt(N p (1 - p))`. An `Experiment` takes `input_mixture`, `rate_hz`, `window_s`,
-`duration_s` (document keys `input_mixture` and `counts: {rate_hz, window_s, duration_s}`);
-`run_experiment` then fills `FockResult.counts` (default duration 1 s). Old documents load as
-before.
+detectors, top, n_windows, acquisition)` uses the same rule. An `Experiment` takes
+`input_mixture`, `rate_hz`, `window_s`, `duration_s`, `acquisition` (document keys
+`input_mixture` and `counts: {rate_hz, window_s, duration_s, acquisition}`); `run_experiment` then
+fills `FockResult.counts`. Rates and windows must be finite and positive; a duration must be finite
+and `>= 0` (zero gives zero counts); a missing duration (None) means 1 s. Invalid values are
+errors in the API, the document loader and the GUI alike. Old documents load as before.
+
+Sampling (`sample(dist, shots, seed, tail=...)`): probability the calculation did not resolve
+(`1 - mass`, the truncated input weight) is never silently renormalised away. The default
+`tail="unresolved"` draws it as an explicit outcome (`Samples.unresolved`,
+`unresolved_probability`; shown in the CLI and GUI); `tail="condition"` samples conditioned on the
+resolved sector and records `conditioned_on`; `tail="error"` refuses.
 
 ## SEQUOIA setups
 

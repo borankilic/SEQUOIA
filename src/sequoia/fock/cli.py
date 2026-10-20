@@ -72,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
     if len(rows) > args.top:
         print(f"... {len(rows) - args.top} more states")
     print(f"total probability {result.mass:.12g}")
+    if result.samples and result.samples.unresolved_probability:
+        print(
+            f"unresolved (truncated input, probability "
+            f"{result.samples.unresolved_probability:.3g}): {result.samples.unresolved} shots"
+        )
     for name, cond in result.conditionals.items():
         print(f"condition {name}: success probability {cond.success_probability:.6g}")
         for s, p in sorted(cond.probs.items(), key=lambda kv: -kv[1])[: args.top]:
