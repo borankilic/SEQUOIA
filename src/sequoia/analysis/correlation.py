@@ -279,15 +279,50 @@ def g2_histogram(
     }
 
 
-def _clock(rates: Mapping[str, float] | Sequence[float], names: Sequence[str]) -> float | None:
-    if isinstance(rates, Mapping):
-        known = [float(rates[n]) for n in names if rates.get(n)]
-        if not known:
-            return None
-        if max(known) > min(known) * (1.0 + 1e-9):
-            return None
-        return known[0]
-    return float(max(rates)) if len(rates) else None
+TIMING_NOTES = {
+    "unknown": "no single pulse clock is known for {names} (mixed or unknown timing); the CW "
+    "singles estimator was used and is not valid for pulsed light",
+    "mixed": "{names} mix pulsed and CW light; the CW singles estimator was used and is not "
+    "valid for the pulsed part",
+    "unequal": "{names} have unequal pulse clocks; the CW singles estimator was used and is not "
+    "valid for pulsed light",
+    "unsynchronized": "{names} are clocked by different sources at the same rate, which need "
+    "not be synchronized; the CW singles estimator was used and is not valid for pulsed light",
+    "legacy": "the record has no per-channel clock; the fastest source clock was applied to "
+    "{names}",
+}
+
+
+def _clock(
+    rates: Mapping[str, float] | Sequence[float],
+    names: Sequence[str],
+    ids: Mapping[str, str] | None = None,
+) -> tuple[float | None, str]:
+    """Common pulse clock of ``names`` and the timing class: ``pulsed``, ``cw``, ``legacy``
+    (a plain list of source rates) or a reason why no clock applies."""
+    if not isinstance(rates, Mapping):
+        return (float(max(rates)), "legacy") if len(rates) else (None, "cw")
+    values = [rates.get(n) for n in names]
+    if any(v is None for v in values):
+        return None, "unknown"
+    values = [float(v) for v in values]
+    if all(v == 0.0 for v in values):
+        return None, "cw"
+    if any(v == 0.0 for v in values):
+        return None, "mixed"
+    if max(values) > min(values) * (1.0 + 1e-9):
+        return None, "unequal"
+    if ids is not None:
+        known = {ids.get(n) for n in names}
+        if None in known or len(known) > 1:
+            return None, "unsynchronized"
+    return values[0], "pulsed"
+
+
+def _timing(result: dict[str, Any], timing: str, names: Sequence[str]) -> None:
+    result["timing"] = timing
+    if timing in TIMING_NOTES:
+        result["timing_note"] = TIMING_NOTES[timing].format(names=" and ".join(names))
 
 
 def _center(spec: Mapping[str, Any], key: str, name: str) -> float | str:
@@ -302,14 +337,18 @@ def analyse_tags(
     duration: float,
     specs: Sequence[Mapping[str, Any]],
     repetition_rates: Mapping[str, float] | Sequence[float] = (),
+    clock_ids: Mapping[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Apply the setup's ``analyses`` entries to a time-tag record.
 
     ``coincidences``, ``heralded_g2``, ``g2`` and ``histogram`` entries use the same keys as the
     rate engine. Accidentals come from sidebands one pulse period away for pulsed sources and
     from the singles product for CW sources. ``repetition_rates`` is either a sequence (the
-    fastest clock applies to every analysis) or a ``{channel: rate_hz}`` map; channels without a
-    clock, or with unequal clocks, use the CW singles estimator.
+    fastest clock applies to every analysis, legacy records) or a ``{channel: rate_hz}`` map, in
+    which 0 marks CW light and a missing channel has no single known clock. ``clock_ids`` names
+    the clock of each pulsed channel; equal rates from different clocks are not treated as
+    synchronized. Without a common clock the CW singles estimator is used and the result carries
+    ``timing`` and ``timing_note`` saying why.
 
     Optional keys: ``center`` (coincidences), ``center_a`` / ``center_b`` (heralded g2) and
     ``search`` (half range of the automatic peak search). A numeric centre disables the search.
@@ -328,7 +367,7 @@ def analyse_tags(
             if kind == "coincidences":
                 a, b = spec["channels"]
                 window = _duration(spec["window"], f"analysis '{name}': window")
-                rep = _clock(repetition_rates, [a, b])
+                rep, timing = _clock(repetition_rates, [a, b], clock_ids)
                 result = coincidences(
                     _arr(channels, a, name),
                     _arr(channels, b, name),
@@ -341,6 +380,7 @@ def analyse_tags(
                     widen=widen,
                 )
                 result["channels"] = [a, b]
+                _timing(result, timing, [a, b])
             elif kind == "heralded_g2":
                 window = _duration(spec["window"], f"analysis '{name}': window")
                 result = heralded_g2(
@@ -379,13 +419,14 @@ def analyse_tags(
 class TagRecord:
     channels: dict[str, np.ndarray]
     duration: float | None
-    repetition_rates: dict[str, float] = field(default_factory=dict)
+    repetition_rates: dict[str, float] | None = None
     meta: dict[str, Any] = field(default_factory=dict)
     format_version: int = 1
+    clock_ids: dict[str, str] | None = None
 
     @property
     def has_clock(self) -> bool:
-        return bool(self.repetition_rates)
+        return self.repetition_rates is not None
 
 
 def read_tag_record(path: Path | str) -> TagRecord:
@@ -397,16 +438,20 @@ def read_tag_record(path: Path | str) -> TagRecord:
             duration = float(data["duration"]) if "duration" in files else None
             version = int(data["format_version"]) if "format_version" in files else 1
             meta: dict[str, Any] = {}
-            rates: dict[str, float] = {}
+            rates: dict[str, float] | None = None
+            ids: dict[str, str] | None = None
             if "meta_json" in files:
                 meta = json.loads(str(data["meta_json"]))
-                rates = {str(k): float(v) for k, v in meta.pop("clock", {}).items()}
+                if "clock" in meta:
+                    rates = {str(k): float(v) for k, v in meta.pop("clock").items()}
+                if "clock_ids" in meta:
+                    ids = {str(k): str(v) for k, v in meta.pop("clock_ids").items()}
             channels = {
                 k: np.sort(np.asarray(data[k], dtype=float))
                 for k in data.files
                 if k not in RESERVED_KEYS
             }
-        return TagRecord(channels, duration, rates, meta, version)
+        return TagRecord(channels, duration, rates, meta, version, ids)
     columns: dict[str, list[float]] = {}
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.reader(handle)
@@ -434,8 +479,10 @@ def write_tags(
     duration: float,
     repetition_rates: Mapping[str, float] | Sequence[float] = (),
     meta: Mapping[str, Any] | None = None,
+    clock_ids: Mapping[str, str] | None = None,
 ) -> None:
-    """Write a version-2 tag file; the pulse clock and run metadata travel with the arrays."""
+    """Write a version-2 tag file; the pulse clock and run metadata travel with the arrays.
+    A clock map is written as given, an empty one included (no channel has a valid clock)."""
     path = Path(path)
     if path.suffix.lower() != ".npz":
         raise CorrelationError("time tags are written as .npz")
@@ -447,6 +494,8 @@ def write_tags(
         info["clock"] = {str(k): float(v) for k, v in repetition_rates.items()}
     elif len(repetition_rates):
         info["clock"] = {name: float(max(repetition_rates)) for name in channels}
+    if clock_ids is not None:
+        info["clock_ids"] = {str(k): str(v) for k, v in clock_ids.items()}
     payload = {k: np.asarray(v) for k, v in channels.items()}
     fd, tmp = tempfile.mkstemp(suffix=".npz", dir=path.parent or ".")
     os.close(fd)

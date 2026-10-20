@@ -34,11 +34,14 @@ class TimeTags:
     issues: list[Issue] = field(default_factory=list)
     repetition_rates: list[float] = field(default_factory=list)
     truth: dict[str, Any] = field(default_factory=dict)
-    channel_clocks: dict[str, float] = field(default_factory=dict)
+    channel_clocks: dict[str, float] | None = None
+    clock_ids: dict[str, str] = field(default_factory=dict)
 
     @property
     def clock(self) -> dict[str, float] | list[float]:
-        return self.channel_clocks or self.repetition_rates
+        # None: no per-channel map (legacy record); {}: a map in which no channel has one clock.
+        # A value of 0 marks a channel that only sees CW light.
+        return self.repetition_rates if self.channel_clocks is None else self.channel_clocks
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -335,16 +338,21 @@ def simulate_timetags(
         "sources": {m.inst: {"rate_hz": m.rate, "patterns": m.patterns} for m in models},
         "detectors": engine.det_data,
     }
-    contributors: dict[str, list[float | None]] = {}
+    contributors: dict[str, list[tuple[str, float | None]]] = {}
     for m in models:
         seen = {d for dets, _p in m.patterns for d in dets}
         for det_id in seen:
-            contributors.setdefault(det_id, []).append(m.repetition_rate)
+            contributors.setdefault(det_id, []).append((m.inst, m.repetition_rate))
     clocks: dict[str, float] = {}
+    clock_ids: dict[str, str] = {}
     for ch in engine.channels.values():
-        rates = contributors.get(ch.detector, [])
-        if rates and all(r for r in rates) and max(rates) <= min(rates) * (1.0 + 1e-9):
-            clocks[ch.name] = float(rates[0])
+        found = contributors.get(ch.detector, [])
+        pulsed = [(inst, r) for inst, r in found if r]
+        if not pulsed:
+            clocks[ch.name] = 0.0
+        elif len(pulsed) == len(found) and len({inst for inst, _ in pulsed}) == 1:
+            clocks[ch.name] = float(pulsed[0][1])
+            clock_ids[ch.name] = pulsed[0][0]
     return TimeTags(
         channels,
         duration,
@@ -353,6 +361,7 @@ def simulate_timetags(
         [m.repetition_rate for m in models if m.repetition_rate],
         truth,
         clocks,
+        clock_ids,
     )
 
 

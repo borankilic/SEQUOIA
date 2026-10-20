@@ -179,6 +179,8 @@ def format_mc_report(tags, analyses, comparisons=None) -> str:
                 f"  true {a['true_hz']:.5g} +- {a['true_sigma_hz']:.2g} Hz, accidental "
                 f"{a['accidental_hz']:.4g} Hz, CAR {a['car']:.4g}"
             )
+            if a.get("timing_note"):
+                lines.append(f"  note: {a['timing_note']}")
         elif kind == "heralded_g2":
             lines.append(f"{name} [heralded_g2]")
             lines.append(

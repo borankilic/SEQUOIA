@@ -84,11 +84,20 @@ def _run_mc(
         tags = simulate_timetags(
             setup, library, duration, seed=seed, cache=cache, schmidt_number=schmidt
         )
-        analyses = analyse_tags(tags.channels, tags.duration, setup.analyses, tags.clock)
+        analyses = analyse_tags(
+            tags.channels, tags.duration, setup.analyses, tags.clock, tags.clock_ids
+        )
         rates = simulate_rates(setup, library, cache=cache)
         comparisons = compare_with_rates(tags, analyses, rates)
         if tags_path:
-            write_tags(tags_path, tags.channels, tags.duration, tags.clock, tags.metadata())
+            write_tags(
+                tags_path,
+                tags.channels,
+                tags.duration,
+                tags.clock,
+                tags.metadata(),
+                tags.clock_ids,
+            )
     except (SequoiaError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -179,16 +188,18 @@ def _analyze_tags(
         if rep_rate:
             clock = {name: rep_rate for name in channels}
         elif cw:
-            clock = {}
+            clock = {name: 0.0 for name in channels}
         else:
             clock = record.repetition_rates
-            if not clock:
+            if clock is None:
+                clock = {}
                 print(
                     "note: the file records no pulse clock, so accidentals use the CW singles "
                     "product; pass --rep-rate HZ for pulsed data or --cw to silence this",
                     file=sys.stderr,
                 )
-        analyses = analyse_tags(channels, span, setup.analyses, clock)
+        ids = record.clock_ids if not (rep_rate or cw) else None
+        analyses = analyse_tags(channels, span, setup.analyses, clock, ids)
     except (SequoiaError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -252,8 +263,10 @@ def main() -> None:
         parser.add_argument(
             "--outcomes", default="tt,tr,rt,rr", help="four coincidence analysis names"
         )
-        parser.add_argument("--quantity", choices=("true_hz", "total_hz"), default="true_hz")
-        parser.add_argument("--time", type=float, default=10.0, help="integration time per setting")
+        parser.add_argument("--quantity", choices=("total_hz", "true_hz"), default="total_hz")
+        parser.add_argument(
+            "--time", type=float, default=10.0, help="integration time per setting pair (s)"
+        )
         args = parser.parse_args(argv[1:])
         sys.exit(_run_chsh(args))
     if argv and argv[0] == "fock":

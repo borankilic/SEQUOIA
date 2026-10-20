@@ -67,7 +67,8 @@ class MonteCarloTab(RunGuard, QWidget):
         self.schmidt.setSpecialValueText("Poisson")
         self.schmidt.setToolTip(
             "Pair-number statistics of pulsed sources. Poisson: independent pairs. "
-            "K >= 1: thermal statistics of K equally weighted modes (negative binomial)."
+            "K >= 1: thermal statistics of K equally weighted modes (negative binomial). "
+            "Values between 0 and 1 are refused."
         )
         self.run_button = QPushButton("Run Monte Carlo")
         self.cancel_button = QPushButton("Cancel")
@@ -129,6 +130,12 @@ class MonteCarloTab(RunGuard, QWidget):
         self.runner.done.connect(self._done)
         self.runner.failed.connect(self._failed)
         self.runner.cancelled.connect(lambda: self._end("cancelled"))
+        self.duration.valueChanged.connect(self.refresh_stale)
+        self.seed.valueChanged.connect(self.refresh_stale)
+        self.schmidt.valueChanged.connect(self.refresh_stale)
+
+    def config_key(self):
+        return (self.duration.value(), self.seed.value(), self.schmidt.value())
 
     def set_outcome(self, outcome) -> None:
         if self.track_revision(outcome) and self.outcome is not None:
@@ -158,6 +165,12 @@ class MonteCarloTab(RunGuard, QWidget):
         duration = self.duration.value()
         seed = None if self.seed.value() < 0 else self.seed.value()
         k = self.schmidt.value()
+        if 0.0 < k < 1.0:
+            self.status.setText(
+                f"K = {k:g} is not a mode number: use 0 for Poisson pair statistics or K >= 1 "
+                "for thermal statistics of K modes"
+            )
+            return
         schmidt = k if k >= 1.0 else None
         self.begin_run()
 
@@ -173,7 +186,9 @@ class MonteCarloTab(RunGuard, QWidget):
                 progress=progress,
                 schmidt_number=schmidt,
             )
-            analyses = analyse_tags(tags.channels, tags.duration, setup.analyses, tags.clock)
+            analyses = analyse_tags(
+                tags.channels, tags.duration, setup.analyses, tags.clock, tags.clock_ids
+            )
             rates = simulate_rates(setup, library, cache=cache, should_cancel=should_cancel)
             return McOutcome(tags, analyses, compare_with_rates(tags, analyses, rates))
 
@@ -253,7 +268,7 @@ class MonteCarloTab(RunGuard, QWidget):
         if self.on_issues is not None:
             self.on_issues(outcome.tags.issues)
         self.status.setToolTip("\n".join(issues))
-        self._end(text)
+        self._end(self.stale_text(text) if self.accept_run() else text)
         self._draw()
 
     def _draw(self) -> None:
@@ -275,7 +290,9 @@ class MonteCarloTab(RunGuard, QWidget):
             return
         tags = self.outcome.tags
         try:
-            write_tags(path, tags.channels, tags.duration, tags.clock, tags.metadata())
+            write_tags(
+                path, tags.channels, tags.duration, tags.clock, tags.metadata(), tags.clock_ids
+            )
         except (OSError, ValueError, CorrelationError) as exc:
             QMessageBox.warning(self, "Cannot save time tags", f"{path}\n\n{exc}")
             return
