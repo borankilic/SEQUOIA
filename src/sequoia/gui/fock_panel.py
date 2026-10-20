@@ -622,6 +622,13 @@ class FockTab(RunGuard, QWidget):
         c = Circuit(2).beam_splitter(0, 1)
         return Experiment(c, [1, 1], name="HOM beam splitter")
 
+    def sweep_settings(self) -> dict:
+        return {
+            "detectors_mode": "pnr" if self.detector_mode.currentIndex() == 1 else "setup",
+            "n_max": self.n_max_pairs.value() or None,
+            "duration": self.duration.value(),
+        }
+
     def config_key(self):
         return (
             self.duration.value(),

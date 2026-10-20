@@ -345,6 +345,10 @@ class ResultsDock(QWidget):
         self.gaussian = GaussianTab(lambda: self.provider())
         self.fock = FockTab(lambda: self.provider())
         self.chsh = ChshTab(lambda: self.provider())
+        self.sweeps.fock_settings = self.fock.sweep_settings
+        for w in (self.fock.duration, self.fock.n_max_pairs):
+            w.valueChanged.connect(self.sweeps.refresh_stale)
+        self.fock.detector_mode.currentIndexChanged.connect(self.sweeps.refresh_stale)
         self.plot_tabs = {
             "Caustic": self.caustic,
             "Polarization": self.polarization,

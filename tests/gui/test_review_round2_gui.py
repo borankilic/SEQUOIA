@@ -358,3 +358,21 @@ def test_chsh_workflow_through_the_gui(window, qtbot):
     c.outcomes[0].setCurrentText("tr")
     c.run()
     assert not c.runner.busy and "four different" in c.status.text()
+
+
+def test_sweep_tab_scans_photon_number_observables(window, qtbot):
+    open_template(qtbot, window, "fock_hom")
+    s = window.results.sweeps
+    s.set_outcome(None)
+    s.rows[0].target.setCurrentText("settings:phase.phase")
+    s.rows[0].unit.setText("deg")
+    s.rows[0].start.setValue(0.0)
+    s.rows[0].stop.setValue(90.0)
+    s.rows[0].points.setValue(3)
+    s.fock_check.setChecked(True)
+    s.run()
+    qtbot.waitUntil(lambda: s.result is not None and not s.runner.busy, timeout=WAIT)
+    assert "fock:P(spad_1=1,spad_2=1)" in s.result.data
+    s.metric.setCurrentText("fock:P(spad_1=1,spad_2=1)")
+    window.results.fock.duration.setValue(5.0)
+    assert "outdated" in s.status.text()

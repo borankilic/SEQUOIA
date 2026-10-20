@@ -472,3 +472,37 @@ def test_json_circuit_write_failure_keeps_the_old_file(tmp_path, monkeypatch):
     monkeypatch.undo()
     assert path.read_text() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ["c.json"]
+
+
+# U07: photon-number observables in sweeps
+
+
+def test_fock_phase_fringe_sweep_matches_single_points():
+    from sequoia.analysis.sweep import fock_metrics, linspace_axis, run_sweep, with_values
+
+    setup = _fock_hom()
+    axis = linspace_axis("settings:phase.phase", 0.0, 90.0, 4, "deg")
+    res = run_sweep(setup, LIB, [axis], fock={"detectors_mode": "pnr"})
+    name = "fock:P(spad_1=1,spad_2=1)"
+    assert name in res.data and not res.failures
+    for i, v in enumerate(axis.values):
+        point = with_values(setup, [(axis.target, float(v), "deg")])
+        assert res.data[name][i] == pytest.approx(
+            fock_metrics(point, LIB, detectors_mode="pnr")[name]
+        )
+    fringe = res.data[name]
+    assert fringe[0] == pytest.approx(fringe.max()) and fringe[0] > 0.2
+    assert fringe[-1] == pytest.approx(0.0, abs=1e-4)
+    assert "fock:P(spad_1=2,spad_2=0)" in res.data
+    assert not np.isnan(res.data["fock:P(spad_1=2,spad_2=0)"]).any()
+    assert "fock:P(spad_1=1,spad_2=1)" in res.to_csv()
+
+
+def test_fock_delay_scan_is_refused_with_a_reason():
+    from sequoia.analysis.sweep import linspace_axis, run_sweep
+
+    setup = _fock_hom()
+    link = setup.links[0].id
+    axis = linspace_axis(f"link:{link}.length", 0.1, 0.2, 3, "m")
+    with pytest.raises(SweepError, match="temporal"):
+        run_sweep(setup, LIB, [axis], fock={})

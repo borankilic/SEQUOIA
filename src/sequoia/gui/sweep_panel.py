@@ -140,6 +140,13 @@ class SweepTab(RunGuard, QWidget):
         self.candidates: list[Candidate] = []
         self.rows = [AxisRow([]), AxisRow([])]
         self.two_d = QCheckBox("second axis (2D)")
+        self.fock_check = QCheckBox("photon-number observables")
+        self.fock_check.setToolTip(
+            "Also compute the Photon counts quantities (fock:P(...) per detector state, "
+            "fock:P_click per detector) at every point, with the Photon counts tab's detector "
+            "mode, pair truncation and duration. Per detection window; no dead time."
+        )
+        self.fock_settings = None
         self.metric = QComboBox()
         self.metric.setMinimumWidth(240)
         self.run_button = QPushButton("Sweep")
@@ -165,6 +172,7 @@ class SweepTab(RunGuard, QWidget):
         second = QHBoxLayout()
         second.addWidget(self.two_d)
         second.addWidget(self.rows[1], 1)
+        second.addWidget(self.fock_check)
         form.addLayout(second)
         actions = QHBoxLayout()
         actions.addWidget(QLabel("Output"))
@@ -203,6 +211,7 @@ class SweepTab(RunGuard, QWidget):
         self.status_text = ""
         self._structure = None
         self.two_d.toggled.connect(self.refresh_stale)
+        self.fock_check.toggled.connect(self.refresh_stale)
         for row in self.rows:
             row.changed.connect(self.refresh_stale)
 
@@ -215,7 +224,12 @@ class SweepTab(RunGuard, QWidget):
                 axes.append(None)
                 continue
             axes.append((a.target, a.unit, tuple(np.asarray(a.values, float).tolist())))
-        return tuple(axes)
+        return (tuple(axes), self._fock_options())
+
+    def _fock_options(self):
+        if not self.fock_check.isChecked():
+            return None
+        return dict(self.fock_settings()) if self.fock_settings is not None else {}
 
     def _failed(self, message: str) -> None:
         if self.run_is_current():
@@ -286,6 +300,7 @@ class SweepTab(RunGuard, QWidget):
             if problem:
                 self.status.setText(problem)
                 return
+        fock = self._fock_options()
         self.begin_run()
 
         def job(should_cancel, progress):
@@ -297,6 +312,7 @@ class SweepTab(RunGuard, QWidget):
                 cache=RunCache(),
                 should_cancel=should_cancel,
                 progress=progress,
+                fock=fock,
             )
 
         self.run_button.setEnabled(False)

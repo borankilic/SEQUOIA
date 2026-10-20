@@ -1,6 +1,6 @@
 import copy
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -170,6 +170,56 @@ def metrics_of(outcome: SimulationOutcome) -> dict[str, float]:
     return out
 
 
+FOCK_PREFIX = "fock:"
+
+
+def fock_metrics(
+    setup: Setup,
+    library: Library,
+    *,
+    detectors_mode: str = "setup",
+    n_max: int | None = None,
+    duration: float = 1.0,
+    should_cancel: Callable[[], bool] | None = None,
+) -> dict[str, float]:
+    """Photon-number observables of the drawn circuit (the Photon counts calculation):
+    ``fock:P(d1=n1,d2=n2)`` per detector state, ``fock:P_click(d)`` per detector, the resolved
+    probability and the omitted input weight. Probabilities are per detection window."""
+    from sequoia.fock.from_setup import build_experiment_from_setup, run_setup_experiment
+
+    se = build_experiment_from_setup(
+        setup,
+        library,
+        n_max=n_max,
+        duration=duration,
+        detectors_mode=detectors_mode,
+        should_cancel=should_cancel,
+    )
+    res = run_setup_experiment(se, should_cancel=should_cancel)
+    ids = res.detector_ids
+    out: dict[str, float] = {}
+    for state, p in res.detected.items():
+        label = ",".join(f"{d}={n}" for d, n in zip(ids, state, strict=True))
+        out[f"{FOCK_PREFIX}P({label})"] = p
+    for k, d in enumerate(ids):
+        out[f"{FOCK_PREFIX}P_click({d})"] = sum(p for s, p in res.detected.items() if s[k] > 0)
+    out[f"{FOCK_PREFIX}resolved_mass"] = res.mass
+    out[f"{FOCK_PREFIX}omitted_weight"] = res.omitted_weight
+    return out
+
+
+def _check_fock_axes(axes: Sequence[Axis]) -> None:
+    for axis in axes:
+        kind, owner, name = _parse_target(axis.target)
+        if kind == "link" or "delay" in name.lower():
+            raise SweepError(
+                f"{axis.target}: the photon-number (Fock) model has no temporal or spectral "
+                "structure, so a delay or path-length scan would only change a path phase, not "
+                "the photons' overlap; scan delays with the rate-engine analyses (HOM dip) or "
+                "sweep a phase or setting instead"
+            )
+
+
 @dataclass
 class SweepResult:
     axes: list[Axis]
@@ -213,11 +263,15 @@ def run_sweep(
     cache: RunCache | None = None,
     should_cancel: Callable[[], bool] | None = None,
     progress: Callable[[int, int], None] | None = None,
+    fock: Mapping[str, Any] | None = None,
 ) -> SweepResult:
     """Run the simulation over a 1D or 2D grid of parameter values.
 
     ``outputs`` names (see ``metrics_of``) select the columns kept; ``None`` keeps every metric.
-    Points that cannot be simulated are NaN and listed in ``failures``.
+    Points that cannot be simulated are NaN and listed in ``failures``. Photon-number
+    observables (``fock:...``, see ``fock_metrics``) are computed when ``fock`` (keyword
+    arguments of ``fock_metrics``) is given or an output starts with ``fock:``; a state
+    absent at a point has probability 0 there.
     """
     axes = list(axes)
     if not 1 <= len(axes) <= 2:
@@ -244,6 +298,10 @@ def run_sweep(
     data: dict[str, np.ndarray] = {}
     failures: dict[tuple[int, ...], str] = {}
     wanted = list(outputs) if outputs is not None else None
+    use_fock = fock is not None or any(n.startswith(FOCK_PREFIX) for n in wanted or [])
+    if use_fock:
+        _check_fock_axes(axes)
+    fock_options = dict(fock or {})
     for count, index in enumerate(np.ndindex(*shape)):
         check_cancel(should_cancel)
         assignments = [
@@ -258,6 +316,10 @@ def run_sweep(
                 failures[index] = first.message if first else "simulation failed"
             else:
                 values = metrics_of(outcome)
+            if use_fock and index not in failures:
+                values.update(
+                    fock_metrics(point, library, should_cancel=should_cancel, **fock_options)
+                )
         except Cancelled:
             raise
         except SequoiaError as exc:
@@ -269,6 +331,12 @@ def run_sweep(
             column[index] = values.get(name, np.nan)
         if progress is not None:
             progress(count + 1, total)
+    if use_fock:
+        for name, column in data.items():
+            if name.startswith(FOCK_PREFIX):
+                for index in np.ndindex(*shape):
+                    if np.isnan(column[index]) and index not in failures:
+                        column[index] = 0.0
     return SweepResult(axes, data, failures)
 
 

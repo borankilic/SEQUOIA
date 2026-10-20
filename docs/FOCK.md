@@ -171,6 +171,15 @@ pairs in one Schmidt mode are fully bunched, different modes are mutually distin
 the same thermal pair-number law is used for collinear (same-port) sources; a pump power
 change only rescales `mu`.
 
+### Sweeps
+
+`run_sweep(..., fock={...})` (GUI: Sweeps tab, "photon-number observables") evaluates
+`fock_metrics` at every point with the given detector mode, pair truncation and duration (the
+GUI takes them from the Photon counts tab): `fock:P(d1=n1,d2=n2)` per detector state,
+`fock:P_click(d)`, `fock:resolved_mass`, `fock:omitted_weight`, all per detection window. A state
+missing at a point has probability 0 there. Link-length and delay axes are refused: the model has
+no temporal structure, so such a scan would only change a path phase.
+
 ### Listing and extracting the circuit
 
 `list_components(setup, library)` returns one `ComponentRow` per instance (id, type, category,
