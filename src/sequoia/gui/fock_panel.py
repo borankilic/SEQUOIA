@@ -200,6 +200,11 @@ class FockTab(RunGuard, QWidget):
             "and open them in the circuit editor. The editor gets an independent copy: later "
             "canvas edits do not reach it and editor changes do not change the canvas."
         )
+        self.export_run_button = QPushButton("Export run...")
+        self.export_run_button.setToolTip(
+            "Write the last run as a folder: the setup as run, the library parts it uses, the "
+            "photon-number experiment, run.json and a summary"
+        )
         self.inventory_button = QPushButton("Components and inputs")
         self.inventory_button.setCheckable(True)
         self.inventory_button.setToolTip("Show the component inventory and the photon inputs")
@@ -417,6 +422,7 @@ class FockTab(RunGuard, QWidget):
             self.duration,
             self.n_max_pairs,
             self.detector_mode,
+            self.export_run_button,
             self.open_button,
             self.save_button,
             self.import_button,
@@ -556,6 +562,7 @@ class FockTab(RunGuard, QWidget):
         self.open_button.clicked.connect(self.open_dialog)
         self.save_button.clicked.connect(self.save_dialog)
         self.import_button.clicked.connect(self.import_dialog)
+        self.export_run_button.clicked.connect(self.export_run_dialog)
         self.import_setup_button.clicked.connect(self.import_from_setup)
         self.extract_button.clicked.connect(self.extract_to_editor)
         self.clear_mixture_button.clicked.connect(self.clear_mixture)
@@ -598,6 +605,7 @@ class FockTab(RunGuard, QWidget):
             self.inventory_button,
             self.duration,
             self.n_max_pairs,
+            self.export_run_button,
         ):
             w.setVisible(setup)
         self.detector_mode.setVisible(setup)
@@ -1775,6 +1783,30 @@ class FockTab(RunGuard, QWidget):
             shown = rows
         self.bars = self._draw_bars(self.plot, self.bars, shown, None)
         self._mark_editor_stale()
+
+    def export_run_dialog(self) -> None:
+        if self.setup_result is None:
+            self.status.setText("run the drawn circuit first")
+            return
+        path = QFileDialog.getExistingDirectory(self, "Export run to folder")
+        if path:
+            self.export_run(path)
+
+    def export_run(self, path: str | Path) -> bool:
+        from sequoia.fock.from_setup import write_run_bundle
+
+        if self.setup_result is None:
+            return False
+        try:
+            write_run_bundle(self.setup_result, path)
+        except (SequoiaError, OSError, ValueError) as exc:
+            self._problem("Cannot export run", str(exc))
+            return False
+        note = f"exported run to {path}"
+        if self.results_outdated():
+            note += " (the run predates later edits; the bundle holds the inputs it was run on)"
+        self.status.setText(note)
+        return True
 
     def open_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

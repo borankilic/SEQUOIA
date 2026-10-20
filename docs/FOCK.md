@@ -171,6 +171,16 @@ pairs in one Schmidt mode are fully bunched, different modes are mutually distin
 the same thermal pair-number law is used for collinear (same-port) sources; a pump power
 change only rescales `mu`.
 
+### Run records
+
+`run_record(result)` is a machine-readable record of a setup run (engine and versions, detector
+models and dead times, window, windows per second, duration, acquisition model, inputs,
+normalization and omitted weight, probabilities, expected counts and sigmas, samples, notes;
+non-finite numbers as null). `write_run_bundle(result, folder)` (GUI: Export run...) writes it
+as `run.json` with `setup.yaml` as run, the library parts it uses under `library/`, the
+photon-number `experiment.yaml` and `summary.txt`, so the run can be repeated without the
+author's library.
+
 ### Sweeps
 
 `run_sweep(..., fock={...})` (GUI: Sweeps tab, "photon-number observables") evaluates

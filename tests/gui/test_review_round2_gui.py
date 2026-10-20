@@ -376,3 +376,20 @@ def test_sweep_tab_scans_photon_number_observables(window, qtbot):
     s.metric.setCurrentText("fock:P(spad_1=1,spad_2=1)")
     window.results.fock.duration.setValue(5.0)
     assert "outdated" in s.status.text()
+
+
+def test_exported_run_describes_the_run_not_the_current_widgets(window, qtbot, tmp_path):
+    import json
+
+    open_template(qtbot, window, "fock_hom")
+    tab = window.results.fock
+    tab.duration.setValue(3.0)
+    tab.run()
+    settle(qtbot, tab)
+    tab.duration.setValue(7.0)
+    window.document.set_setting("phase", "phase", "45 deg")
+    assert tab.export_run(tmp_path / "b")
+    assert "predates" in tab.status.text()
+    record = json.loads((tmp_path / "b" / "run.json").read_text())
+    assert record["measurement"]["duration_s"] == 3.0
+    assert "45 deg" not in (tmp_path / "b" / "setup.yaml").read_text()

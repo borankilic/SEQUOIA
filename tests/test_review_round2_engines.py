@@ -506,3 +506,32 @@ def test_fock_delay_scan_is_refused_with_a_reason():
     axis = linspace_axis(f"link:{link}.length", 0.1, 0.2, 3, "m")
     with pytest.raises(SweepError, match="temporal"):
         run_sweep(setup, LIB, [axis], fock={})
+
+
+# U09: run bundle
+
+
+def test_run_bundle_reruns_without_the_author_library(tmp_path):
+    import json
+
+    from sequoia.fock.from_setup import (
+        build_experiment_from_setup,
+        run_setup_experiment,
+        write_run_bundle,
+    )
+
+    se = build_experiment_from_setup(_fock_hom(), LIB, duration=2.0)
+    res = run_setup_experiment(se, shots=100, seed=4)
+    out = write_run_bundle(res, tmp_path / "bundle")
+    record = json.loads((out / "run.json").read_text())
+    assert record["measurement"]["duration_s"] == 2.0
+    assert record["normalization"]["denominator"] == "probability per detection window"
+    assert record["samples"]["shots"] == 100
+    assert "summary.txt" in {p.name for p in out.iterdir()}
+    again = run_setup_experiment(
+        build_experiment_from_setup(
+            load_setup(out / "setup.yaml"), Library(out / "library"), duration=2.0
+        )
+    )
+    for s, p in res.detected.items():
+        assert again.detected[s] == pytest.approx(p)
