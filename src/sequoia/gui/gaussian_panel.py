@@ -91,6 +91,11 @@ class GaussianTab(RunGuard, QWidget):
         self.runner.done.connect(self._done)
         self.runner.failed.connect(self._failed)
         self.runner.cancelled.connect(lambda: self._end("cancelled"))
+        self.scale.valueChanged.connect(self.refresh_stale)
+        self.sweep.toggled.connect(self.refresh_stale)
+
+    def config_key(self):
+        return (self.scale.value(), self.sweep.isChecked())
 
     def set_outcome(self, outcome) -> None:
         if self.track_revision(outcome) and self.outcome is not None:
@@ -210,4 +215,4 @@ class GaussianTab(RunGuard, QWidget):
         if self.on_issues is not None:
             self.on_issues(r.issues)
         self.status.setToolTip("\n".join(str(i) for i in r.issues))
-        self._end(note)
+        self._end(self.stale_text(note) if self.accept_run() else note)

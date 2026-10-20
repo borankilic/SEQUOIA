@@ -380,6 +380,9 @@ class ResultsDock(QWidget):
         controller.busy_changed.connect(self.set_busy)
         controller.finished.connect(self.set_outcome)
         controller.failed.connect(self.set_failed)
+        for tab in (self.sweeps, self.montecarlo, self.gaussian, self.fock):
+            tab.revision_source = controller.document_key
+            controller.document_edited.connect(tab.refresh_stale)
 
     @property
     def outcome(self) -> SimulationOutcome | None:

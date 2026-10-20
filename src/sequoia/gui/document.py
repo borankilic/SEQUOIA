@@ -1,6 +1,7 @@
 import copy
 import math
 import re
+import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -248,6 +249,9 @@ class SetupDocument(QObject):
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
+        self.uid = uuid.uuid4().hex
+        self.revision = 0
+        self.changed.connect(self._bump_revision)
         self.library = library
         self._setup = setup if setup is not None else Setup()
         self.path = Path(path) if path is not None else None
@@ -279,6 +283,12 @@ class SetupDocument(QObject):
         self.undo_stack.setClean()
         if moved:
             self.path_changed.emit()
+
+    def _bump_revision(self) -> None:
+        self.revision += 1
+
+    def key(self) -> tuple:
+        return (self.uid, self.revision, id(self.library))
 
     @property
     def setup(self) -> Setup:
