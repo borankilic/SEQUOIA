@@ -324,3 +324,13 @@ def test_sweep_candidates_follow_the_document_structure(window, qtbot):
     after = {c.target for c in sweeps.rows[0].candidates}
     assert after != before
     assert not any(t.startswith("settings:hwp_a.") for t in after)
+
+
+def test_inventory_is_collapsed_until_imported(window, qtbot):
+    open_template(qtbot, window, "hom")
+    tab = window.results.fock
+    window.show_fock()
+    assert not tab.info_tabs.isVisible()
+    tab.import_from_setup()
+    settle(qtbot, tab)
+    assert tab.info_tabs.isVisible() and tab.components_table.rowCount() > 0

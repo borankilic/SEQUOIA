@@ -191,13 +191,18 @@ class FockTab(RunGuard, QWidget):
         self.mode_box.addItems(["From setup", "Circuit editor"])
         self.import_setup_button = QPushButton("Import from setup")
         self.import_setup_button.setToolTip(
-            "Read the drawn circuit: list its components and the photon inputs found in it."
+            "Read the drawn circuit: list its components and the photon inputs found in it. "
+            "Nothing is copied; Run always uses the canvas as it is now."
         )
         self.extract_button = QPushButton("Extract to circuit editor")
         self.extract_button.setToolTip(
             "Turn the drawn circuit into editable beam splitter, phase and loss elements "
-            "and open it in the circuit editor."
+            "and open them in the circuit editor. The editor gets an independent copy: later "
+            "canvas edits do not reach it and editor changes do not change the canvas."
         )
+        self.inventory_button = QPushButton("Components and inputs")
+        self.inventory_button.setCheckable(True)
+        self.inventory_button.setToolTip("Show the component inventory and the photon inputs")
         self.duration = QDoubleSpinBox()
         self.duration.setRange(0.0, 1e9)
         self.duration.setDecimals(6)
@@ -408,6 +413,7 @@ class FockTab(RunGuard, QWidget):
             self.mode_box,
             self.import_setup_button,
             self.extract_button,
+            self.inventory_button,
             self.duration,
             self.n_max_pairs,
             self.detector_mode,
@@ -519,6 +525,8 @@ class FockTab(RunGuard, QWidget):
         self.info_tabs.addTab(self.inputs_table, "Inputs")
         setup_page = QSplitter(Qt.Orientation.Vertical)
         setup_page.addWidget(self.info_tabs)
+        self.info_tabs.setVisible(False)
+        self.inventory_button.toggled.connect(self.info_tabs.setVisible)
         results_box = QWidget()
         rb = QVBoxLayout(results_box)
         rb.setContentsMargins(0, 0, 0, 0)
@@ -584,7 +592,13 @@ class FockTab(RunGuard, QWidget):
     def _mode_changed(self, *_args) -> None:
         setup = self.setup_mode
         self.stack.setCurrentIndex(0 if setup else 1)
-        for w in (self.import_setup_button, self.extract_button, self.duration, self.n_max_pairs):
+        for w in (
+            self.import_setup_button,
+            self.extract_button,
+            self.inventory_button,
+            self.duration,
+            self.n_max_pairs,
+        ):
             w.setVisible(setup)
         self.detector_mode.setVisible(setup)
         for w in (self.open_button, self.save_button, self.import_button):
@@ -1170,6 +1184,7 @@ class FockTab(RunGuard, QWidget):
     def import_from_setup(self) -> None:
         if self.runner.busy:
             return
+        self.inventory_button.setChecked(True)
         job = self._setup_job("import")
         if job is None:
             return
