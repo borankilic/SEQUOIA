@@ -282,7 +282,7 @@ def test_expected_counts_and_outcome_table():
     ec = expected_counts(d, rate_hz=1e6, duration_s=10.0)
     assert ec.per_second[(2, 0)] == pytest.approx(0.5e6)
     assert ec.total[(2, 0)] == pytest.approx(0.5e7)
-    assert ec.sigma[(2, 0)] == pytest.approx(math.sqrt(0.5e7))
+    assert ec.sigma[(2, 0)] == pytest.approx(math.sqrt(1e7 * 0.5 * 0.5))
     ec2 = expected_counts(d, window_s=1e-9)
     assert ec2.per_second[(0, 2)] == pytest.approx(0.5e9)
     cond = expected_counts(condition(d, {0: 2}), rate_hz=100.0)

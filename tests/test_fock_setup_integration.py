@@ -153,7 +153,7 @@ def test_counts_per_second_follow_probability_and_rate():
     for s, p in res.detected.items():
         assert res.counts.per_second[s] == pytest.approx(p * 80e6)
         assert res.counts.total[s] == pytest.approx(p * 80e6 * 2.5)
-        assert res.counts.sigma[s] == pytest.approx(math.sqrt(p * 80e6 * 2.5))
+        assert res.counts.sigma[s] == pytest.approx(math.sqrt(p * (1 - p) * 80e6 * 2.5))
 
 
 def test_different_windows_raise_and_selection_works():
