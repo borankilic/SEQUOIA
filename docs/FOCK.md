@@ -101,7 +101,9 @@ Sampling (`sample(dist, shots, seed, tail=...)`): probability the calculation di
 (`1 - mass`, the truncated input weight) is never silently renormalised away. The default
 `tail="unresolved"` draws it as an explicit outcome (`Samples.unresolved`,
 `unresolved_probability`; shown in the CLI and GUI); `tail="condition"` samples conditioned on the
-resolved sector and records `conditioned_on`; `tail="error"` refuses.
+resolved sector and records `conditioned_on`; `tail="error"` refuses. `sequence=False` (used by
+`run_experiment` and the setup runs) draws only the histogram with one multinomial draw, so up
+to 10^12 shots cost no memory per shot; the per-shot sequence is limited to 10^7 shots.
 
 ## SEQUOIA setups
 

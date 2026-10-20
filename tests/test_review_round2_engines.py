@@ -441,3 +441,34 @@ def test_dead_time_regime_is_flagged_before_lab_counts():
         k = se.detector_ids.index(d)
         p_click = sum(p for s, p in res.detected.items() if s[k] > 0)
         assert load == pytest.approx(p_click * se.rate_hz * se.dead_times[d])
+
+
+# U11 / R13: bounded sampling, atomic circuit files
+
+
+def test_histogram_sampling_scales_and_keeps_the_tail():
+    d = Distribution({(1,): 0.25, (0,): 0.5}, 1, omitted_weight=0.25)
+    s = sample(d, 10**9, seed=3, sequence=False)
+    assert s.sequence == [] and s.shots == 10**9
+    assert sum(s.counts.values()) + s.unresolved == 10**9
+    assert s.unresolved / 1e9 == pytest.approx(0.25, abs=1e-3)
+    with pytest.raises(FockError, match="counts only"):
+        sample(d, 10**8, seed=3)
+
+
+def test_json_circuit_write_failure_keeps_the_old_file(tmp_path, monkeypatch):
+    from sequoia.fock.experiment import save_experiment
+
+    path = tmp_path / "c.json"
+    save_experiment(Experiment(Circuit(1), [1]), path)
+    before = path.read_text()
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    with pytest.raises(OSError):
+        save_experiment(Experiment(Circuit(2), [1, 1]), path)
+    monkeypatch.undo()
+    assert path.read_text() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["c.json"]

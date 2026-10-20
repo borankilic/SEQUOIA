@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 import time
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
@@ -196,7 +198,14 @@ def save_experiment(exp: Experiment, path: str | Path) -> None:
     path = Path(path)
     data = exp.to_dict()
     if path.suffix.lower() == ".json":
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        fd, tmp = tempfile.mkstemp(suffix=".json", dir=path.parent)
+        os.close(fd)
+        try:
+            Path(tmp).write_text(json.dumps(data, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
     else:
         from sequoia.yamlio import dump_yaml
 
@@ -374,7 +383,7 @@ def run_experiment(
     conditionals = {k: condition(detected, c) for k, c in exp.conditions.items()}
     samples = None
     if exp.shots > 0:
-        samples = sample(detected, exp.shots, exp.seed)
+        samples = sample(detected, exp.shots, exp.seed, sequence=False)
     counts = None
     if exp.rate_hz is not None or exp.window_s is not None:
         duration = 1.0 if exp.duration_s is None else exp.duration_s

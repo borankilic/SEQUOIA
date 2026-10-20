@@ -79,6 +79,8 @@ def marginal(dist: Distribution | Mapping[State, float], modes) -> dict[State, f
 
 
 TAILS = ("unresolved", "condition", "error")
+MAX_SEQUENCE = 10_000_000
+MAX_SHOTS = 10**12
 
 
 @dataclass
@@ -106,12 +108,25 @@ def sample(
     seed: int | None = None,
     rng: np.random.Generator | None = None,
     tail: str = "unresolved",
+    sequence: bool = True,
 ) -> Samples:
+    """``sequence=False`` draws only the histogram (one multinomial draw, any number of shots up
+    to MAX_SHOTS); the per-shot sequence is limited to MAX_SEQUENCE shots."""
     probs = dist.probs if isinstance(dist, Distribution) else dist
     if tail not in TAILS:
         raise FockError(f"tail must be one of {TAILS}, got {tail!r}")
     if shots < 0:
         raise FockError("shots must not be negative")
+    if shots > MAX_SHOTS or (sequence and shots > MAX_SEQUENCE):
+        limit = MAX_SEQUENCE if sequence else MAX_SHOTS
+        raise FockError(
+            f"{shots} shots exceed the limit of {limit:g}"
+            + (
+                " for a per-shot sequence (about 100 bytes per shot); draw counts only"
+                if sequence
+                else ""
+            )
+        )
     if not probs:
         raise FockError("cannot sample from an empty distribution")
     states = sorted(probs)
@@ -128,6 +143,20 @@ def sample(
             "tail='unresolved' or tail='condition', or raise the truncation"
         )
     rng = rng if rng is not None else np.random.default_rng(seed)
+    if not sequence:
+        weights = np.append(p, missing) if missing and tail == "unresolved" else p
+        drawn = rng.multinomial(shots, weights / weights.sum())
+        counts = {states[i]: int(c) for i, c in enumerate(drawn[: len(states)]) if c}
+        unresolved = int(drawn[len(states)]) if len(drawn) > len(states) else 0
+        return Samples(
+            shots,
+            seed,
+            counts,
+            [],
+            unresolved,
+            missing if tail == "unresolved" else 0.0,
+            float(total) if missing and tail == "condition" else None,
+        )
     if missing and tail == "unresolved":
         weights = np.append(p, missing)
         idx = rng.choice(len(weights), size=shots, p=weights / weights.sum())

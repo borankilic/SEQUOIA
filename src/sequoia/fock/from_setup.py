@@ -756,7 +756,7 @@ def run_setup_experiment(
         pn[key] = pn.get(key, 0.0) + p
     dur = se.duration_s if duration is None else float(duration)
     counts = expected_counts(detected, se.rate_hz, None, dur)
-    samples = sample(detected, shots, seed) if shots > 0 and detected else None
+    samples = sample(detected, shots, seed, sequence=False) if shots > 0 and detected else None
     messages = list(res.messages)
     load: dict[str, float] = {}
     for k, d in enumerate(se.detector_ids):
