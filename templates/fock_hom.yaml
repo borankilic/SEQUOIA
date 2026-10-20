@@ -8,8 +8,11 @@ description: >
   distinguishable photons give 1 - sin^2/2 and no full contrast. Open the Photon counts tab: it
   reads the drawn circuit, lists its components and gives output-state probabilities, expected
   counts and detector click patterns. Change a source's distinguishability_tag to make the
-  photons distinguishable. All parts are generic placeholders; replace them with the lab's
-  measured parts.
+  photons distinguishable. Idealisation: deterministic single photons at 80 MHz give about 44
+  million potential clicks per second per SPAD, far beyond its 50 ns dead time; the Photon counts
+  tab omits dead time and flags this regime, so read its rates as potential clicks, not
+  recorded counts. All parts are generic placeholders; replace them with the lab's measured
+  parts.
 instances:
   - {id: photon_a, part: sources/fock_1photon_810, position: [0, 0]}
   - {id: photon_b, part: sources/fock_1photon_810, position: [0, 6]}

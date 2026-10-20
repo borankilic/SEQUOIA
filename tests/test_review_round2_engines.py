@@ -398,3 +398,46 @@ def test_chsh_sigma_matches_count_ensembles():
             )
             values.append(chsh_s(e[0, 0], e[0, 1], e[1, 0], e[1, 1]))
         assert np.std(values) == pytest.approx(r.s_sigma, rel=0.08)
+
+
+# RR09 / RR10: Fock sources across engines, dead-time regime
+
+
+def _fock_hom():
+    return load_setup(ROOT / "templates" / "fock_hom.yaml")
+
+
+def test_fock_source_is_not_reported_as_pump_leakage():
+    from sequoia.engines.rates import simulate_rates
+
+    r = simulate_rates(_fock_hom(), LIB)
+    codes = {i.code for i in r.issues}
+    assert "pump_leakage" not in codes and "leakage_saturation" not in codes
+    assert "fock_source_mean_flux" in codes
+    for d in r.detectors.values():
+        assert d["leakage_hz"] == pytest.approx(0.0, abs=1e-6)
+        assert d["fock_hz"] > 0
+
+
+def test_gaussian_and_monte_carlo_refuse_fock_light_unless_asked():
+    from sequoia.engines.gaussian import UnsupportedSourceError, simulate_gaussian
+
+    with pytest.raises(UnsupportedSourceError):
+        simulate_gaussian(_fock_hom(), LIB)
+    with pytest.raises(UnsupportedSourceError):
+        simulate_timetags(_fock_hom(), LIB, 1e-4, seed=1)
+    tags = simulate_timetags(_fock_hom(), LIB, 1e-5, seed=1, fock_as_poisson=True)
+    assert any(i.code == "fock_as_poisson" for i in tags.issues)
+
+
+def test_dead_time_regime_is_flagged_before_lab_counts():
+    from sequoia.fock.from_setup import build_experiment_from_setup, run_setup_experiment
+
+    se = build_experiment_from_setup(_fock_hom(), LIB)
+    res = run_setup_experiment(se)
+    assert set(res.outside_dilute_regime) == set(se.detector_ids)
+    assert any("dilute regime" in m for m in res.messages)
+    for d, load in res.dead_time_load.items():
+        k = se.detector_ids.index(d)
+        p_click = sum(p for s, p in res.detected.items() if s[k] > 0)
+        assert load == pytest.approx(p_click * se.rate_hz * se.dead_times[d])

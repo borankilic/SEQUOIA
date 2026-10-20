@@ -67,6 +67,16 @@ def plain(value: Any, digits: int = 4) -> str:
     return f"{x:.{digits}g}"
 
 
+def car_text(value: Any) -> str:
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if math.isnan(x):
+        return "undefined: no accidental estimate"
+    return plain(x)
+
+
 def percent(value: Any) -> str:
     try:
         return f"{100.0 * float(value):.3g} %"
@@ -202,7 +212,7 @@ _ANALYSIS_FIELDS: dict[str, list[tuple[str, str, Any]]] = {
         ("window_fraction", "window fraction", plain),
         ("true_hz", "true coincidences", lambda v: eng(v, "Hz")),
         ("accidental_hz", "accidentals", lambda v: eng(v, "Hz")),
-        ("car", "CAR (true / accidental)", plain),
+        ("car", "CAR (true / accidental)", lambda v: car_text(v)),
         ("car_total", "CAR ((true + acc) / acc)", plain),
         ("coincidence_rate_hz", "all-time coincidences", lambda v: eng(v, "Hz")),
         ("heralding_a_given_b", "heralding efficiency (first | second)", percent),
@@ -235,8 +245,9 @@ TAB_HELP = {
     "for photon-pair setups, photons per second and how well they couple into fibers.",
     "Readouts && probes": "What each detector and probe reads: photocurrent, incident power, "
     "beam size and so on.",
-    "Counts": "Detector clicks per second (singles) and the pair statistics from your analyses: "
-    "coincidences, CAR (true pairs vs. accidental ones) and heralding efficiency.",
+    "Rate counts": "Rate engine (mean rates, dead time included as independent loss): recorded "
+    "singles per second and the pair statistics from your analyses: coincidences in the stated "
+    "full-width window, CAR (true pairs vs. accidental ones) and heralding efficiency.",
     "Caustic": "Beam radius along the optical path: where the beam is focused and how large it "
     "is at each part.",
     "Polarization": "Polarization state on the chosen link: the ellipse, and the point on the "
@@ -255,8 +266,9 @@ TAB_HELP = {
     "counts per second, detector click patterns, marginals and heralded distributions through the "
     "setup's detectors. Extract to circuit editor turns the circuit into editable elements. "
     "See docs/FOCK.md.",
-    "Gaussian": "Exact photon statistics at higher pump power, where several pairs can be "
-    "created at once: CAR falls and heralded g2 rises with pump power.",
+    "Gaussian": "Multimode Gaussian photon statistics of the pair sources at higher pump "
+    "power, where several pairs can be created at once: CAR falls and heralded g2 rises with "
+    "pump power. Per window; no dead time or jitter; Fock-state sources are refused.",
 }
 
 
@@ -264,7 +276,7 @@ class ResultsDock(QWidget):
     issue_activated = Signal(str)
 
     SPINNER = "|/-\\"
-    TAB_TITLES = ("Diagnostics", "Links", "Readouts && probes", "Counts")
+    TAB_TITLES = ("Diagnostics", "Links", "Readouts && probes", "Rate counts")
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -303,7 +315,7 @@ class ResultsDock(QWidget):
         self.tabs.addTab(self.diagnostics, "Diagnostics")
         self.tabs.addTab(self.links, "Links")
         self.tabs.addTab(self.readouts, "Readouts && probes")
-        self.tabs.addTab(self.counts, "Counts")
+        self.tabs.addTab(self.counts, "Rate counts")
 
         from sequoia.gui.analysis_tabs import (
             BudgetTab,
@@ -433,7 +445,7 @@ class ResultsDock(QWidget):
             (0, "Diagnostics", self._fill_diagnostics),
             (1, "Links", self._fill_links),
             (2, "Readouts", self._fill_readouts),
-            (3, "Counts", self._fill_counts),
+            (3, "Rate counts", self._fill_counts),
         ):
             try:
                 fill(outcome)

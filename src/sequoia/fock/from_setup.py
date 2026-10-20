@@ -143,6 +143,9 @@ class _Plan:
     fock_angles: dict[str, float]
 
 
+DILUTE_LOAD = 0.1
+
+
 @dataclass
 class SetupExperiment:
     experiment: Experiment
@@ -160,6 +163,7 @@ class SetupExperiment:
     plan: _Plan
     setup: Setup
     library: Library
+    dead_times: dict[str, float] = field(default_factory=dict)
 
     @property
     def n_detectors(self) -> int:
@@ -178,10 +182,15 @@ class SetupResult:
     samples: Samples | None
     omitted_weight: float
     messages: list[str]
+    dead_time_load: dict[str, float] = field(default_factory=dict)
 
     @property
     def mass(self) -> float:
         return float(sum(self.detected.values()))
+
+    @property
+    def outside_dilute_regime(self) -> dict[str, float]:
+        return {d: v for d, v in self.dead_time_load.items() if v > DILUTE_LOAD}
 
 
 def _fmt_value(v) -> str | None:
@@ -670,6 +679,7 @@ def build_experiment_from_setup(
         plan,
         setup,
         library,
+        {d: float(net.components[d].detector_model().dead_time) for d in det_ids},
     )
 
 
@@ -747,6 +757,19 @@ def run_setup_experiment(
     dur = se.duration_s if duration is None else float(duration)
     counts = expected_counts(detected, se.rate_hz, None, dur)
     samples = sample(detected, shots, seed) if shots > 0 and detected else None
+    messages = list(res.messages)
+    load: dict[str, float] = {}
+    for k, d in enumerate(se.detector_ids):
+        p_click = sum(p for s, p in detected.items() if s[k] > 0)
+        load[d] = p_click * counts.windows_per_second * se.dead_times.get(d, 0.0)
+        if load[d] > DILUTE_LOAD:
+            messages.append(
+                f"'{d}': the potential click rate {p_click * counts.windows_per_second:.4g}/s "
+                f"times the dead time {se.dead_times[d] * 1e9:.4g} ns is {load[d]:.3g}, outside "
+                f"the dilute regime (< {DILUTE_LOAD:g}); this model omits dead time, so its "
+                "click rates are potential clicks, not recorded counts. Attenuate the input or "
+                "use the Monte Carlo engine for recorded tag rates"
+            )
     return SetupResult(
         se,
         res,
@@ -757,7 +780,8 @@ def run_setup_experiment(
         counts,
         samples,
         res.raw.omitted_weight,
-        list(res.messages),
+        messages,
+        load,
     )
 
 

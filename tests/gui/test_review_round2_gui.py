@@ -192,22 +192,50 @@ def test_extracted_fock_template_runs_identically_in_the_editor(window, qtbot):
 
 
 def test_gaussian_result_finishing_after_an_edit_is_never_current(window, qtbot):
-    from sequoia.engines.gaussian import GaussianResult
-    from sequoia.gui.gaussian_panel import GaussianOutcome
-
     open_template(qtbot, window, "bell_test")
     g = window.results.gaussian
-    g.set_outcome(SimpleNamespace(revision=1))
-    g.begin_run()
+    g.sweep.setChecked(False)
+    g.run()
     window.document.set_setting("hwp_a", "angle", "10 deg")
-    qtbot.waitUntil(lambda: not window.controller.busy, timeout=WAIT)
-    g._done(GaussianOutcome(GaussianResult([], 1.0, {}, {}, {})))
+    qtbot.waitUntil(lambda: g.outcome is not None and not g.runner.busy, timeout=WAIT)
     assert "outdated" in g.status.text()
-    g.begin_run()
-    g._done(GaussianOutcome(GaussianResult([], 1.0, {}, {}, {})))
+    g.run()
+    qtbot.waitUntil(lambda: not g.runner.busy, timeout=WAIT)
+    qtbot.wait(30)
     assert "outdated" not in g.status.text()
     g.scale.setValue(2.0)
     assert "outdated" in g.status.text()
+
+
+def test_gaussian_without_tagged_detectors_is_not_a_result(qtbot):
+    from sequoia.engines.gaussian import GaussianResult
+    from sequoia.gui.gaussian_panel import GaussianOutcome, GaussianTab
+
+    g = GaussianTab(lambda: (None, None))
+    qtbot.addWidget(g)
+    g.begin_run()
+    g._done(GaussianOutcome(GaussianResult([], 1.0, {}, {}, {})))
+    assert g.outcome is None and "not computed" in g.status.text()
+    g.runner.shutdown()
+
+
+def test_fock_template_flags_its_acquisition_regime(window, qtbot):
+    open_template(qtbot, window, "fock_hom")
+    codes = {i.code for i in window.controller.last_outcome.issues}
+    assert "pump_leakage" not in codes and "fock_source_mean_flux" in codes
+    tab = window.results.fock
+    tab.run()
+    settle(qtbot, tab)
+    assert "Acquisition regime not modelled" in tab.model_card.text()
+    assert "dead time" in tab.model_card.text()
+    header = tab.detector_table.horizontalHeaderItem(6).text()
+    assert "Potential" in header and "dead time" in header
+    g = window.results.gaussian
+    g.sweep.setChecked(False)
+    g.run()
+    qtbot.waitUntil(lambda: not g.runner.busy, timeout=WAIT)
+    qtbot.wait(30)
+    assert g.outcome is None and "Fock-state source" in g.status.text()
 
 
 def test_edit_marks_results_outdated_without_a_base_run(window, qtbot):

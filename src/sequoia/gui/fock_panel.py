@@ -334,8 +334,8 @@ class FockTab(RunGuard, QWidget):
                 "State",
                 "Detectors",
                 "Probability / window",
-                "Rate (1/s)",
-                "Counts in duration",
+                "Potential rate (1/s, no dead time)",
+                "Expected counts in duration",
                 "Sigma (binomial, fixed windows)",
                 "Conditional probability",
             ]
@@ -348,7 +348,13 @@ class FockTab(RunGuard, QWidget):
         self.state_summary = QLabel("")
         self.state_summary.setWordWrap(True)
         self.clicks_table = _read_only_table(
-            ["Click pattern", "Probability / window", "Rate (1/s)", "Counts in duration", "Sigma"]
+            [
+                "Click pattern",
+                "Probability / window",
+                "Potential rate (1/s, no dead time)",
+                "Expected counts in duration",
+                "Sigma (binomial)",
+            ]
         )
         self.detector_table = _read_only_table(
             [
@@ -358,9 +364,9 @@ class FockTab(RunGuard, QWidget):
                 "Dark / window",
                 "P(click)",
                 "Mean counts / window",
-                "Click rate (1/s)",
-                "Counts in duration",
-                "Sigma",
+                "Potential click rate (1/s, no dead time)",
+                "Expected counts in duration",
+                "Sigma (binomial)",
             ]
         )
         self.marginals_table = _read_only_table(
@@ -371,12 +377,21 @@ class FockTab(RunGuard, QWidget):
         self.cond_table.horizontalHeader().setStretchLastSection(True)
         self.cond_table.verticalHeader().setVisible(False)
         self.cond_result = _read_only_table(
-            ["State", "Detectors", "Conditional probability", "Joint probability", "Rate (1/s)"]
+            [
+                "State",
+                "Detectors",
+                "Conditional probability",
+                "Joint probability / window",
+                "Accepted-event rate (1/s)",
+            ]
         )
         self.cond_summary = QLabel("")
         self.cond_summary.setWordWrap(True)
         self.samples_table = _read_only_table(["State", "Detectors", "Shots", "Frequency", "P"])
         self.samples_note = QLabel("")
+        self.model_card = QLabel("")
+        self.model_card.setWordWrap(True)
+        self.model_card.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.notes_view = QPlainTextEdit()
         self.notes_view.setReadOnly(True)
         self.setup_plot = pg.PlotWidget()
@@ -504,7 +519,12 @@ class FockTab(RunGuard, QWidget):
         self.info_tabs.addTab(self.inputs_table, "Inputs")
         setup_page = QSplitter(Qt.Orientation.Vertical)
         setup_page.addWidget(self.info_tabs)
-        setup_page.addWidget(self.result_tabs)
+        results_box = QWidget()
+        rb = QVBoxLayout(results_box)
+        rb.setContentsMargins(0, 0, 0, 0)
+        rb.addWidget(self.model_card)
+        rb.addWidget(self.result_tabs, 1)
+        setup_page.addWidget(results_box)
         setup_page.setStretchFactor(0, 1)
         setup_page.setStretchFactor(1, 2)
 
@@ -636,6 +656,7 @@ class FockTab(RunGuard, QWidget):
             table.setRowCount(0)
         self.cond_table.setRowCount(0)
         self.notes_view.setPlainText("")
+        self.model_card.setText("")
         self.state_summary.setText("")
         self.cond_summary.setText("")
         self.samples_note.setText("")
@@ -1261,6 +1282,11 @@ class FockTab(RunGuard, QWidget):
         if p.kind == "run" and p.result is not None:
             self.setup_result = p.result
             self._fill_results()
+            for d, load in p.result.outside_dilute_regime.items():
+                warnings.append(
+                    f"'{d}': potential click rate x dead time = {load:.3g}; the shown rates are "
+                    "potential clicks before dead time, not recorded counts"
+                )
             r = p.result.result.resources
             note = (
                 f"{len(p.result.detected)} detector states in {r['seconds']:.3g} s "
@@ -1453,6 +1479,32 @@ class FockTab(RunGuard, QWidget):
         )
         self.notes_view.setPlainText("\n".join(f"- {n}" for n in notes))
         self.window_note = window
+        self.model_card.setText(self._model_text(res))
+
+    def _model_text(self, res) -> str:
+        se = res.setup_experiment
+        cnt = res.counts
+        models = sorted({spec.model.kind for spec in se.compiled.detectors})
+        text = (
+            f"Measurement: one detection window = {se.window_s:.4g} s (pulse period), "
+            f"{cnt.windows_per_second:.4g} windows/s, duration {cnt.duration_s:g} s "
+            f"({cnt.n_windows:.4g} windows); detectors {', '.join(se.detector_ids)} "
+            f"({', '.join(models)}, efficiency and dark clicks per window included). "
+            "Model: photon-number circuit; loss, interference, multiplexing included; dead time, "
+            "jitter, afterpulsing and spectral/temporal structure not included, so rates are "
+            "potential clicks before dead time. Uncertainty: binomial over a fixed number of "
+            f"windows. Normalization: resolved probability {res.mass:.6g}, omitted input weight "
+            f"{res.omitted_weight:.3g}."
+        )
+        high = res.outside_dilute_regime
+        if high:
+            text = (
+                "Acquisition regime not modelled: potential click rate x dead time = "
+                + ", ".join(f"{d} {v:.2g}" for d, v in high.items())
+                + " (dilute regime < 0.1); recorded lab counts will be lower. "
+                + text
+            )
+        return text
 
     def _fill_conditions(self, ids: list[str]) -> None:
         old = {}
