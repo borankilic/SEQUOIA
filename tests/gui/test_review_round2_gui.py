@@ -334,3 +334,27 @@ def test_inventory_is_collapsed_until_imported(window, qtbot):
     tab.import_from_setup()
     settle(qtbot, tab)
     assert tab.info_tabs.isVisible() and tab.components_table.rowCount() > 0
+
+
+def test_chsh_workflow_through_the_gui(window, qtbot):
+    import math
+
+    open_template(qtbot, window, "bell_test")
+    c = window.results.chsh
+    c.set_outcome(None)
+    assert c.target_a.currentText() == "settings:hwp_a.angle"
+    assert c.target_b.currentText() == "settings:hwp_b.angle"
+    assert [o.currentText() for o in c.outcomes] == ["tt", "tr", "rt", "rr"]
+    c.quantity.setCurrentIndex(1)
+    c.run()
+    qtbot.waitUntil(lambda: c.result is not None and not c.runner.busy, timeout=WAIT)
+    assert c.result.s == pytest.approx(2 * math.sqrt(2) * 0.97, rel=2e-3)
+    assert c.table.rowCount() == 4
+    assert "forecast" in c.summary.text() and "per setting pair" in c.summary.text()
+    plan = c.plan_text()
+    assert plan.count("\n0") + plan.count("\n1") == 4
+    c.time.setValue(1.0)
+    assert "outdated" in c.status.text()
+    c.outcomes[0].setCurrentText("tr")
+    c.run()
+    assert not c.runner.busy and "four different" in c.status.text()

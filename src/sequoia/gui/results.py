@@ -266,6 +266,10 @@ TAB_HELP = {
     "counts per second, detector click patterns, marginals and heralded distributions through the "
     "setup's detectors. Extract to circuit editor turns the circuit into editable elements. "
     "See docs/FOCK.md.",
+    "CHSH": "Bell test forecast: choose the analyser parameter of each arm, two settings per "
+    "arm and the four coincidence analyses; the rate engine gives counts per setting pair, "
+    "E and S (raw and accidental-subtracted) with the anticipated counting spread. A forecast, "
+    "not a measured violation.",
     "Gaussian": "Multimode Gaussian photon statistics of the pair sources at higher pump "
     "power, where several pairs can be created at once: CAR falls and heralded g2 rises with "
     "pump power. Per window; no dead time or jitter; Fock-state sources are refused.",
@@ -324,6 +328,7 @@ class ResultsDock(QWidget):
             PolarizationTab,
             SpectraTab,
         )
+        from sequoia.gui.chsh_panel import ChshTab
         from sequoia.gui.fock_panel import FockTab
         from sequoia.gui.gaussian_panel import GaussianTab
         from sequoia.gui.montecarlo_panel import MonteCarloTab
@@ -339,6 +344,7 @@ class ResultsDock(QWidget):
         self.montecarlo = MonteCarloTab(lambda: self.provider())
         self.gaussian = GaussianTab(lambda: self.provider())
         self.fock = FockTab(lambda: self.provider())
+        self.chsh = ChshTab(lambda: self.provider())
         self.plot_tabs = {
             "Caustic": self.caustic,
             "Polarization": self.polarization,
@@ -349,6 +355,7 @@ class ResultsDock(QWidget):
             "Monte Carlo": self.montecarlo,
             "Gaussian": self.gaussian,
             "Photon counts": self.fock,
+            "CHSH": self.chsh,
         }
         self.engine_issues: dict[str, list] = {}
         for title, widget in self.plot_tabs.items():
@@ -392,7 +399,7 @@ class ResultsDock(QWidget):
         controller.busy_changed.connect(self.set_busy)
         controller.finished.connect(self.set_outcome)
         controller.failed.connect(self.set_failed)
-        for tab in (self.sweeps, self.montecarlo, self.gaussian, self.fock):
+        for tab in (self.sweeps, self.montecarlo, self.gaussian, self.fock, self.chsh):
             tab.revision_source = controller.document_key
             controller.document_edited.connect(tab.refresh_stale)
 

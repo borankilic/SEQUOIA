@@ -274,7 +274,11 @@ accidentals, and the variance of the subtraction (two sideband windows) is inclu
 accidental-subtracted S are both printed. The assessment uses |S| (either output labelling) at
 three sigma and is undefined when no coincidences are predicted; the duration must be finite and
 positive. Coincidences are post-selected on two detections (fair-sampling assumption); a forecast
-is not a measured rejection of local models.
+is not a measured rejection of local models. In the GUI the **CHSH** tab does the same: pick the analyser
+parameter of each arm (settings are parameter values, e.g. half-wave plate angles, not analysis
+angles), two settings per arm and the four coincidence analyses; it lists the predicted raw counts
+and E for all four setting pairs, S raw and accidental-subtracted, and exports the acquisition
+plan.
 From Python: `sequoia.analysis.chsh.run_chsh`. The Monte Carlo comparison marks rows compared with
 an analytic model (heralded triples) as `(model)`, since a large z there can be a model difference.
 `sequoia.engines.gaussian.detector_response` pushes a Gaussian photon-number distribution through

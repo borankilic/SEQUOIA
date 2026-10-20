@@ -38,6 +38,8 @@ class ChshResult:
     s_corrected: float | None = None
     correlations_corrected: np.ndarray | None = None
     sidebands: int = 2
+    total_rates: np.ndarray | None = None
+    accidental_rates: np.ndarray | None = None
 
     @property
     def significance(self) -> float | None:
@@ -204,6 +206,8 @@ def run_chsh(
         None if e_cor is None else float(chsh_s(*e_cor.ravel())),
         e_cor,
         int(sidebands),
+        total,
+        acc if has_acc else None,
     )
 
 
