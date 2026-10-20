@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from sequoia.engines.gaussian import GaussianResult, prepare_gaussian
 from sequoia.gui.analysis_tabs import style_plot
 from sequoia.gui.jobs import JobRunner
-from sequoia.gui.results import _fill, _make_table, _NumItem, eng, plain
+from sequoia.gui.results import _fill, _make_table, _NumItem, car_text, eng, plain
 from sequoia.gui.runguard import RunGuard
 
 SWEEP_POINTS = 13
@@ -33,7 +33,7 @@ class GaussianOutcome:
 
 
 class GaussianTab(RunGuard, QWidget):
-    """Exact multimode photon statistics, and CAR / heralded g2 against pump power."""
+    """Multimode Gaussian photon statistics, and CAR / heralded g2 against pump power."""
 
     def __init__(self, provider, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -91,6 +91,11 @@ class GaussianTab(RunGuard, QWidget):
         self.runner.done.connect(self._done)
         self.runner.failed.connect(self._failed)
         self.runner.cancelled.connect(lambda: self._end("cancelled"))
+        self.scale.valueChanged.connect(self.refresh_stale)
+        self.sweep.toggled.connect(self.refresh_stale)
+
+    def config_key(self):
+        return (self.scale.value(), self.sweep.isChecked())
 
     def set_outcome(self, outcome) -> None:
         if self.track_revision(outcome) and self.outcome is not None:
@@ -168,8 +173,22 @@ class GaussianTab(RunGuard, QWidget):
         if not self.run_is_current():
             self._end("")
             return
-        self.outcome = outcome
         r = outcome.result
+        if not r.channels:
+            blocker = next((i for i in r.issues if i.code == "gaussian_no_detectors"), None)
+            self.accept_run()
+            self.outcome = None
+            _fill(self.table, [])
+            self.car_curve.setData([], [])
+            self.g2_curve.setData([], [])
+            if self.on_issues is not None:
+                self.on_issues(r.issues)
+            self._end(
+                "not computed: "
+                + (blocker.message if blocker else "no tagged detector in the setup")
+            )
+            return
+        self.outcome = outcome
         rows = []
         for ch in r.channels:
             p = r.probability(ch)
@@ -180,7 +199,7 @@ class GaussianTab(RunGuard, QWidget):
             ]
         for name, a in r.analyses.items():
             if a["type"] == "coincidences":
-                rows.append([_NumItem(name), _NumItem("CAR"), _NumItem(plain(a["car"]))])
+                rows.append([_NumItem(name), _NumItem("CAR"), _NumItem(car_text(a["car"]))])
                 rows.append(
                     [
                         _NumItem(name),
@@ -210,4 +229,4 @@ class GaussianTab(RunGuard, QWidget):
         if self.on_issues is not None:
             self.on_issues(r.issues)
         self.status.setToolTip("\n".join(str(i) for i in r.issues))
-        self._end(note)
+        self._end(self.stale_text(note) if self.accept_run() else note)

@@ -1,3 +1,4 @@
+import math
 import operator
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -77,12 +78,25 @@ def marginal(dist: Distribution | Mapping[State, float], modes) -> dict[State, f
     return dict(sorted(out.items()))
 
 
+TAILS = ("unresolved", "condition", "error")
+MAX_SEQUENCE = 10_000_000
+MAX_SHOTS = 10**12
+
+
 @dataclass
 class Samples:
+    """``counts`` holds the resolved outcomes. ``unresolved`` counts windows that fell in the
+    probability mass the calculation did not resolve (truncated input weight), drawn as an
+    explicit outcome; with ``tail='condition'`` the shots are conditioned on the resolved sector
+    and ``conditioned_on`` is its probability."""
+
     shots: int
     seed: int | None
     counts: dict[State, int]
-    sequence: list[State] = field(default_factory=list)
+    sequence: list[State | None] = field(default_factory=list)
+    unresolved: int = 0
+    unresolved_probability: float = 0.0
+    conditioned_on: float | None = None
 
     def frequencies(self) -> dict[State, float]:
         return {s: c / self.shots for s, c in self.counts.items()} if self.shots else {}
@@ -93,10 +107,26 @@ def sample(
     shots: int,
     seed: int | None = None,
     rng: np.random.Generator | None = None,
+    tail: str = "unresolved",
+    sequence: bool = True,
 ) -> Samples:
+    """``sequence=False`` draws only the histogram (one multinomial draw, any number of shots up
+    to MAX_SHOTS); the per-shot sequence is limited to MAX_SEQUENCE shots."""
     probs = dist.probs if isinstance(dist, Distribution) else dist
+    if tail not in TAILS:
+        raise FockError(f"tail must be one of {TAILS}, got {tail!r}")
     if shots < 0:
         raise FockError("shots must not be negative")
+    if shots > MAX_SHOTS or (sequence and shots > MAX_SEQUENCE):
+        limit = MAX_SEQUENCE if sequence else MAX_SHOTS
+        raise FockError(
+            f"{shots} shots exceed the limit of {limit:g}"
+            + (
+                " for a per-shot sequence (about 100 bytes per shot); draw counts only"
+                if sequence
+                else ""
+            )
+        )
     if not probs:
         raise FockError("cannot sample from an empty distribution")
     states = sorted(probs)
@@ -104,11 +134,47 @@ def sample(
     total = p.sum()
     if not total > 0.0:
         raise FockError("distribution has no probability mass")
+    missing = max(1.0 - float(total), 0.0)
+    if missing <= 1e-12:
+        missing = 0.0
+    if missing and tail == "error":
+        raise FockError(
+            f"{missing:.3g} of the probability is not resolved (truncated input); sample with "
+            "tail='unresolved' or tail='condition', or raise the truncation"
+        )
     rng = rng if rng is not None else np.random.default_rng(seed)
-    idx = rng.choice(len(states), size=shots, p=p / total)
-    sequence = [states[i] for i in idx]
-    counts = Counter(sequence)
-    return Samples(shots, seed, dict(sorted(counts.items())), sequence)
+    if not sequence:
+        weights = np.append(p, missing) if missing and tail == "unresolved" else p
+        drawn = rng.multinomial(shots, weights / weights.sum())
+        counts = {states[i]: int(c) for i, c in enumerate(drawn[: len(states)]) if c}
+        unresolved = int(drawn[len(states)]) if len(drawn) > len(states) else 0
+        return Samples(
+            shots,
+            seed,
+            counts,
+            [],
+            unresolved,
+            missing if tail == "unresolved" else 0.0,
+            float(total) if missing and tail == "condition" else None,
+        )
+    if missing and tail == "unresolved":
+        weights = np.append(p, missing)
+        idx = rng.choice(len(weights), size=shots, p=weights / weights.sum())
+        sequence = [states[i] if i < len(states) else None for i in idx]
+    else:
+        idx = rng.choice(len(states), size=shots, p=p / total)
+        sequence = [states[i] for i in idx]
+    counts = Counter(s for s in sequence if s is not None)
+    unresolved = shots - sum(counts.values())
+    return Samples(
+        shots,
+        seed,
+        dict(sorted(counts.items())),
+        sequence,
+        unresolved,
+        missing if tail == "unresolved" else 0.0,
+        float(total) if missing and tail == "condition" else None,
+    )
 
 
 def format_state(state: State) -> str:
@@ -123,11 +189,17 @@ def parse_state(text: str) -> State:
         raise FockError(f"cannot read {text!r} as a photon-number state") from exc
 
 
+ACQUISITIONS = ("fixed_windows", "poisson")
+
+
 @dataclass
 class ExpectedCounts:
-    """Expected events from per-window probabilities. ``per_window`` is the probability (or mean
-    number) of each outcome in one detection window; ``per_second = per_window *
-    windows_per_second``; ``total`` is over ``duration_s`` with Poisson ``sigma = sqrt(total)``."""
+    """Expected events from per-window probabilities. ``per_window`` is the probability of each
+    outcome in one detection window; ``per_second = per_window * windows_per_second``; ``total``
+    is over ``duration_s``. ``sigma`` is the predicted shot-to-shot spread of the count:
+    ``acquisition='fixed_windows'`` (default) treats the ``n_windows`` windows as independent
+    trials, so counts are multinomial, ``Var N_i = N p_i (1 - p_i)``, ``Cov(N_i, N_j) = -N p_i
+    p_j``; ``'poisson'`` is the rare-event approximation ``Var N_i = N p_i``, covariances zero."""
 
     per_window: dict[State, float]
     windows_per_second: float | None = None
@@ -136,17 +208,66 @@ class ExpectedCounts:
     total: dict[State, float] | None = None
     sigma: dict[State, float] | None = None
     n_windows: float | None = None
+    acquisition: str = "fixed_windows"
+
+    def covariance(self, a: State, b: State) -> float:
+        if self.n_windows is None:
+            raise FockError("covariances need a duration")
+        pa, pb = self.per_window.get(a, 0.0), self.per_window.get(b, 0.0)
+        if a == b:
+            return count_variance(pa, self.n_windows, self.acquisition)
+        return 0.0 if self.acquisition == "poisson" else -self.n_windows * pa * pb
+
+    def sigma_sum(self, states) -> float:
+        """Spread of the summed count of ``states`` (covariances included)."""
+        if self.n_windows is None:
+            raise FockError("uncertainties need a duration")
+        p = float(sum(self.per_window.get(s, 0.0) for s in set(states)))
+        return float(np.sqrt(count_variance(p, self.n_windows, self.acquisition)))
+
+
+def count_variance(p: float, n_windows: float, acquisition: str = "fixed_windows") -> float:
+    if acquisition not in ACQUISITIONS:
+        raise FockError(f"acquisition must be one of {ACQUISITIONS}, got {acquisition!r}")
+    if acquisition == "poisson":
+        return n_windows * p
+    return n_windows * p * max(1.0 - p, 0.0)
+
+
+def _finite(name: str, value: float | None, positive: bool) -> float | None:
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError) as exc:
+        raise FockError(f"{name} must be a number, got {value!r}") from exc
+    if not math.isfinite(v):
+        raise FockError(f"{name} must be finite, got {v}")
+    if positive and v <= 0.0:
+        raise FockError(f"{name} must be positive, got {v}")
+    if not positive and v < 0.0:
+        raise FockError(f"{name} must not be negative, got {v}")
+    return v
+
+
+def check_counts(
+    rate_hz: float | None, window_s: float | None, duration_s: float | None
+) -> tuple[float | None, float | None, float | None]:
+    """Count settings: rate and window must be finite and positive; a duration must be finite
+    and >= 0 (zero gives zero counts)."""
+    return (
+        _finite("rate_hz", rate_hz, True),
+        _finite("window_s", window_s, True),
+        _finite("duration_s", duration_s, False),
+    )
 
 
 def windows_per_second(rate_hz: float | None, window_s: float | None) -> float | None:
+    rate_hz, window_s, _ = check_counts(rate_hz, window_s, None)
     if rate_hz is not None:
-        if rate_hz <= 0.0:
-            raise FockError("rate_hz must be positive")
-        return float(rate_hz)
+        return rate_hz
     if window_s is not None:
-        if window_s <= 0.0:
-            raise FockError("window_s must be positive")
-        return 1.0 / float(window_s)
+        return 1.0 / window_s
     return None
 
 
@@ -155,10 +276,13 @@ def expected_counts(
     rate_hz: float | None = None,
     window_s: float | None = None,
     duration_s: float | None = None,
+    acquisition: str = "fixed_windows",
 ) -> ExpectedCounts:
     """``rate_hz`` is the number of windows per second (repetition rate); without it
     ``1 / window_s`` is used (back-to-back windows). A Conditional contributes its joint
     (unnormalised) probabilities, i.e. the rate of the accepted events."""
+    if acquisition not in ACQUISITIONS:
+        raise FockError(f"acquisition must be one of {ACQUISITIONS}, got {acquisition!r}")
     if isinstance(dist, Conditional):
         probs = dist.joint
     elif isinstance(dist, Distribution):
@@ -166,19 +290,21 @@ def expected_counts(
     else:
         probs = dist
     per_window = dict(probs)
+    _, _, duration_s = check_counts(rate_hz, window_s, duration_s)
     wps = windows_per_second(rate_hz, window_s)
-    if duration_s is not None and duration_s < 0.0:
-        raise FockError("duration_s must not be negative")
     if wps is None:
         if duration_s is not None:
             raise FockError("duration_s needs rate_hz or window_s")
-        return ExpectedCounts(per_window)
+        return ExpectedCounts(per_window, acquisition=acquisition)
     per_second = {s: p * wps for s, p in per_window.items()}
     if duration_s is None:
-        return ExpectedCounts(per_window, wps, None, per_second)
-    total = {s: r * duration_s for s, r in per_second.items()}
-    sigma = {s: float(np.sqrt(v)) for s, v in total.items()}
-    return ExpectedCounts(per_window, wps, duration_s, per_second, total, sigma, wps * duration_s)
+        return ExpectedCounts(per_window, wps, None, per_second, acquisition=acquisition)
+    n_win = wps * duration_s
+    total = {s: p * n_win for s, p in per_window.items()}
+    sigma = {
+        s: float(np.sqrt(count_variance(p, n_win, acquisition))) for s, p in per_window.items()
+    }
+    return ExpectedCounts(per_window, wps, duration_s, per_second, total, sigma, n_win, acquisition)
 
 
 def outcome_table(
@@ -186,9 +312,10 @@ def outcome_table(
     detectors: Any = None,
     top: int | None = None,
     n_windows: float | None = None,
+    acquisition: str = "fixed_windows",
 ) -> list[dict[str, Any]]:
     """Rows sorted by probability. ``detectors`` is a DetectorLayout applied first. Counts and
-    the binomial sigma sqrt(N p (1 - p)) use ``n_windows`` (default ``dist.info['n_windows']``)."""
+    their spread (see ExpectedCounts) use ``n_windows`` (default ``dist.info['n_windows']``)."""
     d = detectors.apply(dist) if detectors is not None else dist
     n_win = n_windows if n_windows is not None else dist.info.get("n_windows")
     rows = []
@@ -196,6 +323,6 @@ def outcome_table(
         row: dict[str, Any] = {"state": s, "label": format_state(s), "probability": p}
         if n_win is not None:
             row["counts"] = p * n_win
-            row["sigma"] = float(np.sqrt(n_win * p * (1.0 - p)))
+            row["sigma"] = float(np.sqrt(count_variance(p, n_win, acquisition)))
         rows.append(row)
     return rows[:top] if top is not None else rows

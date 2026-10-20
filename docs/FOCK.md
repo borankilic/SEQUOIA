@@ -37,6 +37,10 @@ enter as an explicit Fock input, a coherent superposition, or a statistical mixt
   that adds one count (saturating). The compiler puts SEQUOIA detector efficiency here, not in the
   circuit, unless it is polarization dependent (then its square root is part of the transfer and
   listed in `efficiency_in_circuit`).
+  The input cutoff `n_max` of `response_matrix(n_max)` only sets the rows; the columns are the
+  detector's own outputs: ideal PNR reads up to `n_max + 1` with a dark click, pseudo-PNR always
+  has `wires + 1` outputs (a dark click adds one count, saturating at `wires`), threshold two. So
+  dark counts survive on vacuum and one photon plus a dark click reads 2 on a PNR.
 - Conditioning: `condition(dist, {mode: value | (op, value)})` returns `success_probability`, the
   unnormalized `joint` and the normalized `probs` separately.
 
@@ -79,14 +83,27 @@ pattern counts, so many photons spread over many tag classes hit `Limits.max_wor
 ## Counts
 
 Probabilities are per detection window. `expected_counts(dist | conditional, rate_hz, window_s,
-duration_s)`: windows per second is `rate_hz` (repetition rate), else `1/window_s`; per second =
-probability x windows per second; total over `duration_s` with Poisson `sigma = sqrt(N)`. For a
+duration_s, acquisition)`: windows per second is `rate_hz` (repetition rate), else `1/window_s`;
+per second = probability x windows per second; total over `duration_s`, i.e. `N = windows per
+second x duration` windows. `sigma` is the predicted spread of the count. The default acquisition
+`fixed_windows` treats the N windows as independent trials, so counts are multinomial: `Var N_i =
+N p_i (1 - p_i)`, `Cov(N_i, N_j) = -N p_i p_j` (`ExpectedCounts.covariance`, `sigma_sum` for a
+sum of outcomes); `acquisition="poisson"` is the rare-event approximation `Var N_i = N p_i`. For a
 `Conditional` the unnormalised joint is used, giving the accepted-event rate. `outcome_table(dist,
-detectors, top, n_windows)` lists states by probability with expected counts `N p` and binomial
-`sigma = sqrt(N p (1 - p))`. An `Experiment` takes `input_mixture`, `rate_hz`, `window_s`,
-`duration_s` (document keys `input_mixture` and `counts: {rate_hz, window_s, duration_s}`);
-`run_experiment` then fills `FockResult.counts` (default duration 1 s). Old documents load as
-before.
+detectors, top, n_windows, acquisition)` uses the same rule. An `Experiment` takes
+`input_mixture`, `rate_hz`, `window_s`, `duration_s`, `acquisition` (document keys
+`input_mixture` and `counts: {rate_hz, window_s, duration_s, acquisition}`); `run_experiment` then
+fills `FockResult.counts`. Rates and windows must be finite and positive; a duration must be finite
+and `>= 0` (zero gives zero counts); a missing duration (None) means 1 s. Invalid values are
+errors in the API, the document loader and the GUI alike. Old documents load as before.
+
+Sampling (`sample(dist, shots, seed, tail=...)`): probability the calculation did not resolve
+(`1 - mass`, the truncated input weight) is never silently renormalised away. The default
+`tail="unresolved"` draws it as an explicit outcome (`Samples.unresolved`,
+`unresolved_probability`; shown in the CLI and GUI); `tail="condition"` samples conditioned on the
+resolved sector and records `conditioned_on`; `tail="error"` refuses. `sequence=False` (used by
+`run_experiment` and the setup runs) draws only the histogram with one multinomial draw, so up
+to 10^12 shots cost no memory per shot; the per-shot sequence is limited to 10^7 shots.
 
 ## SEQUOIA setups
 
@@ -138,12 +155,40 @@ probabilities, photons arriving per detector and per mode, expected counts, samp
   `Threshold(efficiency, dark = 1 - exp(-dark_rate * window))` on the summed H+V photons
   (`detectors_mode="pnr"` gives ideal PNR). Dead time, jitter and afterpulsing are not modelled.
   Counts per second are `probability * windows per second`.
+  Each detector's potential click rate times its dead time is checked
+  (`SetupResult.dead_time_load`); above 0.1 the result carries a message and the GUI a
+  "regime not modelled" line, since the numbers are potential clicks before dead time, not
+  recorded counts.
+- **Other engines**: a FockSource's light is marked `statistics="fock"`. The rate engine counts
+  only its mean flux (`det_data[...]["fock_hz"]`, separate from classical `leakage_hz`) and says
+  so (`fock_source_mean_flux`) instead of reporting pump leakage. The Gaussian and Monte Carlo
+  engines refuse such setups (`UnsupportedSourceError`) unless `fock_as_poisson=True`, which
+  records the Poisson approximation as a `fock_as_poisson` warning.
 
 Approximations: one wavelength per photon species (path phase `2 pi OPL / lambda`); perfect
 spatial overlap at recombination; no timing, jitter or dead time; equal-weight Schmidt modes;
 pairs in one Schmidt mode are fully bunched, different modes are mutually distinguishable;
 the same thermal pair-number law is used for collinear (same-port) sources; a pump power
 change only rescales `mu`.
+
+### Run records
+
+`run_record(result)` is a machine-readable record of a setup run (engine and versions, detector
+models and dead times, window, windows per second, duration, acquisition model, inputs,
+normalization and omitted weight, probabilities, expected counts and sigmas, samples, notes;
+non-finite numbers as null). `write_run_bundle(result, folder)` (GUI: Export run...) writes it
+as `run.json` with `setup.yaml` as run, the library parts it uses under `library/`, the
+photon-number `experiment.yaml` and `summary.txt`, so the run can be repeated without the
+author's library.
+
+### Sweeps
+
+`run_sweep(..., fock={...})` (GUI: Sweeps tab, "photon-number observables") evaluates
+`fock_metrics` at every point with the given detector mode, pair truncation and duration (the
+GUI takes them from the Photon counts tab): `fock:P(d1=n1,d2=n2)` per detector state,
+`fock:P_click(d)`, `fock:resolved_mass`, `fock:omitted_weight`, all per detection window. A state
+missing at a point has probability 0 there. Link-length and delay axes are refused: the model has
+no temporal structure, so such a scan would only change a path phase.
 
 ### Listing and extracting the circuit
 

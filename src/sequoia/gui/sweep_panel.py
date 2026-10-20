@@ -2,6 +2,7 @@ import math
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -46,7 +47,16 @@ def _spin(value: float = 0.0) -> QDoubleSpinBox:
     return box
 
 
+def _structure(setup) -> tuple:
+    return (
+        tuple((i.id, i.part) for i in setup.instances),
+        tuple((link.id, link.kind) for link in setup.links),
+    )
+
+
 class AxisRow(QWidget):
+    changed = Signal()
+
     def __init__(self, candidates: list[Candidate], parent=None) -> None:
         super().__init__(parent)
         self.candidates = candidates
@@ -73,6 +83,14 @@ class AxisRow(QWidget):
                 row.addWidget(QLabel(label))
             row.addWidget(widget)
         self.target.currentIndexChanged.connect(self._reset_range)
+        for signal in (
+            self.target.currentIndexChanged,
+            self.unit.textChanged,
+            self.start.valueChanged,
+            self.stop.valueChanged,
+            self.points.valueChanged,
+        ):
+            signal.connect(lambda *_a: self.changed.emit())
         self._reset_range()
 
     def _reset_range(self) -> None:
@@ -122,6 +140,13 @@ class SweepTab(RunGuard, QWidget):
         self.candidates: list[Candidate] = []
         self.rows = [AxisRow([]), AxisRow([])]
         self.two_d = QCheckBox("second axis (2D)")
+        self.fock_check = QCheckBox("photon-number observables")
+        self.fock_check.setToolTip(
+            "Also compute the Photon counts quantities (fock:P(...) per detector state, "
+            "fock:P_click per detector) at every point, with the Photon counts tab's detector "
+            "mode, pair truncation and duration. Per detection window; no dead time."
+        )
+        self.fock_settings = None
         self.metric = QComboBox()
         self.metric.setMinimumWidth(240)
         self.run_button = QPushButton("Sweep")
@@ -147,6 +172,7 @@ class SweepTab(RunGuard, QWidget):
         second = QHBoxLayout()
         second.addWidget(self.two_d)
         second.addWidget(self.rows[1], 1)
+        second.addWidget(self.fock_check)
         form.addLayout(second)
         actions = QHBoxLayout()
         actions.addWidget(QLabel("Output"))
@@ -183,6 +209,27 @@ class SweepTab(RunGuard, QWidget):
         self.runner.cancelled.connect(lambda: self._end("cancelled"))
         self.optimizer = None
         self.status_text = ""
+        self._structure = None
+        self.two_d.toggled.connect(self.refresh_stale)
+        self.fock_check.toggled.connect(self.refresh_stale)
+        for row in self.rows:
+            row.changed.connect(self.refresh_stale)
+
+    def config_key(self):
+        axes = []
+        for row in self.rows[: 2 if self.two_d.isChecked() else 1]:
+            try:
+                a = row.axis()
+            except Exception:
+                axes.append(None)
+                continue
+            axes.append((a.target, a.unit, tuple(np.asarray(a.values, float).tolist())))
+        return (tuple(axes), self._fock_options())
+
+    def _fock_options(self):
+        if not self.fock_check.isChecked():
+            return None
+        return dict(self.fock_settings()) if self.fock_settings is not None else {}
 
     def _failed(self, message: str) -> None:
         if self.run_is_current():
@@ -210,13 +257,17 @@ class SweepTab(RunGuard, QWidget):
         setup, library = self.provider()
         if setup is None:
             return
+        self._structure = _structure(setup)
         candidates = candidate_targets(setup, library)
         for row in self.rows:
             row.set_candidates(candidates)
         self.candidates = candidates
 
     def set_outcome(self, outcome) -> None:
-        if not self.rows[0].candidates:
+        setup, _library = self.provider()
+        if setup is not None and (
+            not self.rows[0].candidates or _structure(setup) != self._structure
+        ):
             self.reload_candidates()
         if self.track_revision(outcome) and self.result is not None:
             self.status.setText(self.stale_text(self.status_text))
@@ -249,6 +300,7 @@ class SweepTab(RunGuard, QWidget):
             if problem:
                 self.status.setText(problem)
                 return
+        fock = self._fock_options()
         self.begin_run()
 
         def job(should_cancel, progress):
@@ -260,6 +312,7 @@ class SweepTab(RunGuard, QWidget):
                 cache=RunCache(),
                 should_cancel=should_cancel,
                 progress=progress,
+                fock=fock,
             )
 
         self.run_button.setEnabled(False)
@@ -310,6 +363,8 @@ class SweepTab(RunGuard, QWidget):
             reason = result.failures[first] if isinstance(result.failures, dict) else first
             text += f" (first: {str(reason)[:90]})"
         self._end(text)
+        if self.accept_run():
+            self.status.setText(self.stale_text(text))
         self._draw()
 
     def _draw(self) -> None:

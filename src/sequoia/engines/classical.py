@@ -38,6 +38,7 @@ class LinkState:
     end: LinkLight | None = None
     info: dict[str, float] = field(default_factory=dict)
     start_beams: list[Beam] = field(default_factory=list)
+    end_beams: list[Beam] = field(default_factory=list)
 
 
 @dataclass
@@ -219,6 +220,7 @@ def simulate(
         for link_id, state in states.items():
             state.start = combine(state.start_beams, sources)
             state.end = combine(arrived_beams[link_id], sources)
+            state.end_beams = list(arrived_beams[link_id])
 
         check_cancel(should_cancel)
         readouts: dict[str, dict[str, float]] = {}

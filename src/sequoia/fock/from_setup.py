@@ -2,6 +2,7 @@ import math
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import numpy as np
 from scipy import constants, sparse
@@ -143,6 +144,9 @@ class _Plan:
     fock_angles: dict[str, float]
 
 
+DILUTE_LOAD = 0.1
+
+
 @dataclass
 class SetupExperiment:
     experiment: Experiment
@@ -160,6 +164,7 @@ class SetupExperiment:
     plan: _Plan
     setup: Setup
     library: Library
+    dead_times: dict[str, float] = field(default_factory=dict)
 
     @property
     def n_detectors(self) -> int:
@@ -178,10 +183,15 @@ class SetupResult:
     samples: Samples | None
     omitted_weight: float
     messages: list[str]
+    dead_time_load: dict[str, float] = field(default_factory=dict)
 
     @property
     def mass(self) -> float:
         return float(sum(self.detected.values()))
+
+    @property
+    def outside_dilute_regime(self) -> dict[str, float]:
+        return {d: v for d, v in self.dead_time_load.items() if v > DILUTE_LOAD}
 
 
 def _fmt_value(v) -> str | None:
@@ -670,6 +680,7 @@ def build_experiment_from_setup(
         plan,
         setup,
         library,
+        {d: float(net.components[d].detector_model().dead_time) for d in det_ids},
     )
 
 
@@ -746,7 +757,20 @@ def run_setup_experiment(
         pn[key] = pn.get(key, 0.0) + p
     dur = se.duration_s if duration is None else float(duration)
     counts = expected_counts(detected, se.rate_hz, None, dur)
-    samples = sample(detected, shots, seed) if shots > 0 and detected else None
+    samples = sample(detected, shots, seed, sequence=False) if shots > 0 and detected else None
+    messages = list(res.messages)
+    load: dict[str, float] = {}
+    for k, d in enumerate(se.detector_ids):
+        p_click = sum(p for s, p in detected.items() if s[k] > 0)
+        load[d] = p_click * counts.windows_per_second * se.dead_times.get(d, 0.0)
+        if load[d] > DILUTE_LOAD:
+            messages.append(
+                f"'{d}': the potential click rate {p_click * counts.windows_per_second:.4g}/s "
+                f"times the dead time {se.dead_times[d] * 1e9:.4g} ns is {load[d]:.3g}, outside "
+                f"the dilute regime (< {DILUTE_LOAD:g}); this model omits dead time, so its "
+                "click rates are potential clicks, not recorded counts. Attenuate the input or "
+                "use the Monte Carlo engine for recorded tag rates"
+            )
     return SetupResult(
         se,
         res,
@@ -757,7 +781,8 @@ def run_setup_experiment(
         counts,
         samples,
         res.raw.omitted_weight,
-        list(res.messages),
+        messages,
+        load,
     )
 
 
@@ -1177,3 +1202,102 @@ def extraction_experiment(
         duration_s=se.duration_s,
     )
     return exp, ex
+
+
+def _plain(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, np.generic):
+        return _plain(value.item())
+    return value
+
+
+def run_record(res: SetupResult) -> dict:
+    """Machine-readable record of a Photon counts run: what was run and what came out.
+    Non-finite numbers are written as null."""
+    se = res.setup_experiment
+    cnt = res.counts
+    ids = res.detector_ids
+
+    def label(state):
+        return ",".join(f"{d}={n}" for d, n in zip(ids, state, strict=True))
+
+    record = {
+        "format": "sequoia-photon-counts-run",
+        "version": 1,
+        "engine": {"name": "fock", "backend": res.result.backend, **res.result.versions},
+        "setup": se.setup.name,
+        "detectors": ids,
+        "detector_models": [s.model.to_dict() for s in se.compiled.detectors],
+        "dead_time_s": se.dead_times,
+        "measurement": {
+            "window_s": se.window_s,
+            "windows_per_second": cnt.windows_per_second,
+            "duration_s": cnt.duration_s,
+            "n_windows": cnt.n_windows,
+            "acquisition": cnt.acquisition,
+            "rates": "potential clicks before dead time (dead time not modelled)",
+        },
+        "inputs": [d.__dict__ for d in se.inputs],
+        "limits": {"max_photons": se.experiment.limits.max_photons},
+        "normalization": {
+            "denominator": "probability per detection window",
+            "resolved_probability": res.mass,
+            "omitted_input_weight": res.omitted_weight,
+        },
+        "probabilities": {label(s): p for s, p in res.detected.items()},
+        "expected_counts": {label(s): v for s, v in (cnt.total or {}).items()},
+        "sigma_counts": {label(s): v for s, v in (cnt.sigma or {}).items()},
+        "dead_time_load": res.dead_time_load,
+        "notes": list(se.notes),
+        "messages": list(res.messages),
+    }
+    if res.samples is not None:
+        record["samples"] = {
+            "shots": res.samples.shots,
+            "seed": res.samples.seed,
+            "counts": {label(s): c for s, c in res.samples.counts.items()},
+            "unresolved_shots": res.samples.unresolved,
+        }
+    return _plain(record)
+
+
+def write_run_bundle(res: SetupResult, directory: str | Path) -> Path:
+    """A directory another researcher can rerun from: the setup as it was run, the library parts
+    it uses, the photon-number experiment, the machine-readable record and a summary."""
+    import json
+    import shutil
+
+    from sequoia.fock.experiment import save_experiment
+    from sequoia.setup.io import save_setup
+
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    se = res.setup_experiment
+    save_setup(se.setup, out / "setup.yaml")
+    refs = {i.part for i in se.setup.instances}
+    refs |= {getattr(link, "fiber", None) for link in se.setup.links} - {None}
+    refs |= {p.part for p in se.setup.probes}
+    for ref in sorted(refs):
+        source = se.library.part_dir(ref)
+        if source.is_dir():
+            shutil.copytree(source, out / "library" / ref, dirs_exist_ok=True)
+    save_experiment(se.experiment, out / "experiment.yaml")
+    record = run_record(res)
+    (out / "run.json").write_text(json.dumps(record, indent=2, allow_nan=False), encoding="utf-8")
+    lines = [
+        f"Photon counts run of '{se.setup.name}'",
+        f"window {se.window_s:.6g} s, {res.counts.windows_per_second:.6g} windows/s, "
+        f"duration {res.counts.duration_s:g} s; detectors {', '.join(res.detector_ids)}",
+        f"resolved probability {res.mass:.12g}, omitted input weight {res.omitted_weight:.3g}",
+        "rates are potential clicks before dead time; sigma is binomial over fixed windows",
+        "rerun: sequoia GUI > open setup.yaml with library/ as the library, Photon counts > Run",
+        "",
+    ]
+    lines += [f"- {m}" for m in res.messages]
+    (out / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out

@@ -31,6 +31,10 @@ class IncompatibleWindowsError(SetupError):
     pass
 
 
+class UnsupportedSourceError(SetupError):
+    pass
+
+
 @dataclass
 class _Batch:
     """Independent groups of modes with the same size, as stacked arrays.
@@ -451,6 +455,7 @@ def prepare_gaussian(
     cache: RunCache | None = None,
     should_cancel: Callable[[], bool] | None = None,
     max_memory_bytes: float | None = None,
+    fock_as_poisson: bool = False,
 ) -> GaussianSetup:
     engine = _Engine(setup, library, classical, should_cancel, cache, max_memory_bytes)
     engine.discover()
@@ -506,8 +511,24 @@ def prepare_gaussian(
             "no pair source reaches a tagged detector; statistics are per 1 s of background "
             "light only",
         )
+    fock = {d: engine.det_data[d].get("fock_hz", 0.0) for d in dets}
+    if any(v > 0 for v in fock.values()):
+        names = ", ".join(f"'{n}'" for n in engine.fock_sources())
+        if not fock_as_poisson:
+            raise UnsupportedSourceError(
+                f"Fock-state source {names} reaches the detectors; this engine would replace "
+                "its number statistics by Poisson light. Use the Photon counts tab, or pass "
+                "fock_as_poisson=True to accept the approximation explicitly"
+            )
+        engine.issue(
+            "warning",
+            "fock_as_poisson",
+            names,
+            "approximation: the Fock-state light is simulated as Poisson background at its "
+            "mean flux (no antibunching, no two-photon interference)",
+        )
     dark = np.array([engine.det_data[d]["dark_hz"] * window for d in dets])
-    leakage = np.array([engine.det_data[d]["leakage_hz"] * window for d in dets])
+    leakage = np.array([(engine.det_data[d]["leakage_hz"] + fock[d]) * window for d in dets])
     model = GaussianModel(sources, forms, names, dark, leakage)
     info = {
         s.inst: {
@@ -535,6 +556,7 @@ def simulate_gaussian(
     pnr: list[tuple[str, ...]] | None = None,
     pnr_cutoff: int = 12,
     max_memory_bytes: float | None = None,
+    fock_as_poisson: bool = False,
 ) -> GaussianResult:
     """Exact multimode photon-number statistics of the pair sources at the detectors.
 
@@ -554,6 +576,7 @@ def simulate_gaussian(
         cache=cache,
         should_cancel=should_cancel,
         max_memory_bytes=max_memory_bytes,
+        fock_as_poisson=fock_as_poisson,
     )
     return prepared.evaluate(gain_scale, pnr, pnr_cutoff)
 

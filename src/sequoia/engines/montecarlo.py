@@ -7,6 +7,7 @@ import numpy as np
 
 from sequoia.engines.cache import ResourceLimitError, RunCache, check_cancel
 from sequoia.engines.classical import SimulationResult
+from sequoia.engines.gaussian import UnsupportedSourceError
 from sequoia.engines.rates import (
     FWHM_TO_SIGMA,
     ROLES,
@@ -34,11 +35,14 @@ class TimeTags:
     issues: list[Issue] = field(default_factory=list)
     repetition_rates: list[float] = field(default_factory=list)
     truth: dict[str, Any] = field(default_factory=dict)
-    channel_clocks: dict[str, float] = field(default_factory=dict)
+    channel_clocks: dict[str, float] | None = None
+    clock_ids: dict[str, str] = field(default_factory=dict)
 
     @property
     def clock(self) -> dict[str, float] | list[float]:
-        return self.channel_clocks or self.repetition_rates
+        # None: no per-channel map (legacy record); {}: a map in which no channel has one clock.
+        # A value of 0 marks a channel that only sees CW light.
+        return self.repetition_rates if self.channel_clocks is None else self.channel_clocks
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -225,6 +229,7 @@ def simulate_timetags(
     max_events: int = MAX_EVENTS,
     max_memory_bytes: float | None = None,
     schmidt_number: float | None = None,
+    fock_as_poisson: bool = False,
 ) -> TimeTags:
     """Monte Carlo time tags for every tagger channel of ``setup``.
 
@@ -249,6 +254,22 @@ def simulate_timetags(
     builder = _Builder(engine)
     rng = np.random.default_rng(seed)
 
+    fock = {d: engine.det_data[d].get("fock_hz", 0.0) for d in builder.tagged}
+    if any(v > 0 for v in fock.values()):
+        names = ", ".join(f"'{n}'" for n in engine.fock_sources())
+        if not fock_as_poisson:
+            raise UnsupportedSourceError(
+                f"Fock-state source {names} reaches the detectors; this engine would replace "
+                "its number statistics by Poisson light. Use the Photon counts tab, or pass "
+                "fock_as_poisson=True to accept the approximation explicitly"
+            )
+        engine.issue(
+            "warning",
+            "fock_as_poisson",
+            names,
+            "approximation: the Fock-state light is simulated as Poisson background at its "
+            "mean flux (no antibunching, no two-photon interference)",
+        )
     models = []
     for src in engine.sources:
         if src.rate > 0 and builder.tagged:
@@ -296,7 +317,7 @@ def simulate_timetags(
         dm = engine.detectors[det_id].model
         parts = list(arrivals[det_id])
         parts.append(_poisson_times(rng, info["dark_hz"], duration))
-        parts.append(_poisson_times(rng, info["leakage_hz"], duration))
+        parts.append(_poisson_times(rng, info["leakage_hz"] + fock[det_id], duration))
         base = np.sort(np.concatenate(parts)) if parts else np.empty(0)
         registered = dead_time_filter(base, dm.dead_time)
         if dm.afterpulse_probability > 0.0 and dm.afterpulse_tau > 0.0 and len(registered):
@@ -335,16 +356,21 @@ def simulate_timetags(
         "sources": {m.inst: {"rate_hz": m.rate, "patterns": m.patterns} for m in models},
         "detectors": engine.det_data,
     }
-    contributors: dict[str, list[float | None]] = {}
+    contributors: dict[str, list[tuple[str, float | None]]] = {}
     for m in models:
         seen = {d for dets, _p in m.patterns for d in dets}
         for det_id in seen:
-            contributors.setdefault(det_id, []).append(m.repetition_rate)
+            contributors.setdefault(det_id, []).append((m.inst, m.repetition_rate))
     clocks: dict[str, float] = {}
+    clock_ids: dict[str, str] = {}
     for ch in engine.channels.values():
-        rates = contributors.get(ch.detector, [])
-        if rates and all(r for r in rates) and max(rates) <= min(rates) * (1.0 + 1e-9):
-            clocks[ch.name] = float(rates[0])
+        found = contributors.get(ch.detector, [])
+        pulsed = [(inst, r) for inst, r in found if r]
+        if not pulsed:
+            clocks[ch.name] = 0.0
+        elif len(pulsed) == len(found) and len({inst for inst, _ in pulsed}) == 1:
+            clocks[ch.name] = float(pulsed[0][1])
+            clock_ids[ch.name] = pulsed[0][0]
     return TimeTags(
         channels,
         duration,
@@ -353,6 +379,7 @@ def simulate_timetags(
         [m.repetition_rate for m in models if m.repetition_rate],
         truth,
         clocks,
+        clock_ids,
     )
 
 

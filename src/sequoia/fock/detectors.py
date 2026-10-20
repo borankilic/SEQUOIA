@@ -17,12 +17,17 @@ def _binomial_thinning(n_max: int, eta: float) -> np.ndarray:
     return m
 
 
-def _with_dark(matrix: np.ndarray, dark: float, saturate_at: int) -> np.ndarray:
+def _with_dark(matrix: np.ndarray, dark: float, capacity: int | None = None) -> np.ndarray:
+    # one independent dark click adds one count; ``capacity`` is the largest count the detector
+    # can report (None: unbounded, the output grows by one column)
     if dark <= 0.0:
         return matrix
-    out = (1.0 - dark) * matrix
+    width = matrix.shape[1] + 1 if capacity is None else capacity + 1
+    padded = np.zeros((matrix.shape[0], width))
+    padded[:, : matrix.shape[1]] = matrix
+    out = (1.0 - dark) * padded
     for k in range(matrix.shape[1]):
-        out[:, min(k + 1, saturate_at)] += dark * matrix[:, k]
+        out[:, min(k + 1, width - 1)] += dark * matrix[:, k]
     return out
 
 
@@ -40,6 +45,8 @@ class Detector:
     kind = "detector"
 
     def response_matrix(self, n_max: int) -> np.ndarray:
+        """D(k|n) for n = 0..n_max photons; the columns are the detector's possible outputs,
+        which need not stop at n_max (a dark click on n_max photons reads n_max + 1)."""
         raise NotImplementedError
 
     def to_dict(self) -> dict:
@@ -52,7 +59,7 @@ class IdealPNR(Detector):
 
     def response_matrix(self, n_max: int) -> np.ndarray:
         m = _binomial_thinning(n_max, self.efficiency)
-        return _with_dark(m, self.dark, n_max)
+        return _with_dark(m, self.dark)
 
 
 @dataclass(frozen=True)
@@ -115,9 +122,7 @@ class PseudoPNR(Detector):
                 m[n, k] = exact[clicks == k].sum()
         m = np.clip(m, 0.0, 1.0)
         m /= m.sum(axis=1, keepdims=True)
-        keep = min(n_max, nw) + 1
-        m = m[:, :keep]
-        return _with_dark(m, self.dark, keep - 1)
+        return _with_dark(m, self.dark, nw)
 
     def to_dict(self) -> dict:
         d = Detector.to_dict(self)

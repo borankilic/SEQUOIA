@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 import time
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
@@ -9,6 +11,7 @@ from sequoia.fock.analysis import (
     Conditional,
     ExpectedCounts,
     Samples,
+    check_counts,
     condition,
     expected_counts,
     format_state,
@@ -59,6 +62,7 @@ class Experiment:
     rate_hz: float | None = None
     window_s: float | None = None
     duration_s: float | None = None
+    acquisition: str = "fixed_windows"
 
     def photons(self) -> list[tuple[int, Hashable]]:
         n = self.circuit.n_modes
@@ -116,6 +120,8 @@ class Experiment:
             )
             if v is not None
         }
+        if counts and self.acquisition != "fixed_windows":
+            counts["acquisition"] = self.acquisition
         if counts:
             d["counts"] = counts
         return d
@@ -159,7 +165,9 @@ class Experiment:
                 rate_hz=_opt_float(cnt.get("rate_hz")),
                 window_s=_opt_float(cnt.get("window_s")),
                 duration_s=_opt_float(cnt.get("duration_s")),
+                acquisition=str(cnt.get("acquisition", "fixed_windows")),
             )
+            check_counts(exp.rate_hz, exp.window_s, exp.duration_s)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise FockError(f"invalid experiment document: {exc}") from exc
         exp.photons()
@@ -190,7 +198,14 @@ def save_experiment(exp: Experiment, path: str | Path) -> None:
     path = Path(path)
     data = exp.to_dict()
     if path.suffix.lower() == ".json":
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        fd, tmp = tempfile.mkstemp(suffix=".json", dir=path.parent)
+        os.close(fd)
+        try:
+            Path(tmp).write_text(json.dumps(data, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
     else:
         from sequoia.yamlio import dump_yaml
 
@@ -269,6 +284,9 @@ class FockResult:
         if self.samples:
             d["counts"] = {format_state(s): c for s, c in self.samples.counts.items()}
             d["shots"] = self.samples.shots
+            if self.samples.unresolved_probability:
+                d["unresolved_shots"] = self.samples.unresolved
+                d["unresolved_probability"] = self.samples.unresolved_probability
         if self.raw.omitted_weight:
             d["omitted_weight"] = self.raw.omitted_weight
         if self.counts and self.counts.per_second is not None:
@@ -278,6 +296,9 @@ class FockResult:
             if self.counts.total is not None:
                 d["expected_counts"] = {format_state(s): v for s, v in self.counts.total.items()}
                 d["duration_s"] = self.counts.duration_s
+                d["n_windows"] = self.counts.n_windows
+                d["sigma"] = {format_state(s): v for s, v in self.counts.sigma.items()}
+                d["acquisition"] = self.counts.acquisition
         return d
 
 
@@ -306,6 +327,7 @@ def run_experiment(
         exp = Experiment.from_dict(source)
     else:
         exp = load_experiment(source)
+    check_counts(exp.rate_hz, exp.window_s, exp.duration_s)
     layout = exp.layout()
     layout.check_efficiency(exp.circuit)
     photons = exp.photons()
@@ -361,11 +383,12 @@ def run_experiment(
     conditionals = {k: condition(detected, c) for k, c in exp.conditions.items()}
     samples = None
     if exp.shots > 0:
-        samples = sample(detected, exp.shots, exp.seed)
+        samples = sample(detected, exp.shots, exp.seed, sequence=False)
     counts = None
     if exp.rate_hz is not None or exp.window_s is not None:
+        duration = 1.0 if exp.duration_s is None else exp.duration_s
         counts = expected_counts(
-            detected, exp.rate_hz, exp.window_s, exp.duration_s if exp.duration_s else 1.0
+            detected, exp.rate_hz, exp.window_s, duration, acquisition=exp.acquisition
         )
         detected.info["n_windows"] = counts.n_windows
     if progress:
