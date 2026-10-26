@@ -16,6 +16,13 @@ from sequoia.errors import (
     UnknownComponentError,
     format_validation_error,
 )
+from sequoia.library.calibration import (
+    CalibrationRecord,
+    fingerprint_files,
+    load_calibration,
+    provenance_rank,
+    select_records,
+)
 from sequoia.library.importers.table import read_table
 from sequoia.yamlio import dump_yaml, load_yaml
 
@@ -35,6 +42,9 @@ class Part:
     serial: str | None = None
     description: str | None = None
     attachments: list[str] = field(default_factory=list)
+    calibration: list[CalibrationRecord] = field(default_factory=list)
+    calibrated: dict[str, str] = field(default_factory=dict)
+    fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,7 +90,10 @@ class Library:
             raise PartError(f"{ref}: data file {name!r} must be inside the part folder")
         return path
 
-    def load_part(self, ref: str) -> Part:
+    def load_part(self, ref: str, *, calibrated: bool = True) -> Part:
+        """Load a part. Its calibration records (calibration.yaml) replace a nominal value when
+        they rank higher (measured > datasheet/vendor nominal > model > ideal default; a value
+        without provenance ranks as nominal); ``calibrated=False`` gives the nominal part."""
         directory = self.part_dir(ref)
         path = directory / PART_FILE
         if not path.is_file():
@@ -106,6 +119,15 @@ class Library:
         resolved = {
             name: self._resolve(directory, ref, name, value) for name, value in params_raw.items()
         }
+        records = load_calibration(directory, ref)
+        applied: dict[str, str] = {}
+        if calibrated:
+            chosen = select_records(records, set(cls.Params.model_fields), ref)
+            for name, record in chosen.items():
+                current = provenance_rank(resolved[name]) if name in resolved else -1
+                if name in cls.Params.model_fields and record.rank > current:
+                    resolved[name] = record.applied_value()
+                    applied[name] = record.id
         try:
             params = cls.Params.model_validate(resolved)
         except ValidationError as exc:
@@ -119,7 +141,33 @@ class Library:
             serial=None if raw.get("serial") is None else str(raw["serial"]),
             description=raw.get("description"),
             attachments=list(raw.get("attachments") or []),
+            calibration=records,
+            calibrated=applied,
+            fingerprint=fingerprint_files(directory, set(raw.get("attachments") or [])),
         )
+
+    def part_fingerprint(self, ref: str) -> str:
+        """SHA-256 of the part's files (part.yaml, calibration.yaml and data files; attachments
+        such as datasheets are left out). Any change of a nominal value or calibration changes
+        it."""
+        directory = self.part_dir(ref)
+        if not (directory / PART_FILE).is_file():
+            raise PartError(f"part {ref!r} not found in library {self.root}")
+        try:
+            attachments = set((load_yaml(directory / PART_FILE) or {}).get("attachments") or [])
+        except Exception:
+            attachments = set()
+        return fingerprint_files(directory, attachments)
+
+    def fingerprint(self, refs=None) -> str:
+        """SHA-256 over the part fingerprints of ``refs`` (default: every part)."""
+        import hashlib
+
+        refs = sorted(refs) if refs is not None else [info.ref for info in self.index()]
+        digest = hashlib.sha256()
+        for ref in refs:
+            digest.update(f"{ref}:{self.part_fingerprint(ref)}\n".encode())
+        return digest.hexdigest()
 
     def _resolve(self, directory: Path, ref: str, name: str, value: Any) -> Any:
         if not isinstance(value, dict):
@@ -206,6 +254,12 @@ class Library:
             raise PartError(f"{where}: invalid surface:\n{format_validation_error(exc)}") from exc
 
     def save_part(self, part: Part) -> Path:
+        if part.calibrated:
+            raise PartError(
+                f"{part.ref}: this copy carries calibration values "
+                f"({', '.join(sorted(part.calibrated))}); load it with calibrated=False to edit "
+                "the nominal part"
+            )
         directory = self.part_dir(part.ref)
         directory.mkdir(parents=True, exist_ok=True)
         explicit = part.params.model_fields_set

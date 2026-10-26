@@ -80,3 +80,59 @@ Every optic can carry the quality data of a catalogue "specifications" tab:
 Splitters whose transmitted and reflected fractions add up to more than 1 are rejected.
 `scripts/make_catalog.py` regenerates the typical-class parts (filters, lenses, mirrors, wave
 plates, polarizers, fibers, detectors, lasers) with these properties.
+
+## Comparing with measured data
+
+The **Compare** tab loads a CSV, TSV or XLSX file (the file is never changed). Map the columns:
+x and y with their units (taken from headers such as `delay (ns)` when present), optionally a y
+uncertainty, an acquisition-time column or one acquisition time, and a background (sideband)
+column. Rows with missing values are dropped and listed. *Subtract background column* makes a
+derived curve that keeps the original and records the operation; the background is the mean of
+the given number of sideband windows, so its counting variance B/n is added.
+
+Weights: the given uncertainties; otherwise Poisson from counts (or a rate and its acquisition
+time) using the model's expected counts, iterated to the maximum-likelihood fit; otherwise an
+unweighted fit with a warning (errors then come from the scatter and chi2 is not a test).
+
+| Fit | Parameters | Notes |
+|---|---|---|
+| Polarization fringe | amplitude, phase, offset; visibility = A/offset | cos 2x for an analyser angle, cos 4x for a half-wave-plate angle |
+| Coincidence peak | center, width (Gaussian sigma), background, area (+ exponential tail) | x must be a time |
+| HOM dip | delay offset, visibility, width, baseline (Gaussian or sinc) | x is a time or a stage length |
+| Singles vs pump | brightness, efficiency, dark | brightness and efficiency are reported as not separable |
+| Compare with a SEQUOIA sweep | optional loss-budget scale factor | sweeps the drawn setup at the data x values |
+
+The table lists each value with its standard error (from the covariance at the solution) and a
+status: fitted, fixed (type `name=value` in data units to hold an independently calibrated
+value), derived or **not identifiable**. A fit is flagged when the Jacobian is rank deficient
+(only a combination of parameters is constrained), a standard error exceeds the value, or two
+parameters correlate with |r| > 0.95. *Export* writes the data, model and residuals (CSV) and a
+JSON record with the file hash, mapping, dropped rows, derived operations and the fit. From
+Python: `sequoia.analysis.measured` (`load_measured`, `compare`, `compare_sweep`) and
+`sequoia.analysis.fitting` (`fit`, `fringe`, `peak`, `hom_dip`, `scale_model`, `singles`).
+
+## Calibration records
+
+A part folder may hold `calibration.yaml` next to `part.yaml`: measured (or vendor nominal, or
+model) values kept apart from the nominal part. Each record names the `parameter`, a `value` with
+`std` or a `curve` CSV (a third column is the per-point std; `covariance` names an n x n CSV), and
+optionally `date`, `conditions`, `local_id`, `measured_by`, `method`, `validity` and `note`. A
+record replaces the nominal value only when it ranks higher (measured > vendor nominal/datasheet >
+model > ideal default; a value without provenance counts as nominal), and the newest record of
+the highest rank wins. `zero_offset` (wave plates, polarizers) and `timing_offset` (detectors) are
+used by the uncertainty propagation only. The Library Manager shows the records read-only with
+their status and the part fingerprint (a hash of the part's files that changes with any
+calibration).
+
+```yaml
+records:
+  - {id: od_2026_10, parameter: optical_density, value: 1.05, std: 0.02, date: 2026-10-01,
+     method: power ratio at 633 nm, local_id: ND-17, measured_by: BK}
+```
+
+`sequoia.library.calibration.placeholder_report(setup, library)` lists the critical parameters
+of a setup as measured, vendor nominal, model, ideal default, untraced or setup override.
+`propagate_uncertainty(setup, library, "probe:pm.power_W", ["nd.optical_density"], n=200,
+seed=1)` draws the declared calibration uncertainties (efficiencies, losses, optical density,
+power, wave-plate zero offsets, timing offsets) and returns the spread of the metric and each
+parameter's one-at-a-time contribution. Counting noise is not included.

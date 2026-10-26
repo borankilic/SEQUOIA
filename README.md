@@ -347,6 +347,17 @@ coincidence rate there counts the losses twice. When given it replaces the compu
 Things to know before trusting a number: [docs/conventions.md](docs/conventions.md) (quantum-layer
 approximations) and [docs/M3_REPORT.md](docs/M3_REPORT.md) (physics model, validation, limitations).
 
+## Measured data, fits and calibration
+
+The **Compare** tab (and `sequoia.analysis.measured` / `sequoia.analysis.fitting`) imports a
+measured curve with an explicit column mapping and units, fits a polarization fringe,
+coincidence peak, HOM dip or loss-budget scale with standard errors, residuals, chi2 and an
+identifiability check, or compares the data with a sweep of the drawn setup. Parts can carry
+`calibration.yaml` records (measured values with uncertainty, date, method and serial) kept
+apart from the nominal values; `sequoia.library.calibration` reports which values in a setup are
+still placeholders and propagates calibration uncertainties to a result. See
+[docs/GUIDE.md](docs/GUIDE.md#comparing-with-measured-data).
+
 ## Test
 
 ```bash
