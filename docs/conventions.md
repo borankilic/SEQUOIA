@@ -26,6 +26,10 @@ These hold throughout the code. Each one gets a test when the code that depends 
 - Setup links run from an output port to an input port, written `instance.port`. Link kinds are
   `free_space`, `fiber` and `cable`, and each must join ports of the matching kind.
 - Fiber links reference a part of type `OpticalFiber`; probes attach to links by id.
+- Probes do not perturb the light. A probe reads the light at the end of its link, or, with a
+  `position` setting on a free-space link, the beam propagated that distance from the link start.
+  In the GUI a probe dropped on a link or chosen from the parts list attaches to the selected link,
+  else to the output link of the selected part, else to the next link clicked (Esc cancels).
 
 ## Fields and phases
 
@@ -37,6 +41,12 @@ These hold throughout the code. Each one gets a test when the code that depends 
 - Lab frame: H lies in the table plane, V is the table normal, and k is the propagation direction.
 - Jones vectors and matrices are written in the (H, V) basis.
 - An ideal mirror has Jones matrix diag(1, −1), which flips handedness.
+- Stokes parameters: S1 = |E_H|² − |E_V|², S2 = 2 Re ρ_HV (D − A), S3 = −2 Im ρ_HV with
+  ρ_HV = E_H E_V*. So L = (H + iV)/√2 has S3 = +1 and R = (H − iV)/√2 has S3 = −1. With
+  E ∝ exp[i(kz − ωt)], R rotates clockwise when looking towards the source: right-handed in the
+  Born & Wolf (optics) convention. `analysis.metrics.KETS` and `stokes_of`, `LinkLight.stokes`,
+  the polarization ellipse (arrow sense) and the Poincaré sphere (+S3 pole labelled L, −S3
+  labelled R) all follow this.
 - Coated mirrors add the s–p retardance from coating data. For reflection in the table plane, s = V and p = H.
 - Beam splitters are symmetric: r = i√R, t = √T.
 - Wave plate, polarizer and analyser angles are positive counter-clockwise when looking against the

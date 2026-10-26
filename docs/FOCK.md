@@ -33,14 +33,18 @@ enter as an explicit Fock input, a coherent superposition, or a statistical mixt
   multiplexing; `P(k|n) = C(N,k) k! S(n,k) / N^n`, so 2 photons give 2 clicks with probability
   `(N-1)/N`; `PseudoPNR.layered(layers, R)` gives unequal wire weights). `efficiency` is a
   per-photon detection probability and lives **only** on the detector model; the circuit must not
-  also carry a `Loss(kind="detector")` on that mode (error). `dark` is an independent dark click
-  that adds one count (saturating). The compiler puts SEQUOIA detector efficiency here, not in the
+  also carry a `Loss(kind="detector")` on that mode (error). `dark` is the probability of at
+  least one dark click on the detector in the window. Threshold and ideal PNR add one count with
+  that probability; pseudo-PNR splits it into independent per-wire dark clicks of probability
+  `q = 1 - (1 - dark)^(1/N)` (N wires), so k wires holding a detected photon read
+  `k + Binomial(N - k, q)`. The compiler puts SEQUOIA detector efficiency here, not in the
   circuit, unless it is polarization dependent (then its square root is part of the transfer and
   listed in `efficiency_in_circuit`).
   The input cutoff `n_max` of `response_matrix(n_max)` only sets the rows; the columns are the
   detector's own outputs: ideal PNR reads up to `n_max + 1` with a dark click, pseudo-PNR always
-  has `wires + 1` outputs (a dark click adds one count, saturating at `wires`), threshold two. So
-  dark counts survive on vacuum and one photon plus a dark click reads 2 on a PNR.
+  has `wires + 1` outputs (dark clicks only on wires that hold no photon), threshold two. So dark
+  counts survive on vacuum, one photon plus a dark click reads 2 on a PNR, and vacuum on a
+  pseudo-PNR can read several dark clicks.
 - Conditioning: `condition(dist, {mode: value | (op, value)})` returns `success_probability`, the
   unnormalized `joint` and the normalized `probs` separately.
 

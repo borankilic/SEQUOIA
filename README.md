@@ -162,6 +162,16 @@ coincidences and CAR, heralded HBT, Hong-Ou-Mandel and a Bell test). A template 
 untitled project, so saving never overwrites the shipped file. Any YAML setup dropped into
 `templates/` (with a `name` and `description`) shows up in the gallery.
 
+The start screen also asks **What do you want to do?** (align a beam into a fiber, characterise a
+heralded source, diagnose a HOM dip, measure polarization correlations, plan a photon-number
+experiment, compare with measured data, build from scratch). Each choice opens a matching template
+and a results *task*. The results dock lists the tasks on its left: Build check, Beam & alignment,
+Source characterisation, Two-photon interference, Polarization correlations / CHSH, Photon-number /
+heralding and Compare & export. A task shows a short recipe (what to do, the default engine and
+its assumptions) and only the tools it needs. **All tools (advanced)** shows every engine tab as
+before. Switch with View > Task; the choice is remembered. Each tool's help strip states its model
+(what is included and omitted) and the approximations reported by its last run.
+
 Simulate a setup from the command line:
 
 ```bash

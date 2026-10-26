@@ -1,8 +1,32 @@
 # Reading the results panels
 
 SEQUOIA answers two questions about a setup: what does the light look like at every point
-(beam, power, polarization), and what will the detectors count. The bottom panel has one tab for
-each view.
+(beam, power, polarization), and what will the detectors count. The bottom panel is organised by
+research task; every task uses the same tools (tabs), and *All tools (advanced)* shows them all.
+
+## Tasks
+
+Pick a task in the list on the left of the results panel, from View > Task, or from **What do you
+want to do?** on the start screen (which also opens a matching template). The task is remembered
+between sessions. Each task shows a recipe (what to do, the default engine and its assumptions)
+above its tools. The tools are the same widgets in every task, so settings and results carry over.
+
+| Task | Tools | Default engine |
+|---|---|---|
+| Build check | Diagnostics, Links, Readouts & probes | classical propagation and rate engine, after every edit |
+| Beam & alignment | Caustic, Budget, Spectra, Polarization | classical propagation |
+| Source characterisation | Rate counts, Histograms, Gaussian, Monte Carlo | rate engine; Gaussian and Monte Carlo as checks |
+| Two-photon interference | Rate counts, Photon counts, Sweeps | rate engine (delay-dependent); Photon counts without timing |
+| Polarization correlations / CHSH | CHSH, Polarization (joint view) | rate engine at the four setting pairs |
+| Photon-number / heralding | Photon counts | Fock backend through the setup's detectors |
+| Compare & export | Compare, Sweeps | fits of measured data, sweeps of the setup |
+| All tools (advanced) | every tab, in the original order | - |
+
+The strip under each tool states what it shows, a one-line model summary (what is included and
+what is omitted) and the approximations reported by its last run. Example: Polarization
+correlations on the Bell template opens the CHSH tab with the four setting pairs (a b, a b',
+a' b, a' b') mapped to the coincidence analyses tt, tr, rt, rr; *Forecast CHSH* fills E and S and
+*Export plan...* writes the labelled acquisition plan.
 
 ## The experiment used as an example: heralded HBT with type-II PPKTP
 
@@ -26,23 +50,25 @@ Numbers from the shipped example (10 mW pump, generic placeholder parts):
 | Heralding efficiency | about 0.21 (A given herald) | chance that a herald click is followed by a click in A |
 | Heralded g2(0) | about 0.003 | close to 0 means single photons; 1 would be classical light |
 
-## The tabs
+## The tools
 
-| Tab | What it shows | How to read it |
+| Tool | What it shows | How to read it |
 |---|---|---|
-| **Diagnostics** | Problems found in the setup (pump leaking to a detector, a fiber below cutoff, extrapolated data). | Click a row to select the culprit. Zero rows is good. |
-| **Links** | For every link: power, beam radius, polarization purity (DOP), photons per second. | Follow a beam down the table to see where light is lost. After the long-pass filter the pump power drops by orders of magnitude. |
-| **Readouts and probes** | What detectors and probes read. | Photocurrent for a photodiode, power for a power meter. |
-| **Counts** | Clicks per second per detector, then the coincidence analyses you defined. | CAR, heralding efficiency and window fractions are the figures of merit of a pair source. |
+| **Diagnostics** | Problems found in the setup (pump leaking to a detector, a fiber below cutoff, extrapolated data) and the warnings of every engine run. *Engine* says which model produced a row ('setup' for checks of the drawn setup), *Run* which run ('current' for the latest base simulation). Sorted by severity, then engine. | Click a row to select the culprit. Zero rows is good. |
+| **Links** | For every link, at its end: power, beam radius, wavefront radius, polarization purity (DOP), fiber coupling, and the pair photons arriving per second (before detection). | Follow a beam down the table to see where light is lost. *n/a* means the light has no Gaussian beam description (hover for the reason). |
+| **Readouts & probes** | What detectors and probes read. | Photocurrent for a photodiode, power for a power meter. A probe does not perturb the light; drop it from the parts list on a link (or select a link or part first and double-click the probe). |
+| **Rate counts** | Key metrics first: CAR, heralding efficiency, heralded and unheralded g2(0), two-photon interference visibility = 1 - C/C_distinguishable, and the polarization correlation E = (C++ - C+- - C-+ + C--)/sum when four analyses form a 2 x 2 set; each with its definition and denominator. Then per detector: potential clicks before dead time (detected photons plus dark counts), recorded singles after dead time and their pair and background parts, the dead-time survival, and the coincidence analyses. | Model: first order in the pair rate, non-paralyzable dead time (detector then tagger), Gaussian jitter; multi-pair only through the uncorrelated accidental formula (use Gaussian for high gain). Undefined values say why (e.g. "undefined: no accidental estimate"). |
 | **Caustic** | Beam radius along the path. | A dip is a focus. Check that the beam is not larger than the next part. |
-| **Polarization** | Polarization of the light on a link, as an ellipse and as a point on the Poincare sphere (drag to rotate). The second selector switches between the classical field and the pair photons (per source and signal/idler); a single photon of an entangled pair is unpolarized, the correlation lives in the pair. | Linear states sit on the equator, circular at the poles, a point inside means partially polarized. |
+| **Polarization** | *Single link*: the polarization of the light on a link as an ellipse and a point on the Poincare sphere (drag to rotate), for the classical field or the reduced state of one photon. *Joint (pairs)*: the two-photon density matrix of a pair, its entanglement metrics, and the state of photon b given that photon a passes a chosen analyser. | A single photon of an entangled pair is unpolarized (point at the centre); the correlation is only in the joint view. Linear states sit on the equator; +S3 is L, -S3 is R (see docs/conventions.md). |
 | **Spectra** | Power versus wavelength on a link, or the photon-rate spectrum of the signal/idler photons (second selector). | Filters show up as cut or narrowed spectra. |
 | **Histograms** | Arrival-time difference between two detectors. | A peak at zero delay is correlated pairs; the flat floor is accidentals. Its height over the floor is the CAR. |
 | **Budget** | Power or photon flux along a path, plus what the result would be with each part replaced by an ideal one. | Parts at the top of the list cost the most; improve those first. |
 | **Sweeps** | Vary one setting (a wave-plate angle, a lens distance) and plot a result; the optimizer finds the best value. | A sweep of the half-wave plate in the Bell test shows the polarization fringe. |
-| **Monte Carlo** | A simulated stream of individual detector clicks with jitter, dead time and noise. | It should match the analytic Counts within the shown error (z within 3). Use it when dead time or timing matters. |
-| **Gaussian** | Exact photon statistics when several pairs can be created at once. | CAR falls and heralded g2 rises as you turn up the pump; this is why the pump power is kept low in these experiments. |
-| **Photon counts** | Photon-number statistics of the drawn circuit. *Import from setup* lists every part and link and the photon inputs (Fock sources: N photons, tag; pair sources: mean pairs per window mu from the pump, Schmidt number K). *Run* gives the output-state probabilities through the setup's SPAD/SNSPD detectors with rates and expected counts over a duration (Poisson sigma), click patterns, photon-number marginals, heralded (conditional) distributions with their success probability, seeded samples, a plot and the approximations used. *Extract to circuit editor* converts the circuit to editable beam-splitter, phase, loss and block elements (labelled with the part or link id). | Equal photons on one beam splitter bunch (no coincidence); a phase shifter in an interferometer arm moves the two-photon fringe; with an SPDC source at higher pump power the 2-pair terms appear as extra photons and the omitted-weight note tells you when the truncation matters. Timing and spectral shape are not modelled (use the rate engine for a HOM delay scan). |
+| **Monte Carlo** | A simulated stream of individual detector clicks with jitter, dead time and noise. | It should match the analytic Rate counts within the shown error (z within 3). Use it when dead time or timing matters. |
+| **Gaussian** | Multimode Gaussian photon statistics per window when several pairs can be created at once (no dead time or jitter). | CAR falls and heralded g2 rises as you turn up the pump; this is why the pump power is kept low in these experiments. |
+| **Photon counts** | Photon-number statistics of the drawn circuit. *Import from setup* lists every part and link and the photon inputs (Fock sources: N photons, tag; pair sources: mean pairs per window mu from the pump, Schmidt number K). *Run* gives the output-state probabilities through the setup's detectors, potential click rates before dead time and expected counts over a duration (binomial sigma for fixed windows), click patterns, photon-number marginals, heralded (conditional) distributions with their success probability, samples, a plot and the approximations used. *Extract to circuit editor* converts the circuit to editable elements. | Equal photons on one beam splitter bunch (no coincidence); a phase shifter in an interferometer arm moves the two-photon fringe; the omitted-weight note tells you when the truncation matters. Timing, spectral shape and dead time are not modelled (use the rate engine for a HOM delay scan). |
+| **CHSH** | Bell-test forecast: analyser parameter and two settings per arm, the four coincidence analyses, counts per setting pair, E and S raw and accidental-subtracted with the counting spread. | A forecast under fair sampling, not a measured violation; the time is per setting pair. |
+| **Compare** | Measured data against fits or a sweep of the setup (see below). | Not-identifiable parameters are flagged instead of reported as unique values. |
 
 ## Moving around the canvas
 

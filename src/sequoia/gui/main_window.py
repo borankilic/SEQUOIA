@@ -27,6 +27,7 @@ from sequoia.gui.document import SetupDocument
 from sequoia.gui.inspector import InspectorPanel
 from sequoia.gui.library_manager import LibraryManager
 from sequoia.gui.palette import Palette
+from sequoia.gui.recipes import ALL_TOOLS, TASKS
 from sequoia.gui.results import ResultsDock, eng, ids_for_issue
 from sequoia.gui.simulation import SimulationController, SimulationOutcome
 from sequoia.library.store import Library
@@ -94,6 +95,8 @@ class MainWindow(QMainWindow):
         self._default_state = self.saveState()
         self._default_geometry = self.saveGeometry()
         self._restore_settings()
+        self.results.task_changed.connect(self._on_task_changed)
+        self.show_task(str(self.settings.value("results/task", ALL_TOOLS)), reveal=False)
         self._update_recent_menu()
         self.controller.start()
         if setup_path is not None:
@@ -295,6 +298,19 @@ class MainWindow(QMainWindow):
         for dock in (self.palette_dock, self.inspector_dock, self.results_dock):
             view.addAction(dock.toggleViewAction())
         view.addSeparator()
+        self.task_menu = view.addMenu("Task")
+        self.task_actions: dict[str, QAction] = {}
+        tasks = QActionGroup(self)
+        tasks.setExclusive(True)
+        for name in TASKS:
+            if name == ALL_TOOLS:
+                self.task_menu.addSeparator()
+            action = QAction(name.replace("&", "&&"), self, checkable=True)
+            action.triggered.connect(lambda _c=False, n=name: self.show_task(n))
+            tasks.addAction(action)
+            self.task_menu.addAction(action)
+            self.task_actions[name] = action
+        view.addSeparator()
         view.addAction(self.act_reset_layout)
 
         run = bar.addMenu("&Run")
@@ -456,22 +472,33 @@ class MainWindow(QMainWindow):
         parts = self.document.fiber_parts_by_kind().get(self._new_fiber_kind) or []
         self.document.new_fiber_ref = parts[0] if parts else None
 
-    def show_sweeps(self) -> None:
+    def show_task(self, name: str, reveal: bool = True) -> None:
+        if reveal:
+            self.results_dock.show()
+        self.results.show_task(name)
+
+    def _on_task_changed(self, name: str) -> None:
+        self.settings.setValue("results/task", name)
+        action = self.task_actions.get(name)
+        if action is not None:
+            action.setChecked(True)
+
+    def show_tool(self, widget) -> None:
         self.results_dock.show()
-        self.results.tabs.setCurrentWidget(self.results.sweeps)
+        self.results.show_tool(widget)
+
+    def show_sweeps(self) -> None:
+        self.show_tool(self.results.sweeps)
         self.results.sweeps.reload_candidates()
 
     def show_montecarlo(self) -> None:
-        self.results_dock.show()
-        self.results.tabs.setCurrentWidget(self.results.montecarlo)
+        self.show_tool(self.results.montecarlo)
 
     def show_gaussian(self) -> None:
-        self.results_dock.show()
-        self.results.tabs.setCurrentWidget(self.results.gaussian)
+        self.show_tool(self.results.gaussian)
 
     def show_fock(self) -> None:
-        self.results_dock.show()
-        self.results.tabs.setCurrentWidget(self.results.fock)
+        self.show_tool(self.results.fock)
 
     def show_optimizer(self) -> None:
         self.show_sweeps()
