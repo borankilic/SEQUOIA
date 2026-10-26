@@ -274,6 +274,6 @@ class CanvasView(QGraphicsView):
             return
         ref = bytes(mime.data(PART_MIME)).decode("utf-8").strip()
         point = self.mapToScene(event.position().toPoint())
-        self.scene().add_part(ref, (point.x() / CELL, point.y() / CELL))
+        self.scene().add_part(ref, (point.x() / CELL, point.y() / CELL), point)
         event.acceptProposedAction()
         self.setFocus()

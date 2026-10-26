@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -88,15 +89,29 @@ class GaussianTab(RunGuard, QWidget):
         self.status.setStyleSheet("color: palette(placeholder-text);")
         self.table = _make_table(["Item", "Quantity", "Value"])
         self.plot = pg.PlotWidget()
-        style_plot(self.plot, "pairs per window (low-gain)", "CAR / heralded g2")
+        style_plot(self.plot, "mean pairs per window", "CAR (true / accidental)")
         self.plot.setLogMode(x=True, y=True)
+        self.plot.setTitle("Coincidence-to-accidental ratio")
         self.car_curve = self.plot.plot(
             pen=pg.mkPen("#1f77b4", width=2), symbol="o", symbolSize=5, name="CAR"
         )
-        self.g2_curve = self.plot.plot(
+        self.g2_plot = pg.PlotWidget()
+        style_plot(self.g2_plot, "mean pairs per window", "heralded g2(0)")
+        self.g2_plot.setLogMode(x=True, y=False)
+        self.g2_plot.setTitle("Heralded g2(0): 0 = single photon, 1 = Poissonian")
+        for level, label in ((0.5, "single-photon limit 0.5"), (1.0, "Poissonian 1")):
+            self.g2_plot.addItem(
+                pg.InfiniteLine(
+                    level,
+                    angle=0,
+                    pen=pg.mkPen("#888888", width=1, style=Qt.PenStyle.DashLine),
+                    label=label,
+                    labelOpts={"position": 0.15, "color": "#888888"},
+                )
+            )
+        self.g2_curve = self.g2_plot.plot(
             pen=pg.mkPen("#d62728", width=2), symbol="s", symbolSize=5, name="heralded g2(0)"
         )
-        self.plot.addLegend()
         bar = QHBoxLayout()
         bar.setContentsMargins(6, 4, 6, 4)
         for w in (self.scale, self.sweep, self.run_button, self.cancel_button, self.progress):
@@ -114,8 +129,11 @@ class GaussianTab(RunGuard, QWidget):
         ll.addWidget(self.scope_label)
         ll.addWidget(self.table, 1)
         split = QSplitter()
+        plots = QSplitter(Qt.Orientation.Vertical)
+        plots.addWidget(self.plot)
+        plots.addWidget(self.g2_plot)
         split.addWidget(left)
-        split.addWidget(self.plot)
+        split.addWidget(plots)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(bar)

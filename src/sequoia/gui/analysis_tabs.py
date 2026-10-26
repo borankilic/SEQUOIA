@@ -87,7 +87,7 @@ class LinkTab(QWidget):
         self.outcome: SimulationOutcome | None = None
         self.combo = QComboBox()
         self.combo.setMinimumWidth(160)
-        self.population = QComboBox()
+        self.population = QComboBox(self)
         self.population.setMinimumWidth(150)
         self.population.setVisible(self.photon_views)
         self.note = QLabel("")
@@ -824,7 +824,31 @@ class SpectraTab(LinkTab):
             return
         wl = np.asarray(light.wavelengths) * 1e9
         order = np.argsort(wl)
-        self.curve.setData(wl[order], np.asarray(light.power_spectrum)[order] * 1e3)
+        power = np.asarray(light.power_spectrum)[order] * 1e3
+        wl = wl[order]
+        if len(wl) <= 2:
+            self.curve.setData([], [])
+            stems = self.plot.plot(
+                np.repeat(wl, 2),
+                np.ravel(np.column_stack([np.zeros_like(power), power])),
+                connect="pairs",
+                pen=pg.mkPen("#1f77b4", width=3),
+            )
+            dots = self.plot.plot(
+                wl, power, pen=None, symbol="o", symbolSize=9, symbolBrush="#1f77b4"
+            )
+            self.photon_curves += [stems, dots]
+            span = max(0.5, 0.002 * float(wl.mean()))
+            self.plot.setXRange(float(wl.min()) - span, float(wl.max()) + span, padding=0)
+            self.plot.setYRange(0.0, float(power.max()) * 1.15 or 1.0, padding=0)
+            lines = ", ".join(f"{w:.3f} nm" for w in wl)
+            self.note.setText(
+                f"single-frequency line at {lines}, total {eng(light.power, 'W')} "
+                "(the linewidth is below the sampling of this source)"
+            )
+            return
+        self.curve.setData(wl, power)
+        self.plot.enableAutoRange()
         self.note.setText(f"{len(wl)} samples, total {eng(light.power, 'W')}")
 
 

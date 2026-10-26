@@ -217,6 +217,8 @@ _ANALYSIS_FIELDS: dict[str, list[tuple[str, str, Any]]] = {
         ("coincidence_rate_hz", "all-time coincidences", lambda v: eng(v, "Hz")),
         ("heralding_a_given_b", "heralding efficiency (first | second)", percent),
         ("heralding_b_given_a", "heralding efficiency (second | first)", percent),
+        ("two_photon_visibility", "two-photon interference visibility", plain),
+        ("distinguishable_rate_hz", "rate if photons were distinguishable", lambda v: eng(v, "Hz")),
     ],
     "heralded_g2": [
         ("window_s", "window", lambda v: eng(v, "s")),
@@ -312,7 +314,9 @@ class ResultsDock(QWidget):
             ["Channel", "Detector", "Singles", "Pair singles", "Background", "Dead time", "Delay"]
         )
         self.analyses = _tree(["Analysis", "Value"])
+        self.metrics = _make_table(["Metric", "Value", "Analysis", "Definition"])
         self.counts = QSplitter(Qt.Orientation.Vertical)
+        self.counts.addWidget(self.metrics)
         self.counts.addWidget(self.channels)
         self.counts.addWidget(self.analyses)
 
@@ -423,6 +427,7 @@ class ResultsDock(QWidget):
         _fill(self.diagnostics, [])
         _fill(self.links, [])
         _fill(self.channels, [])
+        _fill(self.metrics, [])
         self.readouts.clear()
         self.analyses.clear()
         self.tab_errors.clear()
@@ -662,6 +667,26 @@ class ResultsDock(QWidget):
                     ]
                 )
         _fill(self.channels, rows)
+        from sequoia.analysis.metrics import key_metrics
+
+        metric_rows = []
+        for m in key_metrics(rates.analyses) if rates is not None else []:
+            value = m["value"]
+            if m["metric"] == "CAR":
+                shown = car_text(value)
+            elif "efficiency" in m["metric"]:
+                shown = percent(value)
+            else:
+                shown = plain(value)
+            metric_rows.append(
+                [
+                    _NumItem(m["metric"]),
+                    _NumItem(shown, value),
+                    _NumItem(m["analysis"]),
+                    _NumItem(m["definition"], tooltip=m["definition"]),
+                ]
+            )
+        _fill(self.metrics, metric_rows)
 
         tree = self.analyses
         tree.setUpdatesEnabled(False)

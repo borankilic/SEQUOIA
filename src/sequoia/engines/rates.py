@@ -919,7 +919,13 @@ class _Engine:
         return blocks
 
     def member_blocks(
-        self, src: _Source, amp: np.ndarray, a: str, b: str, link: bool = False
+        self,
+        src: _Source,
+        amp: np.ndarray,
+        a: str,
+        b: str,
+        link: bool = False,
+        coherent: bool = True,
     ) -> list[np.ndarray]:
         h = src.link_h if link else src.h
         ha, hb = h[a], h[b]
@@ -948,9 +954,9 @@ class _Engine:
             parts.append((n_a2[support], mg[support], scale * kappa * phi2[:, :, support]))
         lo = min(int(p.min()) for p, _, _ in parts)
         hi = max(int(p.max()) for p, _, _ in parts)
-        split = hi - lo + 1 > MAX_UNION
+        split = hi - lo + 1 > MAX_UNION or not coherent
         groups = [[p] for p in parts] if split else [parts]
-        if split and len(parts) == 2:
+        if split and coherent and len(parts) == 2:
             (p1, _, _), (p2, _, _) = parts
             if p1.min() <= p2.max() and p2.min() <= p1.max():
                 self.issue(
@@ -1348,7 +1354,15 @@ class _Engine:
         self.window_flag(name, n, window, name)
         acc = n["accidental"]
         true = n["true"]
+        visibility, distinguishable = self.two_photon_visibility(a, b)
+        extra = {}
+        if visibility is not None:
+            extra = {
+                "two_photon_visibility": visibility,
+                "distinguishable_rate_hz": distinguishable,
+            }
         return {
+            **extra,
             "type": "coincidences",
             "channels": [a.name, b.name],
             "window_s": window,
@@ -1911,6 +1925,36 @@ class _Engine:
         for k in range(2):
             np.add.at(x, (idx, slice(None), k * ns + jg), amp[k].transpose(1, 2, 0))
         return x
+
+    def two_photon_visibility(self, a: _Channel, b: _Channel) -> tuple[float | None, float]:
+        # V = 1 - C / C_dist, C_dist = the same pairs with the two photon assignments added
+        # incoherently (fully distinguishable photons); None when only one assignment exists
+        coherent, incoherent, both = 0.0, 0.0, False
+        for src in self.sources:
+            for amp in src.members:
+                if not np.any(amp):
+                    continue
+                ha, hb = src.h[a.detector], src.h[b.detector]
+                both |= bool(
+                    np.any(ha["signal"])
+                    and np.any(hb["idler"])
+                    and np.any(ha["idler"])
+                    and np.any(hb["signal"])
+                )
+                coherent += src.rate * sum(
+                    float(np.sum(np.abs(blk) ** 2))
+                    for blk in self.member_blocks(src, amp, a.detector, b.detector)
+                )
+                incoherent += src.rate * sum(
+                    float(np.sum(np.abs(blk) ** 2))
+                    for blk in self.member_blocks(
+                        src, amp, a.detector, b.detector, coherent=False
+                    )
+                )
+        if not both or incoherent <= 0.0:
+            return None, incoherent
+        survival = self.survival(a) * self.survival(b)
+        return 1.0 - coherent / incoherent, incoherent * survival
 
     def pair_rate(self, a: _Channel, b: _Channel) -> float:
         total = 0.0

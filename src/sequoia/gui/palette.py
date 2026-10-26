@@ -40,7 +40,7 @@ class Palette(QWidget):
         self.tree = _PartTree()
         self.tree.setHeaderHidden(True)
         self.tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        self.tree.setIconSize(QSize(22, 22))
+        self.tree.setIconSize(QSize(30, 30))
         self.tree.setIndentation(14)
         self.tree.setDragEnabled(True)
         self.tree.setDragDropMode(QTreeWidget.DragDropMode.DragOnly)
@@ -122,7 +122,7 @@ class Palette(QWidget):
 
                 from sequoia.gui.canvas.icons import component_pixmap
 
-                item.setIcon(0, QIcon(component_pixmap(info.type, 28)))
+                item.setIcon(0, QIcon(component_pixmap(info.type, 60)))
             except ImportError:
                 pass
         haystack = " ".join(

@@ -272,8 +272,8 @@ class ComponentItem(QGraphicsItem):
         if name is None or name not in ICON_TYPES or self.canvas.zoom < 0.12:
             return
         m11, m12, m21, m22 = self._matrix()
-        inset = max(gutter + 8.0, 10.0)
-        rect = QRectF(-self._w / 2 + inset, -self._h / 2 + 8, self._w - 2 * inset, self._h - 16)
+        inset = max(gutter + 3.0, 4.0)
+        rect = QRectF(-self._w / 2 + inset, -self._h / 2 + 3, self._w - 2 * inset, self._h - 6)
         painter.save()
         painter.setTransform(QTransform(m11, m12, m21, m22, 0, 0), True)
         paint_icon(painter, name, rect, color=color, fiber=name.startswith("Fiber"))
