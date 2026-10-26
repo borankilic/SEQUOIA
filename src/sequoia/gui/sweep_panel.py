@@ -28,14 +28,15 @@ from sequoia.analysis.sweep import (
     candidate_targets,
     check_axis_unit,
     metrics_of,
-    run_sweep,
     with_values,
 )
 from sequoia.engines.cache import RunCache
+from sequoia.errors import Issue
 from sequoia.gui.analysis_tabs import save_text, style_plot
 from sequoia.gui.jobs import JobRunner
 from sequoia.gui.results import _fill, _make_table, _NumItem, plain
-from sequoia.gui.runguard import RunGuard
+from sequoia.gui.runguard import RunGuard, RunRecords
+from sequoia.runs import metric_label, new_run_id, run_sweep_record
 
 
 def _spin(value: float = 0.0) -> QDoubleSpinBox:
@@ -127,12 +128,14 @@ class AxisRow(QWidget):
             self._reset_range()
 
 
-class SweepTab(RunGuard, QWidget):
+class SweepTab(RunGuard, RunRecords, QWidget):
     """1D/2D parameter sweeps of the open setup, plotted against a chosen result."""
 
     def __init__(self, provider, parent=None) -> None:
         super().__init__(parent)
         self._guard_init()
+        self._records_init()
+        self.on_issues = None
         self.provider = provider
         self.runner = JobRunner(self)
         self.result = None
@@ -184,6 +187,7 @@ class SweepTab(RunGuard, QWidget):
             self.optimize_button,
             self.export_button,
             self.png_button,
+            *self.run_buttons(),
             self.progress,
         ):
             actions.addWidget(w)
@@ -192,6 +196,7 @@ class SweepTab(RunGuard, QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(form)
+        layout.addWidget(self.model_card)
         layout.addWidget(self.plot, 1)
 
         self.rows[1].setEnabled(False)
@@ -241,6 +246,7 @@ class SweepTab(RunGuard, QWidget):
         self.invalidate()
         self.result = None
         self.status_text = ""
+        self.clear_record()
         if self.optimizer is not None:
             self.optimizer.close()
             self.optimizer = None
@@ -302,17 +308,18 @@ class SweepTab(RunGuard, QWidget):
                 return
         fock = self._fock_options()
         self.begin_run()
+        run_id = new_run_id("sweep")
 
         def job(should_cancel, progress):
-            return run_sweep(
+            return run_sweep_record(
                 setup,
                 library,
                 axes,
                 names,
-                cache=RunCache(),
+                fock=fock,
                 should_cancel=should_cancel,
                 progress=progress,
-                fock=fock,
+                run_id=run_id,
             )
 
         self.run_button.setEnabled(False)
@@ -343,11 +350,24 @@ class SweepTab(RunGuard, QWidget):
         self.status_text = text
         self.status.setText(text)
 
-    def _done(self, result) -> None:
+    def _done(self, run) -> None:
         if not self.run_is_current():
             self._end("")
             return
+        result = run.result
         self.result = result
+        failures = [
+            Issue("warning", "sweep_point_failed", f"sweep point {index}", str(reason)).for_run(
+                "sweep", run.record.run_id if run.record is not None else None
+            )
+            for index, reason in list(result.failures.items())[:20]
+        ]
+        card = list(run.card)
+        if failures:
+            card.append(("Approximations", f"first failure: {failures[0].message[:160]}"))
+        self.set_record(run.record, card)
+        if self.on_issues is not None:
+            self.on_issues(failures)
         names = sorted(result.data)
         current = self.metric.currentText()
         self.metric.blockSignals(True)
@@ -379,7 +399,8 @@ class SweepTab(RunGuard, QWidget):
         ax = result.axes
         unit = lambda a: f"{a.target} [{a.unit}]" if a.unit else a.target  # noqa: E731
         if len(ax) == 1:
-            style_plot(self.plot, unit(ax[0]), name)
+            style_plot(self.plot, unit(ax[0]), metric_label(name))
+            self.plot.setTitle("")
             self.plot.plot(
                 ax[0].values,
                 data,
@@ -390,6 +411,7 @@ class SweepTab(RunGuard, QWidget):
             )
             return
         style_plot(self.plot, unit(ax[0]), unit(ax[1]))
+        self.plot.setTitle(metric_label(name))
         img = pg.ImageItem(np.nan_to_num(data, nan=0.0))
         x0, x1 = ax[0].values[0], ax[0].values[-1]
         y0, y1 = ax[1].values[0], ax[1].values[-1]

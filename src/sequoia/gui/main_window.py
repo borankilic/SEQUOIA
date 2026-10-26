@@ -194,6 +194,7 @@ class MainWindow(QMainWindow):
         )
         self.act_save = self._action("Save", self.save, S.StandardKey.Save)
         self.act_save_as = self._action("Save As...", self.save_as, S.StandardKey.SaveAs)
+        self.act_export_run = self._action("Export Simulation Run...", self.export_run)
         self.act_quit = self._action("Quit", self.close, S.StandardKey.Quit)
         self.act_quit.setMenuRole(QAction.MenuRole.QuitRole)
 
@@ -256,6 +257,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.act_save)
         file_menu.addAction(self.act_save_as)
+        file_menu.addAction(self.act_export_run)
         file_menu.addSeparator()
         file_menu.addAction(self.act_start)
         file_menu.addSeparator()
@@ -712,6 +714,32 @@ class MainWindow(QMainWindow):
         if self.document.path is None or self._is_bundled_example(self.document.path):
             return self.save_as()
         return self._save_to(None)
+
+    def export_run(self, directory: str | None = None) -> bool:
+        from sequoia.runs import record_from_outcome, write_bundle
+
+        c = self.controller
+        if c.last_outcome is None or c.last_setup is None:
+            self._show_message("No simulation result to export yet")
+            return False
+        if directory is None:
+            from PySide6.QtWidgets import QFileDialog
+
+            directory = QFileDialog.getExistingDirectory(self, "Export simulation run to folder")
+            if not directory:
+                return False
+        try:
+            record = record_from_outcome(c.last_outcome, c.last_setup, c.last_library)
+            path = write_bundle(record, directory)
+        except (OSError, ValueError) as exc:
+            self.show_error("Cannot export the run", str(exc))
+            return False
+        stale = c.last_setup is not self.document.setup
+        self._show_message(
+            f"Exported run {record.run_id} to {path}"
+            + (" (it predates later edits)" if stale else "")
+        )
+        return True
 
     def save_as(self) -> bool:
         path = self.ask_save_path()

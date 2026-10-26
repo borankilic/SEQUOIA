@@ -210,9 +210,19 @@ def format_mc_report(tags, analyses, comparisons=None) -> str:
 
 
 def format_gaussian_report(result) -> str:
+    scale = result.gain_scale
+    if isinstance(scale, dict):
+        values = set(scale.values())
+        scale = (
+            f"{values.pop():g}"
+            if len(values) == 1
+            else ", ".join(f"{k} {v:g}" for k, v in scale.items())
+        )
+    else:
+        scale = f"{scale:g}"
     lines = [
         f"Gaussian multimode statistics per window of {result.window * 1e9:.4g} ns "
-        f"(pump scale {result.gain_scale:g})",
+        f"(pump scale {scale})",
         "",
     ]
     for name, info in result.sources.items():
@@ -244,3 +254,186 @@ def format_gaussian_report(result) -> str:
         lines += ["", "Notes"]
         lines += [f"  {i.code}: {i.message}" for i in result.issues[:8]]
     return "\n".join(lines)
+
+
+def _t(seconds: float) -> str:
+    for unit, scale in (("s", 1.0), ("ms", 1e-3), ("us", 1e-6), ("ns", 1e-9), ("ps", 1e-12)):
+        if abs(seconds) >= scale or unit == "ps":
+            return f"{seconds / scale:.4g} {unit}"
+    return f"{seconds:g} s"
+
+
+def _approximations(issues, limit: int = 4) -> list[tuple[str, str]]:
+    notes = [i for i in issues if i.severity in ("warning", "error")]
+    if not notes:
+        return [("Approximations", "no engine warnings")]
+    text = "; ".join(f"{i.subject}: {i.message}" for i in notes[:limit])
+    if len(notes) > limit:
+        text += f"; and {len(notes) - limit} more in Diagnostics"
+    return [("Approximations", text)]
+
+
+MC_QUANTITY = {
+    "singles_hz": "recorded singles [Hz] (after dead time)",
+    "true_hz": "coincidences minus accidentals [Hz]",
+    "total_hz": "raw coincidences [Hz]",
+    "triples_hz": "heralded triples [Hz]",
+}
+
+
+def gaussian_card(result, calibration: str = "") -> list[tuple[str, str]]:
+    """Model summary of a Gaussian-engine result, to show above it."""
+    w = result.window
+    pulsed = [s.get("pulsed") for s in result.sources.values()]
+    if pulsed and all(pulsed):
+        window = f"{_t(w)}: one repetition period (pulsed)"
+    elif pulsed and not any(pulsed):
+        window = f"{_t(w)}: coherence window 1/dnu of the CW source"
+    else:
+        window = _t(w)
+    sources = "; ".join(
+        f"{k}: {v['pairs_per_window']:.4g} pairs per window, {v['modes']} Schmidt mode(s), "
+        + ("pulsed" if v.get("pulsed") else "CW")
+        for k, v in result.sources.items()
+    )
+    rows = [
+        (
+            "Model",
+            "multimode Gaussian (squeezed-vacuum pairs, thermal per Schmidt mode); exact only "
+            "within these Gaussian source and window assumptions",
+        ),
+        ("Source statistics", sources or "no pair source"),
+        ("Statistics window", window),
+        (
+            "Coincidence",
+            "both detectors click in the same statistics window; the analyses' coincidence "
+            "windows are not used",
+        ),
+        ("Timing", "not included: no dead time, jitter, afterpulsing or delays"),
+        ("Normalization", "probability per statistics window; rates = probability / window"),
+    ]
+    if result.pnr_info:
+        mass = min(m.get("retained", 1.0) for m in result.pnr_info.values())
+        rows.append(("Omitted tail", f"photon-number distributions retain >= {mass:.6g}"))
+    else:
+        rows.append(("Omitted tail", "none: click probabilities are closed-form"))
+    if calibration:
+        rows.append(("Calibration", calibration))
+    return rows + _approximations(result.issues)
+
+
+def montecarlo_card(
+    tags, analyses, measurement=None, schmidt_number=None, calibration: str = ""
+) -> list:
+    dead = (
+        "detector and tagger dead times set to zero (measurement: no dead time)"
+        if measurement is not None and measurement.dead_time == "none"
+        else "included: non-paralyzable detector and tagger dead time, jitter, afterpulsing"
+    )
+    k = schmidt_number
+    rows = [
+        ("Model", "Monte Carlo time tags of the setup (one random record)"),
+        (
+            "Source statistics",
+            f"thermal pulse statistics of K = {k:g} modes" if k else "Poisson pair emission",
+        ),
+        ("Timing", dead),
+        ("Acquisition", f"{_t(tags.duration)}, seed {tags.seed}"),
+    ]
+    for name, a in analyses.items():
+        if a.get("type") == "coincidences":
+            text = (
+                f"{_t(a['window_s'])} full width, accidentals from "
+                f"{'sidebands' if a.get('accidental_model') == 'sideband' else 'singles product'}"
+            )
+            if a.get("timing_note"):
+                text += f" ({a['timing_note']})"
+            rows.append((f"Coincidence window '{name}'", text))
+        elif a.get("type") == "heralded_g2":
+            rows.append((f"Coincidence window '{name}'", f"{_t(a['window_s'])} full width"))
+    rows.append(
+        (
+            "Normalization",
+            "rates = recorded events / acquisition duration; sigma = Poisson counting of the "
+            "recorded events; z = (Monte Carlo - rate engine) / sigma",
+        )
+    )
+    if calibration:
+        rows.append(("Calibration", calibration))
+    return rows + _approximations(tags.issues)
+
+
+def sweep_card(result, fock: bool = False, calibration: str = "") -> list:
+    failed = len(result.failures)
+    rows = [
+        ("Model", "every point is a full rate-engine simulation of the edited setup"),
+        (
+            "Timing",
+            "rate engine: independent non-paralyzable dead time per detector, window fractions "
+            "from jitter; photon-number (fock:) observables have no dead time",
+        ),
+        (
+            "Normalization",
+            "rates in Hz per detector or analysis; fock: probabilities per detection window",
+        ),
+        (
+            "Undefined points",
+            f"{failed} point(s) not computed (shown as gaps, listed in the export)"
+            if failed
+            else "none",
+        ),
+    ]
+    if fock:
+        rows.insert(1, ("Photon-number observables", "Photon counts settings at every point"))
+    if calibration:
+        rows.append(("Calibration", calibration))
+    return rows
+
+
+def chsh_card(result, windows: dict[str, float] | None = None, calibration: str = "") -> list:
+    kind = "raw coincidences" if result.quantity == "total_hz" else "accidentals subtracted"
+    rows = [
+        ("Model", "rate engine at each of the four setting pairs (a forecast, not a measurement)"),
+        ("Quantity", f"{kind}; E = (C++ + C-- - C+- - C-+) / (sum of the four)"),
+        (
+            "Acquisition",
+            f"{result.integration_time:g} s per setting pair, 4 pairs "
+            f"({4 * result.integration_time:g} s in total)",
+        ),
+        (
+            "Uncertainty",
+            "Poisson counting of the forecast counts"
+            + (
+                f", accidental estimate from {result.sidebands} sideband windows"
+                if result.quantity == "true_hz"
+                else ""
+            )
+            + ("" if result.s_sigma is not None else "; undefined: no coincidences predicted"),
+        ),
+        ("Assumptions", "fair sampling: coincidences post-selected on two detections"),
+    ]
+    if windows:
+        rows.insert(
+            2,
+            (
+                "Coincidence windows",
+                ", ".join(f"{n}: {_t(w)} full width" for n, w in windows.items()),
+            ),
+        )
+    if calibration:
+        rows.append(("Calibration", calibration))
+    return rows
+
+
+def rates_card(outcome, calibration: str = "") -> list:
+    rows = [
+        ("Model", "rate engine: mean rates, Poisson multipair accidentals, analytic windows"),
+        (
+            "Timing",
+            "independent non-paralyzable dead time per detector; jitter sets window fractions",
+        ),
+        ("Normalization", "rates [Hz]; coincidences counted in each analysis' full-width window"),
+    ]
+    if calibration:
+        rows.append(("Calibration", calibration))
+    return rows + _approximations(outcome.issues)

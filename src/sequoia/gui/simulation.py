@@ -80,6 +80,8 @@ class SimulationController(QObject):
         self.cache = RunCache()
         self._cache_library: Library | None = None
         self.last_outcome: SimulationOutcome | None = None
+        self.last_setup = None
+        self.last_library = None
         self.last_traceback = ""
         self._revision = 0
         self._running = False
@@ -187,6 +189,7 @@ class SimulationController(QObject):
             self.cancelled.emit()
         else:
             self.last_outcome = outcome
+            self.last_setup, self.last_library = run.setup, run.library
             self.finished.emit(outcome)
         self._update_busy()
 

@@ -1,5 +1,3 @@
-from dataclasses import dataclass, field
-
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
@@ -16,15 +14,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sequoia.engines.cache import RunCache
-from sequoia.engines.classical import simulate
-from sequoia.engines.gaussian import GaussianResult, gaussian_window_groups, prepare_gaussian
+from sequoia.engines.gaussian import gaussian_window_groups
 from sequoia.gui.analysis_tabs import style_plot
 from sequoia.gui.jobs import JobRunner
 from sequoia.gui.results import _fill, _make_table, _NumItem, car_text, eng, plain
-from sequoia.gui.runguard import RunGuard
+from sequoia.gui.runguard import RunGuard, RunRecords
+from sequoia.runs import SWEEP_POINTS, GaussianOutcome, new_run_id, run_gaussian
 
-SWEEP_POINTS = 13
+__all__ = ["SWEEP_POINTS", "GaussianOutcome", "GaussianTab"]
 SCALE_TEXT = (
     "Pump x (and the per-source factor) scales the pair gain of a source and the classical "
     "leakage of the laser that pumps it. Fixed: detector dark counts, lasers that pump no "
@@ -32,22 +29,15 @@ SCALE_TEXT = (
 )
 
 
-@dataclass
-class GaussianOutcome:
-    result: GaussianResult | None
-    scales: np.ndarray = field(default_factory=lambda: np.array([]))
-    pairs: np.ndarray = field(default_factory=lambda: np.array([]))
-    car: np.ndarray = field(default_factory=lambda: np.array([]))
-    g2: np.ndarray = field(default_factory=lambda: np.array([]))
-    groups: list[tuple[float, list[str]]] = field(default_factory=list)
-
-
-class GaussianTab(RunGuard, QWidget):
-    """Multimode Gaussian photon statistics, and CAR / heralded g2 against pump power."""
+class GaussianTab(RunGuard, RunRecords, QWidget):
+    """Multimode Gaussian photon statistics per statistics window, and CAR / heralded g2
+    against pump power."""
 
     def __init__(self, provider, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._guard_init()
+        self._records_init()
+        self._run_id = None
         self.provider = provider
         self.runner = JobRunner(self)
         self.outcome: GaussianOutcome | None = None
@@ -87,16 +77,18 @@ class GaussianTab(RunGuard, QWidget):
         self.progress.setVisible(False)
         self.status = QLabel("")
         self.status.setStyleSheet("color: palette(placeholder-text);")
-        self.table = _make_table(["Item", "Quantity", "Value"])
+        self.table = _make_table(["Item", "Quantity [unit] (denominator)", "Value"])
         self.plot = pg.PlotWidget()
-        style_plot(self.plot, "mean pairs per window", "CAR (true / accidental)")
+        style_plot(
+            self.plot, "mean pairs per statistics window", "CAR (true / accidental, same window)"
+        )
         self.plot.setLogMode(x=True, y=True)
         self.plot.setTitle("Coincidence-to-accidental ratio")
         self.car_curve = self.plot.plot(
             pen=pg.mkPen("#1f77b4", width=2), symbol="o", symbolSize=5, name="CAR"
         )
         self.g2_plot = pg.PlotWidget()
-        style_plot(self.g2_plot, "mean pairs per window", "heralded g2(0)")
+        style_plot(self.g2_plot, "mean pairs per statistics window", "heralded g2(0)")
         self.g2_plot.setLogMode(x=True, y=False)
         self.g2_plot.setTitle("Heralded g2(0): 0 = single photon, 1 = Poissonian")
         for level, label in ((0.5, "single-photon limit 0.5"), (1.0, "Poissonian 1")):
@@ -114,7 +106,14 @@ class GaussianTab(RunGuard, QWidget):
         )
         bar = QHBoxLayout()
         bar.setContentsMargins(6, 4, 6, 4)
-        for w in (self.scale, self.sweep, self.run_button, self.cancel_button, self.progress):
+        for w in (
+            self.scale,
+            self.sweep,
+            self.run_button,
+            self.cancel_button,
+            *self.run_buttons(),
+            self.progress,
+        ):
             bar.addWidget(w)
         bar.addWidget(self.status, 1)
         source_bar = QHBoxLayout()
@@ -138,6 +137,7 @@ class GaussianTab(RunGuard, QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(bar)
         layout.addLayout(source_bar)
+        layout.addWidget(self.model_card)
         layout.addWidget(split, 1)
         self.list_button.clicked.connect(self.list_sources)
         self.group_box.currentIndexChanged.connect(self.refresh_stale)
@@ -216,6 +216,7 @@ class GaussianTab(RunGuard, QWidget):
         self.invalidate()
         self.outcome = None
         self.note = ""
+        self.clear_record()
         self.show_groups([])
         self.groups_label.setText("pair sources: not listed yet")
         if self.on_issues is not None:
@@ -239,50 +240,20 @@ class GaussianTab(RunGuard, QWidget):
         sweep = self.sweep.isChecked()
         chosen = self.selected_sources()
         factors = {k: w.value() for k, w in self.factors.items()}
+        run_id = self._run_id = new_run_id("gaussian")
 
         def job(should_cancel, progress):
-            progress(0, 0)
-            cache = RunCache()
-            classical = simulate(setup, library, should_cancel=should_cancel, cache=cache)
-            groups = gaussian_window_groups(
-                setup, library, classical=classical, cache=cache, should_cancel=should_cancel
-            )
-            selected = None
-            if len(groups) > 1:
-                if chosen is None or list(chosen) not in [ids for _, ids in groups]:
-                    return GaussianOutcome(None, groups=groups)
-                selected = chosen
-            prepared = prepare_gaussian(
+            return run_gaussian(
                 setup,
                 library,
-                classical=classical,
-                cache=cache,
+                pump_scale=scale,
+                sweep=sweep,
+                sources=chosen,
+                factors=factors,
                 should_cancel=should_cancel,
-                sources=selected,
+                progress=progress,
+                run_id=run_id,
             )
-            gain = {k: scale * factors.get(k, 1.0) for k in prepared.model.pumps}
-            result = prepared.evaluate(gain)
-            outcome = GaussianOutcome(result, groups=groups)
-            if not sweep or not result.sources:
-                return outcome
-            mu = next(iter(result.sources.values()))["pairs_per_window"]
-            grid = np.logspace(-1, 3, SWEEP_POINTS)
-            rows = []
-            for i, t in enumerate(grid):
-                progress(i, len(grid))
-                if should_cancel():
-                    break
-                r = prepared.evaluate({k: v * float(t) for k, v in gain.items()})
-                rows.append((t, r))
-            names = [n for n, a in result.analyses.items() if a["type"] == "coincidences"]
-            hnames = [n for n, a in result.analyses.items() if a["type"] == "heralded_g2"]
-            outcome.scales = scale * np.array([t for t, _ in rows])
-            outcome.pairs = np.array([t for t, _ in rows]) * mu
-            if names:
-                outcome.car = np.array([r.analyses[names[0]]["car"] for _, r in rows])
-            if hnames:
-                outcome.g2 = np.array([r.analyses[hnames[0]]["g2_heralded"] for _, r in rows])
-            return outcome
 
         self.begin_run()
         self._start(job, "running...")
@@ -322,41 +293,78 @@ class GaussianTab(RunGuard, QWidget):
                 else f"{len(outcome.groups)} pair-source window group(s) listed"
             )
             return
+        issues = (
+            list(outcome.record.issues)
+            if outcome.record is not None
+            else [i.for_run("gaussian", self._run_id) for i in r.issues]
+        )
         if not r.channels:
             blocker = next((i for i in r.issues if i.code == "gaussian_no_detectors"), None)
             self.accept_run()
             self.outcome = None
+            self.clear_record()
             _fill(self.table, [])
             self.car_curve.setData([], [])
             self.g2_curve.setData([], [])
             if self.on_issues is not None:
-                self.on_issues(r.issues)
+                self.on_issues(issues)
             self._end(
                 "not computed: "
                 + (blocker.message if blocker else "no tagged detector in the setup")
             )
             return
         self.outcome = outcome
+        self.set_record(outcome.record, outcome.card)
+        w = eng(r.window, "s")
         rows = []
         for ch in r.channels:
             p = r.probability(ch)
             rows += [
-                [_NumItem(ch), _NumItem("P(click)"), _NumItem(plain(p), p)],
-                [_NumItem(ch), _NumItem("mean photons"), _NumItem(plain(r.mean_photons[ch]))],
-                [_NumItem(ch), _NumItem("rate"), _NumItem(eng(p / r.window, "Hz"), p / r.window)],
+                [
+                    _NumItem(ch),
+                    _NumItem(f"P(click) (probability per {w} statistics window)"),
+                    _NumItem(plain(p), p),
+                ],
+                [
+                    _NumItem(ch),
+                    _NumItem("mean detected photons per statistics window"),
+                    _NumItem(plain(r.mean_photons[ch])),
+                ],
+                [
+                    _NumItem(ch),
+                    _NumItem("click rate [Hz] (P(click) / window, no dead time)"),
+                    _NumItem(eng(p / r.window, "Hz"), p / r.window),
+                ],
             ]
         for name, a in r.analyses.items():
             if a["type"] == "coincidences":
-                rows.append([_NumItem(name), _NumItem("CAR"), _NumItem(car_text(a["car"]))])
                 rows.append(
                     [
                         _NumItem(name),
-                        _NumItem("true coincidences"),
+                        _NumItem("CAR (true / accidental, same statistics window)"),
+                        _NumItem(car_text(a["car"])),
+                    ]
+                )
+                rows.append(
+                    [
+                        _NumItem(name),
+                        _NumItem(
+                            f"coincidences minus accidentals [Hz] (both click in one {w} window)"
+                        ),
                         _NumItem(eng(a["true_hz"], "Hz"), a["true_hz"]),
                     ]
                 )
             elif a["type"] == "heralded_g2":
-                rows.append([_NumItem(name), _NumItem("g2(0)"), _NumItem(plain(a["g2_heralded"]))])
+                g2 = a["g2_heralded"]
+                rows.append(
+                    [
+                        _NumItem(name),
+                        _NumItem("heralded g2(0) (per statistics window)"),
+                        _NumItem(
+                            plain(g2) if np.isfinite(g2) else "undefined: no heralded coincidences"
+                        ),
+                    ]
+                )
         _fill(self.table, rows)
         good = np.isfinite(outcome.car) & (outcome.car > 0)
         if len(outcome.pairs) and good.any():
@@ -381,6 +389,6 @@ class GaussianTab(RunGuard, QWidget):
             note += f"; {len(warnings)} note(s): " + "; ".join(str(i) for i in warnings[:2])
         self.note = note
         if self.on_issues is not None:
-            self.on_issues(r.issues)
+            self.on_issues(issues)
         self.status.setToolTip("\n".join(str(i) for i in r.issues))
         self._end(self.stale_text(note) if self.accept_run() else note)

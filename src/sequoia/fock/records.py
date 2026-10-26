@@ -1,24 +1,17 @@
+import hashlib
 import json
-import math
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
-
-import numpy as np
 
 from sequoia.fock.experiment import save_experiment
 from sequoia.setup.io import save_setup
 
 
 def _plain(value):
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if isinstance(value, dict):
-        return {str(k): _plain(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
-    if isinstance(value, np.generic):
-        return _plain(value.item())
-    return value
+    from sequoia.runs import json_safe
+
+    return json_safe(value)
 
 
 def run_record(res) -> dict:
@@ -31,9 +24,20 @@ def run_record(res) -> dict:
     def label(state):
         return ",".join(f"{d}={n}" for d, n in zip(ids, state, strict=True))
 
+    from sequoia.runs import new_run_id, setup_yaml, used_parts
+
+    text = setup_yaml(se.setup)
+    try:
+        fingerprint = se.library.fingerprint(used_parts(se.setup))
+    except Exception:
+        fingerprint = None
     record = {
         "format": "sequoia-photon-counts-run",
         "version": 1,
+        "run_id": new_run_id("fock"),
+        "created": datetime.now(UTC).isoformat(timespec="seconds"),
+        "setup_sha256": hashlib.sha256(text.encode()).hexdigest(),
+        "library_fingerprint": fingerprint,
         "status": res.status,
         "engine": {"name": "fock", "backend": res.result.backend, **res.result.versions},
         "setup": se.setup.name,

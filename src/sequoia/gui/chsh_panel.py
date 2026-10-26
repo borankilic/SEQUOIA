@@ -12,14 +12,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sequoia.analysis.chsh import format_chsh, run_chsh
+from sequoia.analysis.chsh import format_chsh
 from sequoia.analysis.metrics import correlation_from_rates
+from sequoia.analysis.planning import PlanningError, format_plan, plan_chsh
 from sequoia.analysis.sweep import candidate_targets
-from sequoia.engines.cache import RunCache
 from sequoia.gui.analysis_tabs import save_text
 from sequoia.gui.jobs import JobRunner
 from sequoia.gui.results import _fill, _make_table, _NumItem, plain
-from sequoia.gui.runguard import RunGuard
+from sequoia.gui.runguard import RunGuard, RunRecords
+from sequoia.runs import new_run_id, run_chsh_record
+
+PLAN_TARGETS = (
+    "target sigma(S)",
+    "target (|S| - 2) / sigma",
+    "time per setting pair [s]",
+    "total time, divided among the 4 pairs [s]",
+)
 
 OUTCOME_LABELS = ("a+ b+", "a+ b-", "a- b+", "a- b-")
 DEFAULT_OUTCOMES = ("tt", "tr", "rt", "rr")
@@ -36,12 +44,18 @@ def _angle_spin(value: float) -> QDoubleSpinBox:
     return spin
 
 
-class ChshTab(RunGuard, QWidget):
+def _undefined(value: float, reason: str = "undefined: no coincidences") -> str:
+    return plain(value) if math.isfinite(value) else reason
+
+
+class ChshTab(RunGuard, RunRecords, QWidget):
     """CHSH forecast from four analyser-setting pairs through the rate engine."""
 
     def __init__(self, provider, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._guard_init()
+        self._records_init()
+        self._measured_time = None
         self.provider = provider
         self.runner = JobRunner(self)
         self.result = None
@@ -77,16 +91,17 @@ class ChshTab(RunGuard, QWidget):
         self.status.setWordWrap(True)
         self.summary = QLabel("")
         self.summary.setWordWrap(True)
-        self.table = _make_table(
-            [
-                "Setting pair",
-                "Arm a parameter",
-                "Arm b parameter",
-                *[f"Counts {o} (raw)" for o in OUTCOME_LABELS],
-                "E raw",
-                "E accidental-subtracted",
-            ]
-        )
+        self.table = _make_table(self._headers(self.time.value()))
+        self.plan_target = QComboBox()
+        self.plan_target.addItems(PLAN_TARGETS)
+        self.plan_value = QDoubleSpinBox()
+        self.plan_value.setRange(1e-6, 1e9)
+        self.plan_value.setDecimals(4)
+        self.plan_value.setValue(0.05)
+        self.plan_button = QPushButton("Plan acquisition")
+        self.plan_label = QLabel("")
+        self.plan_label.setWordWrap(True)
+        self.plan_button.clicked.connect(self.plan)
 
         grid = QGridLayout()
         grid.setContentsMargins(6, 4, 6, 4)
@@ -109,9 +124,20 @@ class ChshTab(RunGuard, QWidget):
             mapping.addWidget(combo)
         mapping.addStretch(1)
         actions = QHBoxLayout()
-        for w in (self.quantity, self.time, self.sidebands, self.run_button, self.export_button):
+        for w in (
+            self.quantity,
+            self.time,
+            self.sidebands,
+            self.run_button,
+            self.export_button,
+            *self.run_buttons(),
+        ):
             actions.addWidget(w)
         actions.addWidget(self.status, 1)
+        plan = QHBoxLayout()
+        for w in (QLabel("Plan acquisition:"), self.plan_target, self.plan_value, self.plan_button):
+            plan.addWidget(w)
+        plan.addWidget(self.plan_label, 1)
         explain = QLabel(
             "Settings are the values of the chosen analyser parameters, not analysis angles: a "
             "half-wave plate at h before a PBS analyses linear polarization at 2h. '+' is the "
@@ -126,8 +152,10 @@ class ChshTab(RunGuard, QWidget):
         layout.addLayout(mapping)
         layout.addLayout(actions)
         layout.addWidget(explain)
+        layout.addWidget(self.model_card)
         layout.addWidget(self.summary)
         layout.addWidget(self.table, 1)
+        layout.addLayout(plan)
 
         self.run_button.clicked.connect(self.run)
         self.export_button.clicked.connect(self.export_plan)
@@ -150,8 +178,24 @@ class ChshTab(RunGuard, QWidget):
             self.sidebands.value(),
         )
 
+    @staticmethod
+    def _headers(t: float) -> list[str]:
+        return [
+            "Setting pair",
+            "Arm a parameter",
+            "Arm b parameter",
+            *[f"{o} raw coincidences in {t:g} s" for o in OUTCOME_LABELS],
+            "E raw",
+            "E accidental-subtracted",
+        ]
+
     def set_outcome(self, outcome) -> None:
         setup, library = self.provider()
+        m = setup.measurement if setup is not None else None
+        t = m.acquisition_duration.si if m is not None and m.acquisition_duration else None
+        if t is not None and t != self._measured_time:
+            self._measured_time = t
+            self.time.setValue(t)
         if setup is not None:
             key = (
                 tuple((i.id, i.part) for i in setup.instances),
@@ -190,6 +234,9 @@ class ChshTab(RunGuard, QWidget):
         self.result = None
         self.note = ""
         self._structure = None
+        self._measured_time = None
+        self.clear_record()
+        self.plan_label.setText("")
         _fill(self.table, [])
         self.summary.setText("")
         self.status.setText("")
@@ -213,22 +260,24 @@ class ChshTab(RunGuard, QWidget):
         time, sidebands = self.time.value(), self.sidebands.value()
         self.begin_run()
 
+        run_id = new_run_id("chsh")
+
         def job(should_cancel, progress):
             progress(0, 0)
-            return run_chsh(
+            return run_chsh_record(
                 setup,
                 library,
-                a,
-                b,
-                sa,
-                sb,
-                "deg",
-                [names[:2], names[2:]],
-                quantity,
-                time,
-                RunCache(),
-                should_cancel,
-                sidebands,
+                target_a=a,
+                target_b=b,
+                settings_a=sa,
+                settings_b=sb,
+                unit="deg",
+                outcomes=[names[:2], names[2:]],
+                quantity=quantity,
+                integration_time_s=time,
+                sidebands=sidebands,
+                should_cancel=should_cancel,
+                run_id=run_id,
             )
 
         self.run_button.setEnabled(False)
@@ -242,12 +291,17 @@ class ChshTab(RunGuard, QWidget):
     def _failed(self, message: str) -> None:
         self._end(f"failed: {message.splitlines()[0]}" if self.run_is_current() else "")
 
-    def _done(self, result) -> None:
+    def _done(self, run) -> None:
         if not self.run_is_current():
             self._end("")
             return
+        result = run.result
         self.result = result
+        self.set_record(run.record, run.card)
+        if self.on_issues is not None:
+            self.on_issues(list(run.record.issues) if run.record is not None else [])
         t = result.integration_time
+        self.table.setHorizontalHeaderLabels(self._headers(t))
         total = result.total_rates if result.total_rates is not None else result.rates
         rows = []
         for i in range(2):
@@ -265,8 +319,11 @@ class ChshTab(RunGuard, QWidget):
                         _NumItem(plain(result.settings_a[i]), result.settings_a[i]),
                         _NumItem(plain(result.settings_b[j]), result.settings_b[j]),
                         *[_NumItem(plain(c, 6), c) for c in counts],
-                        _NumItem(plain(e_raw), e_raw),
-                        _NumItem(plain(e_cor), e_cor),
+                        _NumItem(_undefined(e_raw), e_raw),
+                        _NumItem(
+                            _undefined(e_cor, "undefined: no accidental estimate or coincidences"),
+                            e_cor,
+                        ),
                     ]
                 )
         _fill(self.table, rows)
@@ -301,3 +358,28 @@ class ChshTab(RunGuard, QWidget):
     def export_plan(self) -> None:
         if self.result is not None:
             save_text(self, "Export CHSH plan", "chsh_plan.txt", self.plan_text())
+
+    def plan(self):
+        """Duration for a target sigma or significance, or sigma for a given duration, scaled
+        from this forecast (counting statistics only)."""
+        if self.result is None:
+            self.plan_label.setText("forecast CHSH first")
+            return None
+        setup, _library = self.provider()
+        m = setup.measurement if setup is not None else None
+        repeats = m.repeats if m is not None else 1
+        value = self.plan_value.value()
+        kind = self.plan_target.currentIndex()
+        args = [
+            {"target_sigma": value},
+            {"target_significance": value},
+            {"time_s": value, "split": "per_setting"},
+            {"time_s": value, "split": "total"},
+        ][kind]
+        try:
+            result = plan_chsh(self.result, repeats=repeats, **args)
+        except PlanningError as exc:
+            self.plan_label.setText(f"cannot plan: {exc}")
+            return None
+        self.plan_label.setText(format_plan(result))
+        return result

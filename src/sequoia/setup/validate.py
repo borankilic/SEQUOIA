@@ -3,6 +3,7 @@ import networkx as nx
 from sequoia.components.base import PortDirection, PortKind, PortSpec
 from sequoia.errors import Issue, SequoiaError, SetupError
 from sequoia.library.store import Library
+from sequoia.measurement import check_measurement
 from sequoia.setup.model import Setup
 from sequoia.setup.resolve import instantiate
 
@@ -176,6 +177,7 @@ def check_setup(setup: Setup, library: Library) -> list[Issue]:
         error(
             "cycle", "setup", f"links form a cycle ({path}); only feed-forward setups are supported"
         )
+    issues += check_measurement(setup)
     return issues
 
 

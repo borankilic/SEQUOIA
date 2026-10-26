@@ -159,3 +159,14 @@ def test_key_metrics_are_listed_individually(window, qtbot):
     assert "correlation E" in names
     g = window.results.gaussian
     assert g.g2_plot is not g.plot
+
+
+def test_simulation_run_exports_and_reruns(window, qtbot, tmp_path):
+    from sequoia.runs import rerun_bundle
+
+    open_template(qtbot, window, "hbt_heralded")
+    assert "Model" in window.results.rates_card.text()
+    assert window.export_run(str(tmp_path / "bundle"))
+    bundle = next((tmp_path / "bundle").rglob("run.json")).parent
+    result = rerun_bundle(bundle)
+    assert result.comparison.matches, result.comparison.text()

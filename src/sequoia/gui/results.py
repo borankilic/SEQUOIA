@@ -429,6 +429,11 @@ class ResultsDock(QWidget):
         self.analyses = _tree(["Analysis", "Value"])
         self.metrics = _make_table(["Metric", "Value", "Analysis", "Definition (denominator)"])
         self.counts = QSplitter(Qt.Orientation.Vertical)
+        self.rates_card = QLabel("", self.counts)
+        self.rates_card.setWordWrap(True)
+        self.rates_card.setContentsMargins(8, 4, 8, 4)
+        self.rates_card.setTextFormat(Qt.TextFormat.RichText)
+        self.counts.addWidget(self.rates_card)
         self.counts.addWidget(self.metrics)
         self.counts.addWidget(self.channels)
         self.counts.addWidget(self.analyses)
@@ -936,6 +941,7 @@ class ResultsDock(QWidget):
                 ]
             )
         _fill(self.metrics, metric_rows)
+        self._fill_rates_card(outcome)
 
         tree = self.analyses
         tree.setUpdatesEnabled(False)
@@ -962,6 +968,18 @@ class ResultsDock(QWidget):
         tree.expandAll()
         tree.resizeColumnToContents(0)
         tree.setUpdatesEnabled(True)
+
+    def _fill_rates_card(self, outcome: SimulationOutcome) -> None:
+        from sequoia.engines.report import rates_card
+        from sequoia.gui.runguard import card_html
+        from sequoia.measurement import measurement_card
+
+        rows = list(rates_card(outcome)) if outcome.rates is not None else []
+        setup, _library = self.provider()
+        if setup is not None and getattr(setup, "measurement", None) is not None:
+            rows += [(f"Measurement: {a}", b) for a, b in measurement_card(setup, outcome)]
+        self.rates_card.setText(card_html(rows))
+        self.rates_card.setVisible(bool(rows))
 
     def _analysis_node(self, parent, name: str, a: dict[str, Any]) -> None:
         kind = a.get("type", "analysis")

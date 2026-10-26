@@ -10,6 +10,7 @@ from pydantic import (
 )
 
 from sequoia.data import Duration, Length, Scalar
+from sequoia.measurement import Measurement
 
 _NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 Id = Annotated[str, StringConstraints(pattern=rf"^{_NAME}$")]
@@ -114,6 +115,7 @@ class Setup(_Model):
     links: list[Link] = []
     probes: list[ProbeSpec] = []
     analyses: list[dict[str, Any]] = []
+    measurement: Measurement | None = None
 
     @model_validator(mode="after")
     def _check_grid(self) -> "Setup":
