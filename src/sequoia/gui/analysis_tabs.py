@@ -9,21 +9,27 @@ import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 from scipy.constants import c as C_LIGHT
 
 from sequoia.analysis.budget import ideal_budget, photon_budget, power_budget
+from sequoia.analysis.metrics import KETS
 from sequoia.analysis.profile import caustic
 from sequoia.analysis.sweep import metrics_of
 from sequoia.engines.cache import RunCache
@@ -296,55 +302,130 @@ class CausticTab(LinkTab):
         )
 
 
+TEXT_CONTRAST = 4.5
+LINE_CONTRAST = 3.0
+NEAR_POLE = 1e-2
+
+
+def _luminance(c: QColor) -> float:
+    ch = [x / 255.0 for x in (c.red(), c.green(), c.blue())]
+    ch = [x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4 for x in ch]
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+
+def contrast_ratio(a: QColor, b: QColor) -> float:
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _mix(a: QColor, b: QColor, t: float) -> QColor:
+    pairs = zip(a.getRgbF()[:3], b.getRgbF()[:3], strict=True)
+    return QColor.fromRgbF(*[(1 - t) * x + t * y for x, y in pairs])
+
+
+def _ink(color: QColor, bg: QColor, minimum: float) -> QColor:
+    target = QColor("black") if _luminance(bg) > 0.18 else QColor("white")
+    for i in range(21):
+        c = _mix(color, target, i / 20)
+        if contrast_ratio(c, bg) >= minimum:
+            return c
+    return target
+
+
+def _plot_colors(widget: QWidget) -> dict[str, QColor]:
+    pal = widget.palette()
+    bg = pal.window().color()
+    fg = _ink(pal.windowText().color(), bg, TEXT_CONTRAST)
+    return {
+        "background": bg,
+        "text": fg,
+        "muted_text": _ink(pal.placeholderText().color(), bg, TEXT_CONTRAST),
+        "axis": _ink(_mix(fg, bg, 0.35), bg, LINE_CONTRAST),
+        "ring": _ink(_mix(fg, bg, 0.55), bg, LINE_CONTRAST),
+        "data": _ink(QColor("#1f77b4"), bg, LINE_CONTRAST),
+        "selected": _ink(QColor("#d62728"), bg, LINE_CONTRAST),
+    }
+
+
+def _label(p: QPainter, widget: QWidget, rects: list, x: float, y: float, text: str) -> None:
+    fm = widget.fontMetrics()
+    room = max(widget.width() - 4, 1)
+    if fm.horizontalAdvance(text) > room:
+        text = fm.elidedText(text, Qt.TextElideMode.ElideRight, room)
+    w, h = fm.horizontalAdvance(text), fm.height()
+    box = QRectF(
+        max(2.0, min(x, widget.width() - 2.0 - w)),
+        max(2.0, min(y, widget.height() - 2.0 - h)),
+        w,
+        h,
+    )
+    flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    p.drawText(box, flags, text)
+    rects.append((p.boundingRect(box, flags, text), text))
+
+
 class _Ellipse(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.stokes: np.ndarray | None = None
-        self.setMinimumSize(150, 150)
+        self.caption = ""
+        self.text_rects: list[tuple[QRectF, str]] = []
+        self.colors: dict[str, QColor] = {}
+        self.setAutoFillBackground(True)
+        self.setMinimumSize(120, 110)
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pal = QApplication.palette()
-        pad = self.fontMetrics().height() + 8
-        side = min(self.width(), self.height() - pad) - 12
-        c = QPointF(self.width() / 2, (self.height() - pad) / 2 + 4)
-        r = max(side / 2, 10.0)
-        axis = QColor(pal.text().color())
-        axis.setAlpha(150)
-        p.setPen(QPen(axis, 1.2))
+        colors = self.colors = _plot_colors(self)
+        self.text_rects = []
+        self.caption = ""
+        fm = self.fontMetrics()
+        th = fm.height()
+        top, bottom = th + 4, self.height() - th - 6
+        side = fm.horizontalAdvance("H") + 8
+        r = max(min((self.width() - 2 * side) / 2, (bottom - top) / 2), 10.0)
+        c = QPointF(self.width() / 2, (top + bottom) / 2)
+        p.setPen(QPen(colors["axis"], 1.2))
         p.drawLine(QPointF(c.x() - r, c.y()), QPointF(c.x() + r, c.y()))
         p.drawLine(QPointF(c.x(), c.y() - r), QPointF(c.x(), c.y() + r))
-        p.drawText(QPointF(c.x() + r - 12, c.y() - 4), "H")
-        p.drawText(QPointF(c.x() + 4, c.y() - r + 12), "V")
+        p.setPen(colors["text"])
+        _label(p, self, self.text_rects, c.x() + r + 3, c.y() - th / 2, "H")
+        _label(p, self, self.text_rects, c.x() + 4, c.y() - r - th + 2, "V")
         s = self.stokes
-        if s is None or s[0] <= 0:
+        if s is None or not s[0] > 0 or not np.all(np.isfinite(s)):
             return
         pol = float(np.linalg.norm(s[1:]))
         if pol <= 1e-9 * s[0]:
-            p.setPen(pal.text().color())
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "unpolarized")
+            self.caption = "unpolarized"
+            _label(p, self, self.text_rects, 6, self.height() - th - 4, self.caption)
             return
+        circ = max(-1.0, min(1.0, s[3] / pol))
         psi = 0.5 * math.atan2(s[2], s[1])
-        chi = 0.5 * math.asin(max(-1.0, min(1.0, s[3] / pol)))
+        chi = 0.5 * math.asin(circ)
         a, b = 0.9 * r * math.cos(chi), 0.9 * r * abs(math.sin(chi))
         p.save()
         p.translate(c)
         p.rotate(-math.degrees(psi))
-        p.setPen(QPen(QColor("#1f77b4"), 2))
+        p.setPen(QPen(colors["data"], 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(QRectF(-a, -b, 2 * a, 2 * b))
         p.restore()
-        p.setPen(pal.text().color())
-        circ = s[3] / pol
-        hand = "right" if circ > 1e-3 else "left" if circ < -1e-3 else "linear"
-        p.drawText(
-            QPointF(8, self.height() - 8),
-            f"ψ {math.degrees(psi):.1f}°  χ {math.degrees(chi):.1f}°  {hand}",
-        )
+        # R = (H - iV)/sqrt2 as in analysis/metrics.py: clockwise seen towards the source, S3 < 0
+        hand = "R" if circ < 0 else "L"
+        if abs(circ) < NEAR_POLE:
+            self.caption = f"linear  ψ {math.degrees(psi):.1f}°"
+        elif math.hypot(s[1], s[2]) / pol < NEAR_POLE:
+            self.caption = f"circular {hand}"
+        else:
+            self.caption = f"ψ {math.degrees(psi):.1f}°  χ {math.degrees(chi):.1f}°  {hand}"
+        p.setPen(colors["text"])
+        _label(p, self, self.text_rects, 6, self.height() - th - 4, self.caption)
 
 
 class _Poincare(QWidget):
     DEFAULT_VIEW = (-35.0, 22.0)
+    FOOTER = "S1 H/V   S2 D/A   S3 L/R"
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -352,9 +433,15 @@ class _Poincare(QWidget):
         self.selected = ""
         self.azimuth, self.elevation = self.DEFAULT_VIEW
         self._drag: QPointF | None = None
-        self.setMinimumSize(190, 170)
+        self.text_rects: list[tuple[QRectF, str]] = []
+        self.colors: dict[str, QColor] = {}
+        self.setAutoFillBackground(True)
+        self.setMinimumSize(120, 110)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
-        self.setToolTip("Drag to rotate, double-click to reset the view")
+        self.setToolTip(
+            "Drag to rotate, double-click to reset the view. +S3 is L = (H + iV)/√2, -S3 is "
+            "R = (H - iV)/√2 (clockwise seen looking towards the source)"
+        )
 
     def mousePressEvent(self, event) -> None:
         self._drag = event.position()
@@ -387,18 +474,20 @@ class _Poincare(QWidget):
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pal = QApplication.palette()
-        label = self.fontMetrics().height()
-        r = max(min(self.width() - 3 * label, self.height() - 4 * label) / 2, 20.0)
-        c = QPointF(self.width() / 2, (self.height() - label) / 2)
+        colors = self.colors = _plot_colors(self)
+        self.text_rects = []
+        fm = self.fontMetrics()
+        th = fm.height()
+        side = fm.horizontalAdvance("S1") + 6
+        r = max(min((self.width() - 2 * side) / 2.24, (self.height() - 3 * th - 8) / 2.24), 12.0)
+        c = QPointF(self.width() / 2, (self.height() - th - 4) / 2)
 
         def pt(v):
             x, y, _z = self._project(np.asarray(v, dtype=float))
             return QPointF(c.x() + r * x, c.y() - r * y)
 
-        ring_color = QColor(pal.text().color())
-        ring_color.setAlpha(110)
-        p.setPen(QPen(ring_color, 1))
+        p.setPen(QPen(colors["ring"], 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(c, r, r)
         t = np.linspace(0, 2 * np.pi, 73)
         for ring in (
@@ -409,27 +498,32 @@ class _Poincare(QWidget):
             xs, ys, zs = ring(t)
             for i in range(len(t) - 1):
                 p.drawLine(pt((xs[i], ys[i], zs[i])), pt((xs[i + 1], ys[i + 1], zs[i + 1])))
-        p.setPen(pal.text().color())
+        p.setPen(QPen(colors["axis"], 1.2))
+        for v in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+            p.drawLine(pt((-v[0], -v[1], -v[2])), pt(v))
+        p.setPen(colors["text"])
         for name, v in (("S1", (1.12, 0, 0)), ("S2", (0, 1.12, 0)), ("S3", (0, 0, 1.12))):
             q = pt(v)
-            p.drawText(QPointF(q.x() - 8, q.y() + 4), name)
-        axis_pen = QPen(pal.text().color(), 1.2)
-        for v in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
-            p.setPen(axis_pen)
-            p.drawLine(pt((-v[0], -v[1], -v[2])), pt(v))
-        p.setPen(pal.placeholderText().color())
-        p.drawText(QPointF(8, self.height() - 8), "H/V: S1   D/A: S2   R/L: S3   (drag to rotate)")
+            w = fm.horizontalAdvance(name)
+            _label(p, self, self.text_rects, q.x() - w / 2, q.y() - th / 2, name)
+        p.setPen(colors["muted_text"])
+        _label(p, self, self.text_rects, 6, self.height() - th - 4, self.FOOTER)
         for name, s in self.points.items():
-            if s[0] <= 0:
+            if not s[0] > 0 or not np.all(np.isfinite(s)):
                 continue
             q = pt(s[1:] / s[0])
             chosen = name == self.selected
-            p.setBrush(QColor("#d62728") if chosen else QColor("#1f77b4"))
+            p.setBrush(colors["selected"] if chosen else colors["data"])
             p.setPen(Qt.PenStyle.NoPen)
             p.drawEllipse(q, 5 if chosen else 3, 5 if chosen else 3)
             if chosen:
-                p.setPen(pal.text().color())
-                p.drawText(QPointF(q.x() + 7, q.y() - 4), name)
+                p.setPen(colors["text"])
+                _label(p, self, self.text_rects, q.x() + 7, q.y() - th, name)
+
+
+BASIS = ["HH", "HV", "VH", "VV"]
+BELL_NAMES = {"phi+": "Φ+", "phi-": "Φ−", "psi+": "Ψ+", "psi-": "Ψ−"}
+REDUCED_NOTE = "single-photon reduced state (entanglement not visible here)"
 
 
 class PolarizationTab(LinkTab):
@@ -439,10 +533,202 @@ class PolarizationTab(LinkTab):
         super().__init__(parent)
         self.ellipse = _Ellipse()
         self.sphere = _Poincare()
-        row = QHBoxLayout()
+        single = QWidget()
+        row = QHBoxLayout(single)
+        row.setContentsMargins(0, 0, 0, 0)
         row.addWidget(self.ellipse, 1)
         row.addWidget(self.sphere, 1)
-        self.layout_.addLayout(row, 1)
+        self.pair_a = QComboBox()
+        self.pair_b = QComboBox()
+        self.analyser = QComboBox()
+        for label, ket in KETS.items():
+            self.analyser.addItem(label)
+            self.analyser.setItemData(
+                self.analyser.count() - 1,
+                f"photon a passes the analyser state |{label}> = "
+                f"({ket[0].real:.3g}, {ket[1].real:+.3g}{ket[1].imag:+.3g}i)",
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        self.joint_info = QLabel("")
+        self.joint_info.setWordWrap(True)
+        self.joint_info.setStyleSheet("color: palette(placeholder-text);")
+        self.rho_table = QTableWidget(4, 4)
+        self.rho_table.setHorizontalHeaderLabels(BASIS)
+        self.rho_table.setVerticalHeaderLabels(BASIS)
+        self.rho_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.rho_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.rho_table.setToolTip("two-photon polarization density matrix (first letter: photon a)")
+        self.rho_table.setMaximumHeight(
+            self.rho_table.horizontalHeader().sizeHint().height()
+            + 4 * self.rho_table.verticalHeader().defaultSectionSize()
+            + 2 * self.rho_table.frameWidth()
+        )
+        self.joint_metrics = QLabel("")
+        self.joint_metrics.setWordWrap(True)
+        self.joint_metrics.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.cond_note = QLabel("")
+        self.cond_note.setWordWrap(True)
+        self.cond_ellipse = _Ellipse()
+        self.cond_sphere = _Poincare()
+        joint = QWidget()
+        jl = QVBoxLayout(joint)
+        jl.setContentsMargins(6, 4, 6, 4)
+        pick = QHBoxLayout()
+        pick.addWidget(QLabel("Photon a"))
+        pick.addWidget(self.pair_a, 1)
+        pick.addWidget(QLabel("Photon b"))
+        pick.addWidget(self.pair_b, 1)
+        jl.addLayout(pick)
+        jl.addWidget(self.joint_info)
+        body = QHBoxLayout()
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Pair density matrix ρ (normalised on one photon per link)"))
+        left.addWidget(self.rho_table)
+        left.addWidget(self.joint_metrics)
+        left.addStretch(1)
+        right = QVBoxLayout()
+        analyse = QHBoxLayout()
+        analyse.addWidget(QLabel("Photon a analysed in"))
+        analyse.addWidget(self.analyser)
+        analyse.addStretch(1)
+        right.addLayout(analyse)
+        right.addWidget(self.cond_note)
+        plots = QHBoxLayout()
+        plots.addWidget(self.cond_ellipse, 1)
+        plots.addWidget(self.cond_sphere, 1)
+        right.addLayout(plots, 1)
+        body.addLayout(left, 1)
+        body.addLayout(right, 1)
+        jl.addLayout(body, 1)
+        self.views = QTabWidget()
+        self.views.setDocumentMode(True)
+        self.views.addTab(single, "Single link")
+        self.views.addTab(joint, "Joint (pairs)")
+        self.views.setTabToolTip(0, f"classical field or {REDUCED_NOTE}")
+        self.views.setTabToolTip(1, "two-photon polarization state of a pair: entanglement")
+        self.layout_.addWidget(self.views, 1)
+        self.views.currentChanged.connect(self._view_changed)
+        self.pair_a.currentIndexChanged.connect(lambda _i: self._refresh_partners())
+        self.pair_b.currentIndexChanged.connect(lambda _i: self.redraw_joint())
+        self.analyser.currentIndexChanged.connect(lambda _i: self.redraw_joint())
+
+    def set_outcome(self, outcome: SimulationOutcome | None) -> None:
+        super().set_outcome(outcome)
+        self._refresh_pairs()
+
+    def _view_changed(self, index: int) -> None:
+        self.combo.setEnabled(index == 0)
+        self.population.setEnabled(index == 0)
+
+    def pair_states(self) -> dict:
+        rates = getattr(self.outcome, "rates", None)
+        return {} if rates is None else getattr(rates, "pair_states", {})
+
+    def _link_text(self, link_id: str) -> str:
+        classical = getattr(self.outcome, "classical", None)
+        state = None if classical is None else classical.links.get(link_id)
+        inst = None if state is None else state.dst.split(".")[0]
+        rates = getattr(self.outcome, "rates", None)
+        detectors = {} if rates is None else rates.detectors
+        return f"{link_id} → {inst}" if inst in detectors else link_id
+
+    def _fill_links(self, box: QComboBox, links: list[str]) -> None:
+        previous = box.currentData()
+        box.blockSignals(True)
+        box.clear()
+        for lid in links:
+            box.addItem(self._link_text(lid), lid)
+        if previous in links:
+            box.setCurrentIndex(links.index(previous))
+        box.blockSignals(False)
+
+    def _refresh_pairs(self) -> None:
+        firsts = list(dict.fromkeys(a for a, _b in self.pair_states()))
+        self._fill_links(self.pair_a, firsts)
+        self._refresh_partners()
+
+    def _refresh_partners(self) -> None:
+        a = self.pair_a.currentData()
+        self._fill_links(self.pair_b, [y for x, y in self.pair_states() if x == a])
+        self.redraw_joint()
+
+    def selected_pair(self) -> dict | None:
+        key = (self.pair_a.currentData(), self.pair_b.currentData())
+        return self.pair_states().get(key)
+
+    def select_pair(self, a: str, b: str) -> None:
+        index = self.pair_a.findData(a)
+        if index >= 0:
+            self.pair_a.setCurrentIndex(index)
+        index = self.pair_b.findData(b)
+        if index >= 0:
+            self.pair_b.setCurrentIndex(index)
+
+    def redraw_joint(self) -> None:
+        state = self.selected_pair()
+        self.cond_ellipse.stokes = None
+        self.cond_sphere.points = {}
+        if state is None:
+            for i in range(4):
+                for j in range(4):
+                    self.rho_table.setItem(i, j, QTableWidgetItem(""))
+            self.joint_metrics.setText("")
+            self.cond_note.setText("")
+            self.joint_info.setText(
+                "no two-photon state: the rate engine builds one for every two links that "
+                "carry the two photons of a pair (not in series) once a pair source is present"
+                if self.outcome is not None
+                else ""
+            )
+            self.cond_ellipse.update()
+            self.cond_sphere.update()
+            return
+        rho = state["rho"]
+        for i in range(4):
+            for j in range(4):
+                z = rho[i, j]
+                text = f"{z.real:+.4f}" + (f" {z.imag:+.4f}i" if abs(z.imag) >= 5e-5 else "")
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.rho_table.setItem(i, j, item)
+        others = ", ".join(
+            f"{k} {eng(v, 'Hz')}" for k, v in state["by_source_hz"].items() if k != state["source"]
+        )
+        self.joint_info.setText(
+            f"source '{state['source']}': photon a = {state['photon_a']}, photon b = "
+            f"{state['photon_b']}; {eng(state['rate_hz'], 'Hz')} pairs with one photon on each "
+            f"link (rate engine, mean rates){'; also ' + others if others else ''}. Basis "
+            f"{state['basis']}. Frame: {state['frame']}."
+        )
+        fid = "  ".join(f"{BELL_NAMES[k]} {v:.4f}" for k, v in state["bell_fidelity"].items())
+        dop_a = float(np.linalg.norm(state["stokes_a"][1:]))
+        dop_b = float(np.linalg.norm(state["stokes_b"][1:]))
+        self.joint_metrics.setText(
+            f"purity {state['purity']:.4f}   concurrence {state['concurrence']:.4f}\n"
+            f"Bell-state fidelity  {fid}\n"
+            f"{REDUCED_NOTE}: DOP a {dop_a:.3f}, DOP b {dop_b:.3f}"
+        )
+        label = self.analyser.currentText()
+        cond = state["conditional"][label]
+        prob = cond["probability"]
+        s = np.round(cond["stokes_b"], 3) + 0.0
+        if not np.all(np.isfinite(s)):
+            self.cond_note.setText(
+                f"p(a passes |{label}>) = {prob:.4f}: undefined, photon a never passes this "
+                "analyser"
+            )
+        else:
+            dop = float(np.linalg.norm(s[1:]))
+            self.cond_note.setText(
+                f"p(a passes |{label}>) = {prob:.4f} ({eng(prob * state['rate_hz'], 'Hz')} "
+                f"heralds). Photon b given that: S1 {s[1]:+.3f}  S2 {s[2]:+.3f}  S3 {s[3]:+.3f}, "
+                f"DOP {dop:.3f}"
+            )
+            self.cond_ellipse.stokes = s
+            self.cond_sphere.points = {f"b | a={label}": s, "b reduced": state["stokes_b"]}
+            self.cond_sphere.selected = f"b | a={label}"
+        self.cond_ellipse.update()
+        self.cond_sphere.update()
 
     def clear(self) -> None:
         self.ellipse.stokes = None
@@ -474,8 +760,8 @@ class PolarizationTab(LinkTab):
         self.sphere.selected = ""
         dop = float(np.linalg.norm(total[1:]) / total[0]) if total[0] > 0 else 0.0
         self.note.setText(
-            f"single-photon DOP {dop:.3f}; {eng(total[0], 'Hz')} photons "
-            "(a pair partner of an entangled photon looks unpolarized)"
+            f"{REDUCED_NOTE}: single-photon DOP {dop:.3f}; {eng(total[0], 'Hz')} photons. "
+            "Pair correlations: Joint (pairs)"
         )
         self.ellipse.update()
         self.sphere.update()

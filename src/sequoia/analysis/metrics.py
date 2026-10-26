@@ -383,3 +383,52 @@ def chsh_from_state(rho, angles=None):
     a, ap, b, bp = np.deg2rad(CHSH_ANGLES_DEG) if angles is None else angles
     e = correlation_from_angles
     return chsh_s(e(rho, a, b), e(rho, a, bp), e(rho, ap, b), e(rho, ap, bp))
+
+
+def swap_qubits(rho):
+    r = _as_density(rho)
+    return r.reshape(2, 2, 2, 2).transpose(1, 0, 3, 2).reshape(4, 4)
+
+
+def reduced_states(rho):
+    r = _as_density(rho).reshape(2, 2, 2, 2)
+    return np.einsum("ijkj->ik", r), np.einsum("jijk->ik", r)
+
+
+def stokes_of(rho):
+    # same convention as Beam.stokes: S3 = -2 Im rho_HV, so R = (H - iV)/sqrt2 has S3 = -1
+    r = np.asarray(rho, dtype=complex)
+    return np.array(
+        [(r[0, 0] + r[1, 1]).real, (r[0, 0] - r[1, 1]).real, 2 * r[0, 1].real, -2 * r[0, 1].imag]
+    )
+
+
+def conditional_state(rho, ket_a):
+    """State of qubit b after qubit a passes the analyser |ket_a>, and the probability p."""
+    k = np.asarray(ket_a, dtype=complex)
+    k = k / np.linalg.norm(k)
+    r = _as_density(rho).reshape(2, 2, 2, 2)
+    m = np.einsum("i,ijkl,k->jl", k.conj(), r, k)
+    p = float(np.real(np.trace(m)))
+    if p <= 1e-12 * float(np.real(np.trace(_as_density(rho)))):
+        return np.full((2, 2), complex(np.nan, np.nan)), max(p, 0.0)
+    return m / p, p
+
+
+def pair_state_observables(rho):
+    r = _as_density(rho)
+    ra, rb = reduced_states(r)
+    conditional = {}
+    for label, ket in KETS.items():
+        m, p = conditional_state(r, ket)
+        conditional[label] = {"probability": p, "rho_b": m, "stokes_b": stokes_of(m)}
+    return {
+        "purity": purity(r),
+        "concurrence": concurrence(r),
+        "bell_fidelity": {name: fidelity(r, psi) for name, psi in BELL.items()},
+        "reduced_a": ra,
+        "reduced_b": rb,
+        "stokes_a": stokes_of(ra),
+        "stokes_b": stokes_of(rb),
+        "conditional": conditional,
+    }

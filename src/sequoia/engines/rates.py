@@ -8,6 +8,7 @@ from pydantic import TypeAdapter, ValidationError
 from scipy import constants, sparse
 from scipy.special import gammainc
 
+from sequoia.analysis.metrics import pair_state_observables, swap_qubits
 from sequoia.components.base import Component, Context, PortDirection, PortKind
 from sequoia.components.detectors import DetectorConfigWarning
 from sequoia.data import Duration, ExtrapolationWarning
@@ -50,6 +51,11 @@ STRONG = 1e-6
 ALIAS_STRENGTH = 1e-3
 DEAD_TIME_LOSS_WARNING = 0.1
 MIN_PAIR_FRACTION = 1e-6
+PAIR_FRAME = (
+    "Jones (H, V) basis of each link's own right-handed (H, V, k) beam frame at the link end "
+    "(docs/conventions.md: H in the table plane, reflections apply i*diag(1, -1)); first qubit "
+    "= photon on link a"
+)
 GRAM_SPACE: str | None = None
 MAX_SIMILARITY_MEMBERS = 16
 __all__ = ["Cancelled", "ResourceLimitError", "RunCache"]
@@ -69,6 +75,7 @@ class RateResult:
     sources: dict[str, dict[str, Any]] = field(default_factory=dict)
     pairs: dict[tuple[str, str], dict[str, float]] = field(default_factory=dict)
     links: dict[str, dict[str, Any]] = field(default_factory=dict)
+    pair_states: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -108,6 +115,9 @@ class _Source:
     h_union: dict[str, np.ndarray] = field(default_factory=dict)
     rho_union: np.ndarray | None = None
     gram: Any = None
+    link_h: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    link_modes: dict[tuple[str, str], Any] = field(default_factory=dict)
+    pair_sigma: np.ndarray | None = None
 
     @property
     def rate(self) -> float:
@@ -546,6 +556,24 @@ class _Engine:
             entry["wavelength_m"] = entry.get("wavelength_m", {})
             entry["wavelength_m"][role] = C_LIGHT / src.nu0[role]
 
+    def record_link_transfer(self, src: _Source, role: str, ends) -> None:
+        nu = src.grid[role] * src.dnu
+        nu0 = src.nu0[role]
+        for link_id, beams in ends.items():
+            beams = [b for b in beams if len(b.jones) == len(nu)]
+            if not beams:
+                continue
+            t = np.zeros((len(nu), 2, 2), dtype=complex)
+            for b in beams:
+                phase = np.exp(2j * np.pi * ((nu - nu0) * b.gpl + nu0 * b.opl) / C_LIGHT)
+                t += b.jones * phase[:, None, None]
+            entry = src.link_h.setdefault(link_id, {})
+            entry[role] = t
+            for r in ROLES:
+                entry.setdefault(r, np.zeros((len(src.grid[r]), 2, 2), dtype=complex))
+            strengths = [float(np.max(np.abs(b.jones) ** 2)) for b in beams]
+            src.link_modes[(link_id, role)] = beams[int(np.argmax(strengths))].mode
+
     def transfer_sources(self) -> None:
         for src in self.sources:
             self.cancel_point()
@@ -589,6 +617,7 @@ class _Engine:
                 self.collect_warnings(caught)
                 arrivals[role] = arrived
                 self.record_link_photons(src, role, ends, states)
+                self.record_link_transfer(src, role, ends)
             for det_id, det in self.detectors.items():
                 src.h[det_id] = {}
                 radius_of = getattr(self.net.components[det_id], "aperture_radius", None)
@@ -696,9 +725,10 @@ class _Engine:
         den = math.sqrt(abs(overlap(p, p)) * abs(overlap(q, q)))
         return complex(np.conj(overlap(p, q)) / den) if den > 0 else 0.0
 
-    def mode_weight(self, src: _Source, a: str, b: str) -> complex:
-        sa, ia = src.modes.get((a, "signal")), src.modes.get((a, "idler"))
-        sb, ib = src.modes.get((b, "signal")), src.modes.get((b, "idler"))
+    def mode_weight(self, src: _Source, a: str, b: str, link: bool = False) -> complex:
+        modes = src.link_modes if link else src.modes
+        sa, ia = modes.get((a, "signal")), modes.get((a, "idler"))
+        sb, ib = modes.get((b, "signal")), modes.get((b, "idler"))
         if sa is None or ia is None or sb is None or ib is None:
             return 1.0
         return self.mode_overlap(sa, ia) * np.conj(self.mode_overlap(sb, ib))
@@ -888,8 +918,11 @@ class _Engine:
                 blocks += self.member_blocks(src, amp, a, b)
         return blocks
 
-    def member_blocks(self, src: _Source, amp: np.ndarray, a: str, b: str) -> list[np.ndarray]:
-        ha, hb = src.h[a], src.h[b]
+    def member_blocks(
+        self, src: _Source, amp: np.ndarray, a: str, b: str, link: bool = False
+    ) -> list[np.ndarray]:
+        h = src.link_h if link else src.h
+        ha, hb = h[a], h[b]
         idx = src.idx
         ps = src.emission.source
         n_s = np.asarray(ps.n_signal, dtype=np.int64)
@@ -907,7 +940,7 @@ class _Engine:
         m = len(n_sum)
         mg = np.broadcast_to(np.arange(m)[None, :], n_a2.shape)
         scale = src.scale
-        kappa = self.mode_weight(src, a, b) if use1 and use2 else 1.0
+        kappa = self.mode_weight(src, a, b, link) if use1 and use2 else 1.0
         parts = []
         if use1:
             parts.append((n_s[js], None, scale * phi1[:, :, js, :]))
@@ -1886,6 +1919,108 @@ class _Engine:
             total += src.rate * sum(float(np.sum(np.abs(blk) ** 2)) for blk in blocks)
         return total * self.survival(a) * self.survival(b)
 
+    def pair_rho(self, src: _Source, a: str, b: str) -> np.ndarray:
+        ha, hb = src.link_h[a], src.link_h[b]
+        direct = bool(np.any(ha["signal"]) and np.any(hb["idler"]))
+        swapped = bool(np.any(ha["idler"]) and np.any(hb["signal"]))
+        rho = np.zeros((4, 4), dtype=complex)
+        if direct and swapped:
+            for amp in src.members:
+                if np.any(amp):
+                    for blk in self.member_blocks(src, amp, a, b, link=True):
+                        v = blk.reshape(4, -1)
+                        rho += v @ v.conj().T
+            return rho
+        if not (direct or swapped):
+            return rho
+        check_memory(
+            3 * 256.0 * src.idx.size,
+            self.max_bytes,
+            f"the two-photon polarization states of pair source '{src.inst}'",
+            "use a coarser frequency lattice or fewer samples in the pair source",
+        )
+        if src.pair_sigma is None:
+            f = src.members.reshape(len(src.members), 4, *src.idx.shape)
+            src.pair_sigma = np.einsum("kajm,kbjm->jmab", f, f.conj(), optimize=True)
+        if direct:
+            k = np.einsum("jps,jmqi->jmpqsi", ha["signal"], hb["idler"][src.idx])
+        else:
+            k = np.einsum("jmpi,jqs->jmpqsi", ha["idler"][src.idx], hb["signal"])
+        k = k.reshape(*src.idx.shape, 4, 4)
+        rho = (k @ src.pair_sigma @ np.conj(np.swapaxes(k, -1, -2))).sum(axis=(0, 1))
+        return src.scale**2 * rho
+
+    def pair_states(self) -> dict[tuple[str, str], dict[str, Any]]:
+        acc: dict[tuple[str, str], dict[str, Any]] = {}
+        leaving: dict[str, list[str]] = {}
+        for link in self.setup.links:
+            leaving.setdefault(link.src.split(".")[0], []).append(link.id)
+        dst = {link.id: link.dst.split(".")[0] for link in self.setup.links}
+        below: dict[str, set[str]] = {}
+
+        def downstream(link_id: str) -> set[str]:
+            if link_id not in below:
+                below[link_id] = set()
+                for nxt in leaving.get(dst[link_id], []):
+                    below[link_id] |= {nxt} | downstream(nxt)
+            return below[link_id]
+
+        for src in self.sources:
+            carried = {}
+            for link_id in src.link_h:
+                flux = self.link_photons.get(link_id, {}).get("by_source", {}).get(src.inst, {})
+                roles = [r for r in ROLES if flux.get(r, 0.0) > MIN_PAIR_FRACTION * src.rate]
+                if roles:
+                    top = max(flux[r] for r in roles)
+                    carried[link_id] = [r for r in roles if flux[r] >= 0.01 * top]
+            if len(carried) > MAX_PAIR_CHANNELS:
+                self.issue(
+                    "warning",
+                    "pair_states_truncated",
+                    f"'{src.inst}'",
+                    f"the photons of this source reach {len(carried)} links; two-photon "
+                    f"polarization states are only built for up to {MAX_PAIR_CHANNELS}",
+                )
+                continue
+            names = list(carried)
+            for i, a in enumerate(names):
+                for b in names[i + 1 :]:
+                    if b in downstream(a) or a in downstream(b):
+                        continue
+                    self.cancel_point()
+                    rho = self.pair_rho(src, a, b)
+                    rate = src.rate * float(np.real(np.trace(rho)))
+                    if rate <= MIN_PAIR_FRACTION * src.rate:
+                        continue
+                    entry = acc.setdefault(
+                        (a, b), {"sum": np.zeros((4, 4), dtype=complex), "by_source": {}}
+                    )
+                    entry["sum"] += src.rate * rho
+                    entry["by_source"][src.inst] = (rate, carried[a], carried[b])
+        out: dict[tuple[str, str], dict[str, Any]] = {}
+        for (a, b), entry in acc.items():
+            rate = float(np.real(np.trace(entry["sum"])))
+            rho = entry["sum"] / rate
+            rho = (rho + rho.conj().T) / 2
+            main = max(entry["by_source"], key=lambda k: entry["by_source"][k][0])
+            _, roles_a, roles_b = entry["by_source"][main]
+            for x, y, r, ra, rb in ((a, b, rho, roles_a, roles_b), (b, a, None, roles_b, roles_a)):
+                r = swap_qubits(rho) if r is None else r
+                out[(x, y)] = {
+                    "rho": r,
+                    "rate_hz": rate,
+                    "source": main,
+                    "by_source_hz": {k: v[0] for k, v in entry["by_source"].items()},
+                    "photon_a": f"{main} {' or '.join(ra)} on {x}",
+                    "photon_b": f"{main} {' or '.join(rb)} on {y}",
+                    "basis": "HH,HV,VH,VV",
+                    "frame": PAIR_FRAME,
+                    "normalisation": "conditioned on one photon of the pair on each link "
+                    "(rate_hz = pairs/s with that outcome)",
+                    **pair_state_observables(r),
+                }
+        return out
+
 
 MAX_PAIR_CHANNELS = 24
 
@@ -1982,8 +2117,21 @@ def simulate_rates(
     for link_id, entry in engine.link_photons.items():
         total = sum(sum(roles.values()) for roles in entry["by_source"].values())
         links[link_id] = {"photons_hz": total, **entry}
+    try:
+        pair_states = engine.pair_states()
+    except ResourceLimitError as exc:
+        engine.issue("error", "memory_limit", "setup", f"{exc}; the pair states were skipped")
+        pair_states = {}
     issues = list(engine.classical.issues)
     issues += [i for i in engine.issues if i not in issues]
     return RateResult(
-        engine.classical, channels, analyses, issues, engine.det_data, sources, pairs, links
+        engine.classical,
+        channels,
+        analyses,
+        issues,
+        engine.det_data,
+        sources,
+        pairs,
+        links,
+        pair_states,
     )
