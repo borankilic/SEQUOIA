@@ -438,7 +438,7 @@ def compare_with_rates(
             )
     for name, mc in analyses.items():
         ref = rates.analyses.get(name)
-        if ref is None:
+        if ref is None or mc.get("condition"):
             continue
         if mc["type"] == "coincidences":
             rows.append(

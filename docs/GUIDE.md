@@ -63,7 +63,7 @@ Numbers from the shipped example (10 mW pump, generic placeholder parts):
 | **Spectra** | Power versus wavelength on a link, or the photon-rate spectrum of the signal/idler photons (second selector). | Filters show up as cut or narrowed spectra. |
 | **Histograms** | Arrival-time difference between two detectors. | A peak at zero delay is correlated pairs; the flat floor is accidentals. Its height over the floor is the CAR. |
 | **Budget** | Power or photon flux along a path, plus what the result would be with each part replaced by an ideal one. | Parts at the top of the list cost the most; improve those first. |
-| **Sweeps** | Vary one setting (a wave-plate angle, a lens distance) and plot a result; the optimizer finds the best value. | A sweep of the half-wave plate in the Bell test shows the polarization fringe. |
+| **Sweeps** | Vary one setting (a wave-plate angle, a lens distance) and plot a result; the optimizer finds the best value. Each parameter shows its physical range (efficiencies 0 to 1, lengths and powers >= 0, waists > 0, M^2 >= 1, crystal temperature within the calibrated Sellmeier range; plate angles repeat every 180 deg, phases every 360 deg). Values outside it are refused. A recognised setup starts with its recommended sweep, and *Default sweep* restores it: HOM delay line +/- 3 coherence lengths of the photons against the coincidences, Bell half-wave plate 0 to 90 deg against a coincidence rate, Malus wave plate or polarizer angle against the power, pump power 0.1x to 10x (log) against heralded g2(0) or CAR, the link into a fiber coupler against its coupling. Choosing a parameter sets its default range. | A sweep of the half-wave plate in the Bell test shows the polarization fringe. |
 | **Monte Carlo** | A simulated stream of individual detector clicks with jitter, dead time and noise. | It should match the analytic Rate counts within the shown error (z within 3). Use it when dead time or timing matters. |
 | **Gaussian** | Multimode Gaussian photon statistics per window when several pairs can be created at once (no dead time or jitter). | CAR falls and heralded g2 rises as you turn up the pump; this is why the pump power is kept low in these experiments. |
 | **Photon counts** | Photon-number statistics of the drawn circuit. *Import from setup* lists every part and link and the photon inputs (Fock sources: N photons, tag; pair sources: mean pairs per window mu from the pump, Schmidt number K). *Run* gives the output-state probabilities through the setup's detectors, potential click rates before dead time and expected counts over a duration (binomial sigma for fixed windows), click patterns, photon-number marginals, heralded (conditional) distributions with their success probability, samples, a plot and the approximations used. *Extract to circuit editor* converts the circuit to editable elements. | Equal photons on one beam splitter bunch (no coincidence); a phase shifter in an interferometer arm moves the two-photon fringe; the omitted-weight note tells you when the truncation matters. Timing, spectral shape and dead time are not modelled (use the rate engine for a HOM delay scan). |
@@ -106,6 +106,32 @@ Every optic can carry the quality data of a catalogue "specifications" tab:
 Splitters whose transmitted and reflected fractions add up to more than 1 are rejected.
 `scripts/make_catalog.py` regenerates the typical-class parts (filters, lenses, mirrors, wave
 plates, polarizers, fibers, detectors, lasers) with these properties.
+
+## The measurement definition
+
+Select nothing on the canvas and open **Measurement** in the inspector to define how the setup is
+read out; it is saved with the setup (`measurement:` in the YAML), every edit is undoable and makes
+earlier results outdated, and an invalid value is shown on its row and not applied. Fields: purpose,
+coincidence window (full width, the default for analyses without one), acquisition duration per
+setting and repeats, accidental estimator, dead-time model, pulse clock, detector -> tagger channel
+mapping, centres per analysis and named heralding conditions. *Remove measurement* deletes it; the
+measurement card below the fields shows what the engines will use.
+
+A **condition** has a name, herald channels (must click) and veto channels (must not click), each a
+tagger channel or a detector id. *Photon counts* lists every condition in its Conditional tab
+(*Measurement condition*) with the success probability per window and the normalised conditional
+distribution; a reference that is not a detector reached by the sources is reported there. In the
+time-tag analysis an analysis with `condition: name` counts only events with a tag on every herald
+channel and none on a veto channel within +-window/2 of the event (channel delays are not
+compensated), so its singles and coincidences are herald-gated; the result records the condition
+and the events kept.
+
+**Sideband accidentals for CW light**: with the `sideband` estimator and no pulse clock (every
+channel CW) the accidentals are the mean of two off-peak windows at +-max(10 x window, 20 ns,
+5 x the analysis' `correlation_width`), variance (S- + S+)/4; the result records `accidental_model:
+sideband (CW off-peak)` and `sideband_offsets_s`. A record shorter than 100 offsets falls back to
+the singles product with a note. Without a common clock but not all-CW (mixed or unknown timing)
+the singles product is used and the note says why.
 
 ## Comparing with measured data
 
@@ -161,4 +187,10 @@ of a setup as measured, vendor nominal, model, ideal default, untraced or setup 
 `propagate_uncertainty(setup, library, "probe:pm.power_W", ["nd.optical_density"], n=200,
 seed=1)` draws the declared calibration uncertainties (efficiencies, losses, optical density,
 power, wave-plate zero offsets, timing offsets) and returns the spread of the metric and each
-parameter's one-at-a-time contribution. Counting noise is not included.
+parameter's one-at-a-time contribution. Counting noise is not included. A curve record with a
+per-point std or a covariance (for example a filter `transmission` curve) is drawn as a whole
+from a multivariate normal, clipped to the physical range (0 to 1 for efficiencies and
+transmissions) and replaces the part's curve at every evaluation; its contribution is the
+one-at-a-time slope along each principal component of the covariance, added in quadrature
+(`result.methods` says how each contribution was obtained). `UncertainCurve(target, curve,
+covariance)` or `UncertainCurve.from_std(...)` declares one without a record.

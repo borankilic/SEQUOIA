@@ -19,6 +19,9 @@ WIDE_SEARCHES = (1e-6, 20e-6)
 TAG_FORMAT_VERSION = 2
 RESERVED_KEYS = {"duration", "repetition_rates", "format_version", "meta_json"}
 MAX_CHUNK_PAIRS = 5_000_000
+CW_SIDEBAND_MIN = 20e-9
+CW_SIDEBAND_RECORD = 100
+CW_OFF_PEAK = "sideband (CW off-peak)"
 
 
 class CorrelationError(SequoiaError):
@@ -88,6 +91,23 @@ def per_event_counts(
     lo = np.searchsorted(other, reference - center - window / 2.0, side="left")
     hi = np.searchsorted(other, reference - center + window / 2.0, side="right")
     return hi - lo
+
+
+def gate(
+    t: np.ndarray, herald: Sequence[np.ndarray], veto: Sequence[np.ndarray], window: float
+) -> np.ndarray:
+    """Mask of the events of ``t`` with a tag of every herald channel and of no veto channel
+    within +-window/2."""
+    keep = np.ones(len(t), dtype=bool)
+    for h in herald:
+        keep &= per_event_counts(t, h, window, 0.0) > 0
+    for v in veto:
+        keep &= per_event_counts(t, v, window, 0.0) == 0
+    return keep
+
+
+def cw_sideband_offset(window: float, width: float | None = None) -> float:
+    return max(10.0 * window, CW_SIDEBAND_MIN, 5.0 * width if width else 0.0)
 
 
 def locate_peak(
@@ -407,6 +427,8 @@ def analyse_tags(
     specs: Sequence[Mapping[str, Any]],
     repetition_rates: Mapping[str, float] | Sequence[float] = (),
     clock_ids: Mapping[str, str] | None = None,
+    accidentals: str = "auto",
+    conditions: Mapping[str, tuple[Sequence[str], Sequence[str]]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Apply the setup's ``analyses`` entries to a time-tag record.
 
@@ -424,6 +446,12 @@ def analyse_tags(
     found in these data) or ``fixed`` (explicit centres, e.g. from ``confirm_centers``, for a
     confirmatory measurement). Without ``mode`` a numeric centre is fixed and ``auto`` searches.
     Results record ``center_mode`` and ``search_s`` (None when nothing was searched).
+
+    ``accidentals="sideband"`` on CW light (every channel clock 0) uses off-peak windows at
+    +-``cw_sideband_offset`` (10 x window, 20 ns, 5 x the spec's ``correlation_width``), unless
+    the record is shorter than ``CW_SIDEBAND_RECORD`` offsets. A spec's ``condition`` names an
+    entry of ``conditions`` (herald channels, veto channels): only events with a tag on every
+    herald channel and none on a veto channel within +-window/2 are counted.
     """
     out: dict[str, dict[str, Any]] = {}
     for spec in specs:
@@ -436,29 +464,59 @@ def analyse_tags(
                 else DEFAULT_SEARCH
             )
             widen = "search" not in spec
+            used = (
+                [spec["herald"], spec["a"], spec["b"]]
+                if kind == "heralded_g2"
+                else list(spec.get("channels") or [])
+            )
+            tags, gated = _gated(channels, used, spec, conditions, name)
             if kind == "coincidences":
                 a, b = spec["channels"]
                 window = _duration(spec["window"], f"analysis '{name}': window")
                 rep, timing = _clock(repetition_rates, [a, b], clock_ids)
+                offset, short = None, False
+                if not rep and timing == "cw" and accidentals == "sideband":
+                    width = spec.get("correlation_width")
+                    width = (
+                        _duration(width, f"analysis '{name}': correlation_width")
+                        if width is not None
+                        else None
+                    )
+                    offset = cw_sideband_offset(window, width)
+                    short = duration < CW_SIDEBAND_RECORD * offset
+                cw_side = offset is not None and not short
                 result = coincidences(
-                    _arr(channels, a, name),
-                    _arr(channels, b, name),
+                    _arr(tags, a, name),
+                    _arr(tags, b, name),
                     duration,
                     window,
                     _center(spec, "center", name),
-                    accidentals="sideband" if rep else "singles",
-                    sideband=(1.0 / rep) if rep else None,
+                    accidentals="sideband" if rep or cw_side else "singles",
+                    sideband=(1.0 / rep) if rep else offset,
                     search=search,
                     widen=widen,
                 )
                 result["channels"] = [a, b]
                 _timing(result, timing, [a, b])
+                if cw_side:
+                    result["accidental_model"] = CW_OFF_PEAK
+                    result["sideband_offsets_s"] = [-offset, offset]
+                    result["timing_note"] = (
+                        f"CW: accidentals from off-peak windows at +-{offset * 1e9:.4g} ns "
+                        "(mean of two sidebands)"
+                    )
+                elif short:
+                    result["timing_note"] = (
+                        f"CW: the record ({duration:.4g} s) is shorter than "
+                        f"{CW_SIDEBAND_RECORD} x the off-peak offset ({offset * 1e9:.4g} ns); "
+                        "singles product used"
+                    )
             elif kind == "heralded_g2":
                 window = _duration(spec["window"], f"analysis '{name}': window")
                 result = heralded_g2(
-                    _arr(channels, spec["herald"], name),
-                    _arr(channels, spec["a"], name),
-                    _arr(channels, spec["b"], name),
+                    _arr(tags, spec["herald"], name),
+                    _arr(tags, spec["a"], name),
+                    _arr(tags, spec["b"], name),
                     duration,
                     window,
                     _center(spec, "center_a", name),
@@ -471,8 +529,8 @@ def analyse_tags(
                 a, b = spec["channels"]
                 half = _duration(spec.get("range", "10 ns"), f"analysis '{name}': range")
                 result = g2_histogram(
-                    _arr(channels, a, name),
-                    _arr(channels, b, name),
+                    _arr(tags, a, name),
+                    _arr(tags, b, name),
                     duration,
                     half,
                     int(spec.get("bins", 100)),
@@ -485,8 +543,57 @@ def analyse_tags(
             raise CorrelationError(f"analysis '{name}': missing key {exc}") from exc
         if "confirmed_from" in spec:
             result["confirmed_from"] = dict(spec["confirmed_from"])
+        if gated is not None:
+            result["condition"] = gated
         out[name] = result
     return out
+
+
+def _gated(
+    channels: Mapping[str, np.ndarray],
+    used: Sequence[str],
+    spec: Mapping[str, Any],
+    conditions: Mapping[str, tuple[Sequence[str], Sequence[str]]] | None,
+    name: str,
+) -> tuple[Mapping[str, np.ndarray], dict[str, Any] | None]:
+    cond = spec.get("condition")
+    if cond is None:
+        return channels, None
+    if cond not in (conditions or {}):
+        raise CorrelationError(
+            f"analysis '{name}': unknown condition '{cond}' (have {sorted(conditions or {})})"
+        )
+    if spec.get("window") is None:
+        raise CorrelationError(f"analysis '{name}': condition '{cond}' needs a window")
+    window = _duration(spec["window"], f"analysis '{name}': window")
+    herald, veto = conditions[cond]
+    for ch in [*herald, *veto]:
+        if ch not in channels:
+            raise CorrelationError(
+                f"analysis '{name}': condition '{cond}': unknown channel '{ch}' "
+                f"(have {sorted(channels)})"
+            )
+    out = dict(channels)
+    kept: dict[str, int] = {}
+    events: dict[str, int] = {}
+    for ch in dict.fromkeys(used):
+        t = _arr(channels, ch, name)
+        mask = gate(
+            t,
+            [channels[h] for h in herald if h != ch],
+            [channels[v] for v in veto if v != ch],
+            window,
+        )
+        out[ch] = t[mask]
+        kept[ch], events[ch] = int(mask.sum()), len(t)
+    return out, {
+        "name": cond,
+        "herald": list(herald),
+        "veto": list(veto),
+        "window_s": window,
+        "kept": kept,
+        "events": events,
+    }
 
 
 @dataclass

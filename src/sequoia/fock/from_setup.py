@@ -47,6 +47,7 @@ __all__ = [
     "Extraction",
     "IncompatibleWindowsError",
     "InputDescription",
+    "MeasurementCondition",
     "SetupExperiment",
     "SetupResult",
     "build_experiment_from_setup",
@@ -54,6 +55,7 @@ __all__ = [
     "extraction_experiment",
     "list_components",
     "list_inputs",
+    "measurement_conditions",
     "run_record",
     "run_setup_experiment",
     "write_run_bundle",
@@ -119,6 +121,69 @@ class SetupResult:
     @property
     def outside_dilute_regime(self) -> dict[str, float]:
         return {d: v for d, v in self.dead_time_load.items() if v > DILUTE_LOAD}
+
+
+@dataclass(frozen=True)
+class MeasurementCondition:
+    """A named condition of the measurement on the circuit's detectors: each herald group
+    (the detectors behind one channel or detector id) must click, no veto group may."""
+
+    name: str
+    description: str
+    herald: tuple[tuple[str, tuple[int, ...]], ...]
+    veto: tuple[tuple[str, tuple[int, ...]], ...]
+
+    def accepts(self, state: tuple[int, ...]) -> bool:
+        return all(any(state[k] > 0 for k in g) for _, g in self.herald) and not any(
+            state[k] > 0 for _, g in self.veto for k in g
+        )
+
+    @property
+    def rule(self) -> str:
+        text = "click on " + " and ".join(r for r, _ in self.herald)
+        return text + (", none on " + " or ".join(r for r, _ in self.veto) if self.veto else "")
+
+
+def measurement_conditions(setup: Setup, detector_ids: Sequence[str]) -> list[MeasurementCondition]:
+    """The measurement's named conditions mapped from channel or detector ids to indices of
+    ``detector_ids``; a reference that is not a detector of the circuit raises ``FockError``."""
+    from sequoia.measurement import channel_map
+
+    m = setup.measurement
+    if m is None:
+        return []
+    mapping = channel_map(setup)
+    instances = {i.id for i in setup.instances}
+    index = {d: k for k, d in enumerate(detector_ids)}
+
+    def group(cond: str, ref: str) -> tuple[str, tuple[int, ...]]:
+        if ref in instances:
+            dets = [ref]
+        else:
+            dets = [d for d, (ch, _) in mapping.items() if ch == ref]
+            if not dets:
+                raise FockError(
+                    f"measurement condition '{cond}': '{ref}' is neither a detector nor a "
+                    f"tagger channel of this setup (channels: "
+                    f"{', '.join(sorted({ch for ch, _ in mapping.values()})) or 'none'})"
+                )
+        found = tuple(index[d] for d in dets if d in index)
+        if not found:
+            raise FockError(
+                f"measurement condition '{cond}': '{ref}' ({', '.join(dets)}) is not a "
+                "single-photon detector reached by the photon sources"
+            )
+        return ref, found
+
+    return [
+        MeasurementCondition(
+            c.name,
+            c.description,
+            tuple(group(c.name, r) for r in c.herald),
+            tuple(group(c.name, r) for r in c.veto),
+        )
+        for c in m.conditions
+    ]
 
 
 def _fmt_value(v) -> str | None:

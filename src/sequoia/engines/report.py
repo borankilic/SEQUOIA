@@ -344,8 +344,10 @@ def montecarlo_card(
         if a.get("type") == "coincidences":
             text = (
                 f"{_t(a['window_s'])} full width, accidentals from "
-                f"{'sidebands' if a.get('accidental_model') == 'sideband' else 'singles product'}"
+                f"{'singles product' if a.get('accidental_model') == 'singles' else 'sidebands'}"
             )
+            if a.get("condition"):
+                text += f", gated by condition '{a['condition']['name']}'"
             if a.get("timing_note"):
                 text += f" ({a['timing_note']})"
             rows.append((f"Coincidence window '{name}'", text))

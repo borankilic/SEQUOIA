@@ -25,13 +25,16 @@ from sequoia.analysis.optimize import METHODS, Variable, optimize
 from sequoia.analysis.sweep import (
     Axis,
     Candidate,
+    SweepError,
     candidate_targets,
     check_axis_unit,
+    check_bounds,
+    default_plan,
     metrics_of,
     with_values,
 )
 from sequoia.engines.cache import RunCache
-from sequoia.errors import Issue
+from sequoia.errors import Issue, SequoiaError
 from sequoia.gui.analysis_tabs import save_text, style_plot
 from sequoia.gui.jobs import JobRunner
 from sequoia.gui.results import _fill, _make_table, _NumItem, plain
@@ -58,9 +61,10 @@ def _structure(setup) -> tuple:
 class AxisRow(QWidget):
     changed = Signal()
 
-    def __init__(self, candidates: list[Candidate], parent=None) -> None:
+    def __init__(self, candidates: list[Candidate], parent=None, *, use_bounds=False) -> None:
         super().__init__(parent)
         self.candidates = candidates
+        self.use_bounds = use_bounds
         self.target = QComboBox()
         self.target.setMinimumWidth(220)
         self.target.addItems([c.target for c in candidates])
@@ -71,6 +75,10 @@ class AxisRow(QWidget):
         self.points = QSpinBox()
         self.points.setRange(2, 2000)
         self.points.setValue(21)
+        self.log = QCheckBox("log", self)
+        self.log.setToolTip("logarithmically spaced points (both limits must be positive)")
+        self.bounds = QLabel("", self)
+        self.bounds.setStyleSheet("color: palette(placeholder-text);")
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         for label, widget in (
@@ -79,6 +87,8 @@ class AxisRow(QWidget):
             ("to", self.stop),
             ("unit", self.unit),
             ("points", self.points),
+            ("", self.log),
+            ("", self.bounds),
         ):
             if label:
                 row.addWidget(QLabel(label))
@@ -90,6 +100,7 @@ class AxisRow(QWidget):
             self.start.valueChanged,
             self.stop.valueChanged,
             self.points.valueChanged,
+            self.log.toggled,
         ):
             signal.connect(lambda *_a: self.changed.emit())
         self._reset_range()
@@ -97,22 +108,35 @@ class AxisRow(QWidget):
     def _reset_range(self) -> None:
         index = self.target.currentIndex()
         if index < 0:
+            self.bounds.setText("")
             return
         cand = self.candidates[index]
         self.unit.setText(cand.unit)
-        cur = cand.current if cand.current is not None else 0.0
-        if cand.unit and cand.current is not None:
-            cur = float(cand.current)
-        span = abs(cur) * 0.2 or 1.0
-        self.start.setValue(cur - span)
-        self.stop.setValue(cur + span)
+        self.bounds.setText(f"physical: {cand.bounds_text()}")
+        if self.use_bounds and cand.lower is not None and cand.upper is not None:
+            self.set_range(cand.lower, cand.upper, self.points.value(), False)
+        elif cand.default is not None:
+            self.set_range(*cand.default)
+        else:
+            cur = float(cand.current) if cand.current is not None else 0.0
+            span = abs(cur) * 0.2 or 1.0
+            self.set_range(cur - span, cur + span, self.points.value(), False)
+
+    def set_range(self, start: float, stop: float, points: int, log: bool) -> None:
+        self.start.setValue(start)
+        self.stop.setValue(stop)
+        self.points.setValue(points)
+        self.log.setChecked(log)
 
     def axis(self) -> Axis:
-        return Axis(
-            self.target.currentText(),
-            np.linspace(self.start.value(), self.stop.value(), self.points.value()),
-            self.unit.text().strip(),
-        )
+        start, stop, n = self.start.value(), self.stop.value(), self.points.value()
+        if self.log.isChecked():
+            if start <= 0 or stop <= 0:
+                raise SweepError(f"{self.target.currentText()}: a log axis needs positive limits")
+            values = np.geomspace(start, stop, n)
+        else:
+            values = np.linspace(start, stop, n)
+        return Axis(self.target.currentText(), values, self.unit.text().strip())
 
     def set_candidates(self, candidates: list[Candidate]) -> None:
         previous = self.target.currentText()
@@ -156,6 +180,11 @@ class SweepTab(RunGuard, RunRecords, QWidget):
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setEnabled(False)
         self.refresh_button = QPushButton("Reload parameters")
+        self.default_button = QPushButton("Default sweep", self)
+        self.default_button.setToolTip(
+            "The recommended sweep for this kind of setup (HOM delay, Malus angle, Bell "
+            "wave plate, pump power), or the default range of the selected parameter"
+        )
         self.optimize_button = QPushButton("Optimize...")
         self.export_button = QPushButton("Export CSV")
         self.png_button = QPushButton("Export PNG")
@@ -184,6 +213,7 @@ class SweepTab(RunGuard, RunRecords, QWidget):
             self.run_button,
             self.cancel_button,
             self.refresh_button,
+            self.default_button,
             self.optimize_button,
             self.export_button,
             self.png_button,
@@ -204,6 +234,7 @@ class SweepTab(RunGuard, RunRecords, QWidget):
         self.run_button.clicked.connect(self.run)
         self.cancel_button.clicked.connect(self.runner.cancel)
         self.refresh_button.clicked.connect(self.reload_candidates)
+        self.default_button.clicked.connect(self.apply_default)
         self.optimize_button.clicked.connect(self.open_optimizer)
         self.export_button.clicked.connect(self.export_csv)
         self.png_button.clicked.connect(self.export_png)
@@ -215,6 +246,8 @@ class SweepTab(RunGuard, RunRecords, QWidget):
         self.optimizer = None
         self.status_text = ""
         self._structure = None
+        self._planned = None
+        self._outcome = None
         self.two_d.toggled.connect(self.refresh_stale)
         self.fock_check.toggled.connect(self.refresh_stale)
         for row in self.rows:
@@ -258,21 +291,26 @@ class SweepTab(RunGuard, RunRecords, QWidget):
         for row in self.rows:
             row.set_candidates([])
         self.candidates = []
+        self._planned = None
+        self._outcome = None
 
     def reload_candidates(self) -> None:
         setup, library = self.provider()
         if setup is None:
             return
         self._structure = _structure(setup)
-        candidates = candidate_targets(setup, library)
+        candidates = candidate_targets(setup, library, self._outcome)
         for row in self.rows:
             row.set_candidates(candidates)
         self.candidates = candidates
 
     def set_outcome(self, outcome) -> None:
         setup, _library = self.provider()
+        if outcome is not None:
+            self._outcome = outcome
+        plan_now = setup is not None and outcome is not None and self._planned != _structure(setup)
         if setup is not None and (
-            not self.rows[0].candidates or _structure(setup) != self._structure
+            plan_now or not self.rows[0].candidates or _structure(setup) != self._structure
         ):
             self.reload_candidates()
         if self.track_revision(outcome) and self.result is not None:
@@ -286,17 +324,53 @@ class SweepTab(RunGuard, RunRecords, QWidget):
             if current in names:
                 self.metric.setCurrentText(current)
             self.metric.blockSignals(False)
+        if plan_now:
+            self._planned = _structure(setup)
+            if self.result is None:
+                self.apply_default()
+
+    def apply_default(self) -> None:
+        setup, library = self.provider()
+        if setup is None:
+            return
+        outcome = self._outcome
+        if outcome is not None and outcome.classical is None:
+            outcome = None
+        try:
+            plan = default_plan(setup, library, outcome) if outcome is not None else None
+        except SequoiaError:
+            plan = None
+        row = self.rows[0]
+        if plan is None or plan.target not in [c.target for c in row.candidates]:
+            row._reset_range()
+            index = row.target.currentIndex()
+            if index >= 0:
+                self.status.setText(f"default range of {row.target.currentText()}")
+            return
+        self.two_d.setChecked(False)
+        row.target.setCurrentText(plan.target)
+        row.unit.setText(plan.unit)
+        row.set_range(plan.start, plan.stop, plan.points, plan.log)
+        if self.metric.findText(plan.output) >= 0:
+            self.metric.setCurrentText(plan.output)
+        self.status.setText(
+            f"default sweep ({plan.task}): {plan.target} vs {metric_label(plan.output)}"
+        )
 
     def run(self) -> None:
         setup, library = self.provider()
         if setup is None or self.runner.busy:
             return
-        axes = [self.rows[0].axis()]
-        if self.two_d.isChecked():
-            if self.rows[1].target.currentText() == axes[0].target:
-                self.status.setText("the two axes must differ")
-                return
-            axes.append(self.rows[1].axis())
+        try:
+            axes = [self.rows[0].axis()]
+            if self.two_d.isChecked():
+                if self.rows[1].target.currentText() == axes[0].target:
+                    self.status.setText("the two axes must differ")
+                    return
+                axes.append(self.rows[1].axis())
+        except SweepError as exc:
+            self.status.setText(str(exc))
+            return
         names = None
         if not axes[0].target:
             self.status.setText("no parameter to sweep")
@@ -335,6 +409,7 @@ class SweepTab(RunGuard, RunRecords, QWidget):
         try:
             check_axis_unit(setup, axis.target, axis.unit)
             with_values(setup, [(axis.target, float(axis.values[0]), axis.unit)])
+            check_bounds(setup, library, [axis])
         except Exception as exc:
             return f"{axis.target}: {str(exc).splitlines()[0]}"
         return ""
@@ -501,7 +576,9 @@ class OptimizeDialog(QDialog):
             buttons.addWidget(w)
         layout = QVBoxLayout(self)
         layout.addLayout(top)
-        layout.addWidget(QLabel("Variables (bounds are the from / to values)"))
+        layout.addWidget(
+            QLabel("Variables (bounds are the from / to values; they start at the physical range)")
+        )
         layout.addLayout(self.vars)
         layout.addLayout(buttons)
         layout.addWidget(self.progress)
@@ -518,8 +595,9 @@ class OptimizeDialog(QDialog):
         self.on_apply = None
 
     def add_row(self) -> None:
-        row = AxisRow(self.candidates)
+        row = AxisRow(self.candidates, self, use_bounds=True)
         row.points.hide()
+        row.log.hide()
         self.rows.append(row)
         self.vars.addWidget(row, len(self.rows) - 1, 0)
 
@@ -540,6 +618,11 @@ class OptimizeDialog(QDialog):
         if setup is None or self.runner.busy:
             return
         variables = self.variables()
+        try:
+            check_bounds(setup, library, [Axis(v.target, [v.lo, v.hi], v.unit) for v in variables])
+        except SweepError as exc:
+            self.summary.setText(str(exc))
+            return
         objective = self.objective.currentText().strip()
         maximize, method = self.maximize.isChecked(), self.method.currentText()
         evaluations = self.evaluations.value()

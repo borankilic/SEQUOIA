@@ -3,7 +3,7 @@ import datetime
 import hashlib
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -476,6 +476,27 @@ class Uncertain:
     label: str | None = None
 
 
+@dataclass(frozen=True, eq=False)
+class UncertainCurve:
+    """A curve parameter (``overrides:<id>.<name>``) whose y values are drawn from a multivariate
+    normal around ``curve`` with ``covariance`` (in the curve's y unit squared; a diagonal one
+    for per-point std, see ``from_std``). Draws are clipped point by point to [low, high]."""
+
+    target: str
+    curve: Curve
+    covariance: np.ndarray
+    low: float | None = None
+    high: float | None = None
+    label: str | None = None
+
+    @classmethod
+    def from_std(cls, target: str, curve: Curve, std: Sequence[float], **kw) -> "UncertainCurve":
+        return cls(target, curve, np.diag(np.asarray(std, dtype=float) ** 2), **kw)
+
+
+MAX_CURVE_COMPONENTS = 16
+
+
 @dataclass
 class UncertaintyResult:
     metric: str
@@ -483,14 +504,15 @@ class UncertaintyResult:
     mean: float
     std: float
     samples: np.ndarray
-    parameters: list[Uncertain]
-    means: list[float]
+    parameters: list[Uncertain | UncertainCurve]
+    means: list[float | np.ndarray]
     contributions: dict[str, float]
     failures: int
     seed: int | None
     note: str = (
         "calibration (systematic) uncertainty only; counting noise is separate and not included"
     )
+    methods: dict[str, str] = field(default_factory=dict)
 
     @property
     def linear_std(self) -> float:
@@ -539,10 +561,11 @@ def _record_unit(record: CalibrationRecord) -> str:
     return "" if unit in ("", "1") else unit
 
 
-def from_calibration(setup: "Setup", library: "Library", spec: str) -> Uncertain:
-    """``<instance>.<parameter>`` with the std of the part's calibration record. A
-    ``zero_offset`` perturbs the instance's ``angle`` setting and a ``timing_offset`` the delay of
-    the cable leaving it; their recorded value is added to the current setting."""
+def from_calibration(setup: "Setup", library: "Library", spec: str) -> Uncertain | UncertainCurve:
+    """``<instance>.<parameter>`` with the std of the part's calibration record, or the curve
+    of a curve record with its ``curve_std`` or ``covariance``. A ``zero_offset`` perturbs the
+    instance's ``angle`` setting and a ``timing_offset`` the delay of the cable leaving it; their
+    recorded value is added to the current setting."""
     owner, _, name = spec.rpartition(".")
     placed = next((i for i in setup.instances if i.id == owner), None)
     if placed is None:
@@ -551,9 +574,16 @@ def from_calibration(setup: "Setup", library: "Library", spec: str) -> Uncertain
     record = select_records(part.calibration, set(type(part.params).model_fields), part.ref).get(
         name
     )
+    if record is not None and record.curve is not None:
+        target = f"overrides:{owner}.{name}"
+        if record.covariance is not None:
+            return UncertainCurve(target, record.curve, np.asarray(record.covariance, float))
+        if record.curve_std is not None:
+            return UncertainCurve.from_std(target, record.curve, record.curve_std)
     if record is None or record.value is None or record.std is None:
         raise UncertaintyError(
-            f"{spec}: part {part.ref!r} has no scalar calibration record with a std for {name!r}"
+            f"{spec}: part {part.ref!r} has no scalar calibration record with a std (or curve "
+            f"record with curve_std or covariance) for {name!r}"
         )
     unit = _record_unit(record)
     std = record.std_in_value_unit
@@ -589,47 +619,88 @@ def _bounds(u: Uncertain) -> tuple[float, float]:
     return low, high
 
 
+def _factor(u: UncertainCurve) -> np.ndarray:
+    """Columns: the principal components of the covariance scaled by their std, largest first."""
+    cov = np.asarray(u.covariance, dtype=float)
+    n = len(u.curve.y)
+    if cov.shape != (n, n):
+        raise UncertaintyError(f"{u.target}: covariance must be {n} x {n}, got {cov.shape}")
+    if not np.all(np.isfinite(cov)) or not np.allclose(cov, cov.T, rtol=1e-9, atol=0.0):
+        raise UncertaintyError(f"{u.target}: covariance must be finite and symmetric")
+    w, v = np.linalg.eigh(cov)
+    top = float(w.max()) if w.size else 0.0
+    if w.min() < -1e-9 * max(top, 0.0) - 1e-300:
+        raise UncertaintyError(f"{u.target}: covariance is not positive semi-definite")
+    keep = w > 1e-12 * top if top > 0 else np.zeros_like(w, dtype=bool)
+    order = np.argsort(w[keep])[::-1]
+    return (v[:, keep] * np.sqrt(w[keep]))[:, order]
+
+
+def _curve_override(curve: Curve, y: np.ndarray) -> dict[str, Any]:
+    data = curve.model_dump(mode="json", exclude={"provenance", "file"})
+    data["y"] = [float(v) for v in y]
+    return data
+
+
 def propagate_uncertainty(
     setup: "Setup",
     library: "Library",
     metric_fn: str | Callable[["Setup", "Library"], float],
-    params: Sequence[Uncertain | str],
+    params: Sequence[Uncertain | UncertainCurve | str],
     n: int = 200,
     seed: int | None = None,
     *,
     should_cancel: Callable[[], bool] | None = None,
     progress: Callable[[int, int], None] | None = None,
 ) -> UncertaintyResult:
-    """Monte Carlo over the declared (calibration) uncertainties of a few scalar parameters.
+    """Monte Carlo over the declared (calibration) uncertainties of a few scalar parameters and
+    curves.
 
     ``metric_fn`` is a sweep metric name (``probe:pm.power_W``) or ``fn(setup, library)``.
-    ``params`` are ``Uncertain`` entries or ``<instance>.<parameter>`` names whose std comes
-    from the part's calibration record. Parameters are independent normals. Contributions are
-    one-at-a-time: half the metric change between mean -/+ one std of that parameter.
+    ``params`` are ``Uncertain`` or ``UncertainCurve`` entries or ``<instance>.<parameter>`` names
+    whose uncertainty comes from the part's calibration record. Parameters are independent of
+    each other; a curve's points are correlated through its covariance and replace the part's
+    curve at every evaluation. Contributions are one-at-a-time: for a scalar, the slope between
+    mean -/+ one std times the std; for a curve, the same along each principal component of its
+    covariance, added in quadrature (``methods`` says how; a curve with more than
+    ``MAX_CURVE_COMPONENTS`` components gets the spread of ``n`` draws of that curve alone).
     """
     from sequoia.analysis.sweep import evaluate, metrics_of, with_values
     from sequoia.engines.cache import RunCache, check_cancel
+    from sequoia.setup.io import setup_from_dict, setup_to_dict
 
     resolved = [
-        p if isinstance(p, Uncertain) else from_calibration(setup, library, p) for p in params
+        p if isinstance(p, Uncertain | UncertainCurve) else from_calibration(setup, library, p)
+        for p in params
     ]
     if not resolved:
         raise UncertaintyError("no uncertain parameters given")
+    scalars = [u for u in resolved if isinstance(u, Uncertain)]
+    curves = [u for u in resolved if isinstance(u, UncertainCurve)]
     for u in resolved:
-        name = _split_target(u.target)[2]
+        kind, _owner, name = _split_target(u.target)
         if name not in SUPPORTED:
             raise UncertaintyError(
                 f"{u.target}: uncertainty propagation supports {sorted(SUPPORTED)}"
             )
-        if not (math.isfinite(u.std) and u.std >= 0):
+        if isinstance(u, Uncertain) and not (math.isfinite(u.std) and u.std >= 0):
             raise UncertaintyError(f"{u.target}: std must be finite and non-negative")
+        if isinstance(u, UncertainCurve) and (
+            kind != "overrides" or all(i.id != _owner for i in setup.instances)
+        ):
+            raise UncertaintyError(
+                f"{u.target}: a curve is a parameter of a placed part ('overrides:<id>.<name>')"
+            )
     if n < 2:
         raise UncertaintyError("n must be at least 2")
     means = [
         u.mean if u.mean is not None else _current(setup, library, u.target, u.unit)
-        for u in resolved
+        for u in scalars
     ]
-    bounds = [_bounds(u) for u in resolved]
+    bounds = [_bounds(u) for u in scalars]
+    factors = [_factor(u) for u in curves]
+    curve_means = [np.asarray(u.curve.y, dtype=float) for u in curves]
+    curve_bounds = [_bounds(u) for u in curves]
     cache = RunCache()
 
     if isinstance(metric_fn, str):
@@ -646,42 +717,106 @@ def propagate_uncertainty(
         def f(point):
             return float(metric_fn(point, library))
 
-    def at(values) -> float:
+    def at(values, ys=None) -> float:
         check_cancel(should_cancel)
+        ys = curve_means if ys is None else ys
         try:
             point = with_values(
-                setup, [(u.target, float(v), u.unit) for u, v in zip(resolved, values, strict=True)]
+                setup, [(u.target, float(v), u.unit) for u, v in zip(scalars, values, strict=True)]
             )
+            if curves:
+                raw = setup_to_dict(point)
+                for u, y in zip(curves, ys, strict=True):
+                    _kind, owner, field_name = _split_target(u.target)
+                    item = next(i for i in raw["instances"] if i["id"] == owner)
+                    item.setdefault("overrides", {})[field_name] = _curve_override(u.curve, y)
+                point = setup_from_dict(raw, source="uncertainty point")
             return float(f(point))
         except SequoiaError:
             return math.nan
 
-    total = n + 2 * len(resolved) + 1
+    def clip(y, k):
+        lo, hi = curve_bounds[k]
+        return np.clip(y, lo, hi)
+
+    components = [L.shape[1] for L in factors]
+    linear = [c <= MAX_CURVE_COMPONENTS for c in components]
+    total = (
+        n
+        + 2 * len(scalars)
+        + sum(2 * c if lin else n for c, lin in zip(components, linear, strict=True))
+        + 1
+    )
+    done = 0
+
+    def step():
+        nonlocal done
+        done += 1
+        if progress is not None:
+            progress(done, total)
+
     nominal = at(means)
     rng = np.random.default_rng(seed)
-    draws = rng.standard_normal((n, len(resolved)))
+    draws = rng.standard_normal((n, len(scalars)))
+    curve_draws = [
+        np.array([clip(m + L @ z, k) for z in rng.standard_normal((n, L.shape[1]))])
+        for k, (m, L) in enumerate(zip(curve_means, factors, strict=True))
+    ]
     samples = np.empty(n)
     for i in range(n):
         values = [
             min(max(m + u.std * z, lo), hi)
-            for m, u, z, (lo, hi) in zip(means, resolved, draws[i], bounds, strict=True)
+            for m, u, z, (lo, hi) in zip(means, scalars, draws[i], bounds, strict=True)
         ]
-        samples[i] = at(values)
-        if progress is not None:
-            progress(i + 1, total)
+        samples[i] = at(values, [d[i] for d in curve_draws])
+        step()
     contributions = {}
-    for k, u in enumerate(resolved):
+    methods = {}
+    for k, u in enumerate(scalars):
         lo_b, hi_b = bounds[k]
         lo, hi = max(means[k] - u.std, lo_b), min(means[k] + u.std, hi_b)
+        key = u.label or u.target
+        methods[key] = "linear"
         if hi <= lo or u.std == 0:
-            contributions[u.label or u.target] = 0.0
+            contributions[key] = 0.0
             continue
         down, up = list(means), list(means)
         down[k], up[k] = lo, hi
         slope = (at(up) - at(down)) / (hi - lo)
-        contributions[u.label or u.target] = abs(slope) * u.std
-        if progress is not None:
-            progress(n + 2 * (k + 1), total)
+        contributions[key] = abs(slope) * u.std
+        step()
+        step()
+    for k, u in enumerate(curves):
+        key = u.label or u.target
+        if not linear[k]:
+            alone = []
+            for y in curve_draws[k]:
+                ys = list(curve_means)
+                ys[k] = y
+                alone.append(at(means, ys))
+                step()
+            alone = np.asarray(alone)
+            alone = alone[np.isfinite(alone)]
+            contributions[key] = float(np.std(alone, ddof=1)) if alone.size > 1 else math.nan
+            methods[key] = f"Monte Carlo, {n} draws of this curve alone"
+            continue
+        squares = 0.0
+        for j in range(components[k]):
+            direction = factors[k][:, j]
+            scale = float(np.linalg.norm(direction))
+            unit = direction / scale
+            up_y = clip(curve_means[k] + direction, k)
+            down_y = clip(curve_means[k] - direction, k)
+            span = float((up_y - down_y) @ unit)
+            ys_up, ys_down = list(curve_means), list(curve_means)
+            ys_up[k], ys_down[k] = up_y, down_y
+            change = at(means, ys_up) - at(means, ys_down)
+            step()
+            step()
+            if span > 0:
+                squares += (change / span * scale) ** 2
+        contributions[key] = math.sqrt(squares)
+        methods[key] = f"linear along {components[k]} principal component(s)"
     good = samples[np.isfinite(samples)]
     return UncertaintyResult(
         metric=name,
@@ -689,9 +824,10 @@ def propagate_uncertainty(
         mean=float(np.mean(good)) if good.size else math.nan,
         std=float(np.std(good, ddof=1)) if good.size > 1 else math.nan,
         samples=samples,
-        parameters=resolved,
-        means=means,
+        parameters=[*scalars, *curves],
+        means=[*means, *curve_means],
         contributions=contributions,
         failures=int(n - good.size),
         seed=seed,
+        methods=methods,
     )

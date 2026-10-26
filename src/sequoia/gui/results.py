@@ -500,7 +500,11 @@ class ResultsDock(QWidget):
             "What do you want to do? Each task shows the tools it needs; "
             f"'{ALL_TOOLS}' lists every engine as tabs"
         )
-        self.task_list.setMinimumWidth(150)
+        widest = max(self.task_list.fontMetrics().horizontalAdvance(t) for t in TASKS)
+        self.task_list.setMinimumWidth(widest + 28)
+        self.task_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.task_list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.task_list.setSpacing(2)
         self.task_list.currentTextChanged.connect(
             lambda name: self.show_task(name) if name and name != self.task else None
         )
@@ -523,7 +527,7 @@ class ResultsDock(QWidget):
         self.body.addWidget(self.pages)
         self.body.setStretchFactor(1, 1)
         self.body.setCollapsible(1, False)
-        self.body.setSizes([190, 710])
+        self.body.setSizes([widest + 40, 900])
 
         self.help = QLabel("")
         self.help.setWordWrap(True)

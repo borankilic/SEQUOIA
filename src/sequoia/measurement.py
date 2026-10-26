@@ -222,6 +222,15 @@ def check_measurement(setup: "Setup") -> list[Issue]:
                     f"measurement condition '{cond.name}'",
                     f"'{ref}' is neither a tagger channel nor a detector",
                 )
+    known = {c.name for c in m.conditions}
+    for spec in setup.analyses:
+        cond = spec.get("condition")
+        if cond is not None and cond not in known:
+            warn(
+                "measurement_reference",
+                f"analysis '{spec.get('name')}'",
+                f"condition '{cond}' is not defined in the measurement",
+            )
     if m.accidentals == "singles":
         warn(
             "measurement_singles_estimator",
@@ -272,8 +281,9 @@ def analyse_measured_tags(
     clock_ids: Mapping[str, str] | None,
     specs: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """``analyse_tags`` under the measurement definition: effective analyses, pulse clock and
-    accidental estimator. Each result records the estimator and why it was used."""
+    """``analyse_tags`` under the measurement definition: effective analyses, pulse clock,
+    accidental estimator and named conditions (detector ids mapped to their channels). Each
+    result records the estimator and why it was used."""
     from sequoia.analysis.correlation import analyse_tags
 
     specs = effective_analyses(setup) if specs is None else list(specs)
@@ -283,7 +293,12 @@ def analyse_measured_tags(
     choice = m.accidentals if m is not None else "auto"
     pulsed = isinstance(clock, Mapping) and any(v for v in clock.values())
     used_clock = {c: 0.0 for c in names} if choice == "singles" else clock
-    out = analyse_tags(channels, duration, specs, used_clock, clock_ids)
+    mapping = channel_map(setup)
+    conditions = {
+        c.name: ([_channel(r, mapping) for r in c.herald], [_channel(r, mapping) for r in c.veto])
+        for c in (m.conditions if m is not None else [])
+    }
+    out = analyse_tags(channels, duration, specs, used_clock, clock_ids, choice, conditions)
     for result in out.values():
         if result.get("type") != "coincidences":
             continue
@@ -295,7 +310,7 @@ def analyse_measured_tags(
                 + ("; not valid for pulsed light" if pulsed else "")
             )
             result["timing_note"] = "; ".join(notes)
-        elif choice == "sideband" and result.get("accidental_model") != "sideband":
+        elif choice == "sideband" and result.get("accidental_model") == "singles":
             notes.append(
                 "sideband estimator requested but no common pulse clock: singles product used"
             )
@@ -394,7 +409,8 @@ def measurement_card(setup: "Setup", outcome=None) -> list[tuple[str, str]]:
                 "auto": "sidebands one pulse period away with a common pulse clock, else the "
                 "singles product",
                 "singles": "singles product S_a S_b x window",
-                "sideband": "sidebands one pulse period away",
+                "sideband": "sidebands one pulse period away; for CW light off-peak windows "
+                "at +-max(10 x window, 20 ns, 5 x correlation width)",
             }[m.accidentals if m is not None else "auto"],
         )
     )

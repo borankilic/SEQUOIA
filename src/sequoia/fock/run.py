@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from sequoia.engines.cache import Cancelled, check_cancel
 from sequoia.errors import SequoiaError
-from sequoia.fock.analysis import count_variance
+from sequoia.fock.analysis import Conditional, condition, count_variance
 from sequoia.fock.engine import Limits
 from sequoia.fock.experiment import Experiment, FockResult, run_experiment
 from sequoia.fock.extract import Extraction
@@ -17,6 +17,7 @@ from sequoia.fock.from_setup import (
     extraction_experiment,
     list_components,
     list_inputs,
+    measurement_conditions,
     run_setup_experiment,
 )
 from sequoia.fock.preflight import Estimate, estimate_experiment
@@ -58,15 +59,26 @@ class DetectorRow:
 
 
 @dataclass(frozen=True)
+class NamedConditional:
+    name: str
+    description: str
+    rule: str
+    conditional: Conditional
+
+
+@dataclass(frozen=True)
 class SetupViews:
     """Table data of a setup run, sorted and aggregated off the GUI thread. ``patterns`` rows are
-    (label, p, rate, total, sigma); ``marginals`` rows (kind, name, n, p arrive, p detected)."""
+    (label, p, rate, total, sigma); ``marginals`` rows (kind, name, n, p arrive, p detected);
+    ``conditions`` the measurement's named conditions, or ``condition_error`` why not."""
 
     states: tuple[tuple[State, float], ...]
     detectors: tuple[DetectorRow, ...]
     patterns: tuple[tuple[str, float, float, float, float], ...]
     marginals: tuple[tuple[str, str, int, float, float | None], ...]
     photon_numbers: dict[int, float]
+    conditions: tuple[NamedConditional, ...] = ()
+    condition_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -116,6 +128,14 @@ def _chunks(items, should_cancel):
         if i % CHUNK == 0:
             check_cancel(should_cancel)
         yield item
+
+
+def named_conditionals(res: SetupResult) -> tuple[NamedConditional, ...]:
+    """The measurement's named conditions as conditional views of the detected distribution."""
+    return tuple(
+        NamedConditional(c.name, c.description, c.rule, condition(res.detected, c.accepts))
+        for c in measurement_conditions(res.setup_experiment.setup, res.detector_ids)
+    )
 
 
 def setup_views(res: SetupResult, should_cancel=None) -> SetupViews:
@@ -176,12 +196,20 @@ def setup_views(res: SetupResult, should_cancel=None) -> SetupViews:
             dist[s[m]] = dist.get(s[m], 0.0) + p
         for n in sorted(dist):
             marginals.append(("mode", lab, n, dist[n], None))
+    check_cancel(should_cancel)
+    named, cond_error = (), ""
+    try:
+        named = named_conditionals(res)
+    except SequoiaError as exc:
+        cond_error = str(exc)
     return SetupViews(
         ranked(res.detected, should_cancel),
         tuple(detectors),
         tuple(patterns),
         tuple(marginals),
         dict(sorted(by_photon_number(res.photon_numbers).items())),
+        named,
+        cond_error,
     )
 
 

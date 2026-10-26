@@ -634,6 +634,7 @@ class DictEditor(Editor):
 
     def _remove(self, entry) -> None:
         self.rows.remove(entry)
+        entry[0].hide()
         entry[0].setParent(None)
         entry[0].deleteLater()
         self.commit()
@@ -672,6 +673,7 @@ class DictEditor(Editor):
             return
         self._loading = True
         for row, _, _ in self.rows:
+            row.hide()
             row.setParent(None)
             row.deleteLater()
         self.rows.clear()

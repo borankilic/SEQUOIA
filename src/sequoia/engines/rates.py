@@ -1947,9 +1947,7 @@ class _Engine:
                 )
                 incoherent += src.rate * sum(
                     float(np.sum(np.abs(blk) ** 2))
-                    for blk in self.member_blocks(
-                        src, amp, a.detector, b.detector, coherent=False
-                    )
+                    for blk in self.member_blocks(src, amp, a.detector, b.detector, coherent=False)
                 )
         if not both or incoherent <= 0.0:
             return None, incoherent

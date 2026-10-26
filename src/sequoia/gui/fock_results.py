@@ -166,6 +166,15 @@ class SetupResultsView(QWidget):
         )
         self.cond_summary = QLabel("")
         self.cond_summary.setWordWrap(True)
+        self.named_condition = QComboBox()
+        self.named_condition.addItem("custom (table below)")
+        self.named_condition.setToolTip(
+            "Named heralding conditions of the setup's measurement definition: herald channels "
+            "must click, veto channels must not"
+        )
+        self.named_summary = QLabel("")
+        self.named_summary.setWordWrap(True)
+        self.named_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.samples_table = ResultTable(
             ["State", "Detectors", "Shots", "Frequency", "P\nper window"],
             "Set shots above 0 and run to draw seeded samples of the detector states.",
@@ -197,6 +206,11 @@ class SetupResultsView(QWidget):
         cond_page = QWidget()
         cl = QVBoxLayout(cond_page)
         cl.setContentsMargins(0, 0, 0, 0)
+        nrow = QHBoxLayout()
+        nrow.addWidget(QLabel("Measurement condition"))
+        nrow.addWidget(self.named_condition, 1)
+        cl.addLayout(nrow)
+        cl.addWidget(self.named_summary)
         cl.addWidget(self.cond_table)
         cl.addWidget(self.cond_summary)
         cl.addWidget(self.cond_result, 1)
@@ -226,6 +240,7 @@ class SetupResultsView(QWidget):
 
         self.state_filter.textChanged.connect(self.show_states)
         self.setup_normalized.toggled.connect(self.show_states)
+        self.named_condition.currentIndexChanged.connect(self.fill_conditional)
 
     @property
     def tables(self) -> tuple[ResultTable, ...]:
@@ -251,6 +266,7 @@ class SetupResultsView(QWidget):
         self.model_card.setText(MODEL_EMPTY)
         self.state_summary.setText("")
         self.cond_summary.setText("")
+        self.named_summary.setText("")
         self.samples_note.setText("")
         if self.setup_bars is not None:
             self.setup_plot.removeItem(self.setup_bars)
@@ -302,6 +318,7 @@ class SetupResultsView(QWidget):
             ),
         )
         self.fill_conditions(res.detector_ids)
+        self.fill_named(v)
         self.show_states()
         self.fill_conditional()
         self.fill_samples()
@@ -379,20 +396,55 @@ class SetupResultsView(QWidget):
                 spec[r] = (op.currentText(), val.value())
         return spec
 
+    def fill_named(self, views: SetupViews) -> None:
+        current = self.named_condition.currentText()
+        self.named_condition.blockSignals(True)
+        while self.named_condition.count() > 1:
+            self.named_condition.removeItem(1)
+        for nc in views.conditions:
+            self.named_condition.addItem(nc.name)
+        index = self.named_condition.findText(current)
+        self.named_condition.setCurrentIndex(max(index, 0))
+        self.named_condition.blockSignals(False)
+        if views.condition_error:
+            self.named_summary.setText(
+                f"measurement conditions not applied: {views.condition_error}"
+            )
+        elif views.conditions:
+            self.named_summary.setText(
+                "\n".join(
+                    f"{nc.name}: {nc.rule}, success probability "
+                    f"{nc.conditional.success_probability:.6g} per window"
+                    + (f" ({nc.description})" if nc.description else "")
+                    for nc in views.conditions
+                )
+            )
+        else:
+            self.named_summary.setText("the measurement defines no named conditions")
+
     def fill_conditional(self, *_args) -> None:
         res = self.result
         if res is None:
             return
-        spec = self.cond_spec()
         cnt = res.counts
-        if not spec:
-            self.cond_summary.setText("choose a condition on at least one detector")
-            self.cond_result.clear_rows()
-            return
-        cond = condition(res.detected, spec)
+        index = self.named_condition.currentIndex()
+        named = self.views.conditions if self.views is not None else ()
+        self.cond_table.setEnabled(index <= 0)
+        head = ""
+        if 0 < index <= len(named):
+            nc = named[index - 1]
+            cond = nc.conditional
+            head = f"'{nc.name}' ({nc.rule}): "
+        else:
+            spec = self.cond_spec()
+            if not spec:
+                self.cond_summary.setText("choose a condition on at least one detector")
+                self.cond_result.clear_rows()
+                return
+            cond = condition(res.detected, spec)
         rate = cond.success_probability * cnt.windows_per_second
         self.cond_summary.setText(
-            f"success probability {cond.success_probability:.6g} per window "
+            f"{head}success probability {cond.success_probability:.6g} per window "
             f"({rate:.6g} per second, {rate * cnt.duration_s:.6g} in {cnt.duration_s:g} s); "
             f"{len(cond.joint)} detector states kept, distribution normalised"
         )
