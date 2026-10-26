@@ -85,7 +85,9 @@ def test_pulsed_gram_matrices_are_guarded_with_an_estimate_of_the_memory(lib):
     assert ok.analyses["g"]["g2_per_pulse"] > 1.0
     r = simulate_rates(setup, lib, max_memory_bytes=5e6)
     limit = [i for i in r.issues if i.code == "memory_limit"]
-    assert len(limit) == 2
+    analyses = [i for i in limit if i.subject.startswith("analysis")]
+    assert len(analyses) == 2
+    assert any("polarization states" in i.message for i in limit)
     assert all("GiB" in i.message and "memory" in i.message for i in limit)
     assert r.analyses["g"]["g2_per_pulse"] is None
     assert "h" not in r.analyses
