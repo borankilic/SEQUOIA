@@ -38,7 +38,7 @@ LIB = Library(ROOT / "library")
 def test_dark_counts_survive_vacuum(det):
     m = det.response_matrix(0)
     assert m[0, 0] == pytest.approx(0.8)
-    assert m[0, 1] == pytest.approx(0.2)
+    assert m[0, 1:].sum() == pytest.approx(0.2)
     assert np.allclose(m.sum(axis=1), 1.0)
 
 
@@ -68,7 +68,8 @@ def test_one_photon_plus_dark_click_reads_two_on_a_pnr():
     assert m.shape == (2, 3)
     assert m[1, 2] == pytest.approx(0.2)
     pp = PseudoPNR(wires=4, dark=0.2).response_matrix(1)
-    assert pp.shape == (2, 5) and pp[1, 2] == pytest.approx(0.2)
+    q = 1.0 - 0.8**0.25
+    assert pp.shape == (2, 5) and pp[1, 2:].sum() == pytest.approx(1.0 - (1.0 - q) ** 3)
     lay = DetectorLayout.from_modes(1, {0: IdealPNR(dark=0.2)})
     vac = lay.apply(Distribution({(0,): 1.0}, 1))
     assert vac.probs == pytest.approx({(0,): 0.8, (1,): 0.2})
@@ -81,7 +82,9 @@ def test_experiment_on_vacuum_keeps_dark_counts():
         Circuit(2), [0, 0], detectors=[DetectorSpec((0,), PseudoPNR(wires=2, dark=0.2))]
     )
     r = run_experiment(exp)
-    assert r.probabilities[(1, 0)] == pytest.approx(0.2)
+    q = 1.0 - math.sqrt(0.8)
+    assert r.probabilities[(1, 0)] == pytest.approx(2 * q * (1 - q))
+    assert r.probabilities[(2, 0)] == pytest.approx(q**2)
     assert r.mass == pytest.approx(1.0)
 
 

@@ -169,7 +169,7 @@ def coincidences(
     if center == "auto":
         peak, found, used = find_peak_wide(t_a, t_b, window, search, widen=widen)
     else:
-        peak, found, used = float(center), True, search
+        peak, found, used = float(center), None, None
     n_in = count_in_window(t_a, t_b, window, peak)
     s_a, s_b = len(t_a) / duration, len(t_b) / duration
     if accidentals == "sideband":
@@ -196,6 +196,7 @@ def coincidences(
         "car": ratio(true, acc),
         "car_total": ratio(n_in / duration, acc),
         "peak_found": found,
+        "center_mode": "search" if center == "auto" else "fixed",
         "search_s": used,
         "accidental_model": accidentals,
         "singles_a_hz": s_a,
@@ -223,11 +224,13 @@ def heralded_g2(
     if center_a == "auto":
         ca, found_a, used_a = find_peak_wide(t_a, t_h, window, search, widen=widen)
     else:
-        ca, found_a, used_a = float(center_a), True, search
+        ca, found_a, used_a = float(center_a), None, None
     if center_b == "auto":
         cb, found_b, used_b = find_peak_wide(t_b, t_h, window, search, widen=widen)
     else:
-        cb, found_b, used_b = float(center_b), True, search
+        cb, found_b, used_b = float(center_b), None, None
+    modes = {"search" if c == "auto" else "fixed" for c in (center_a, center_b)}
+    searched = [u for u in (used_a, used_b) if u is not None]
     n_a = per_event_counts(t_h, t_a, window, -ca)
     n_b = per_event_counts(t_h, t_b, window, -cb)
     n_ha, n_hb = int(n_a.sum()), int(n_b.sum())
@@ -250,7 +253,8 @@ def heralded_g2(
         "center_b_s": cb,
         "peak_found_a": found_a,
         "peak_found_b": found_b,
-        "search_s": max(used_a, used_b),
+        "center_mode": modes.pop() if len(modes) == 1 else "mixed",
+        "search_s": max(searched) if searched else None,
     }
 
 
@@ -327,9 +331,74 @@ def _timing(result: dict[str, Any], timing: str, names: Sequence[str]) -> None:
 
 def _center(spec: Mapping[str, Any], key: str, name: str) -> float | str:
     value = spec.get(key, "auto")
+    mode = spec.get("mode")
+    if mode not in (None, "search", "fixed"):
+        raise CorrelationError(f"analysis '{name}': mode must be 'search' or 'fixed', got {mode!r}")
     if isinstance(value, str) and value.lower() == "auto":
+        if mode == "fixed":
+            raise CorrelationError(
+                f"analysis '{name}': mode 'fixed' needs an explicit {key} (see confirm_centers)"
+            )
         return "auto"
+    if mode == "search":
+        raise CorrelationError(f"analysis '{name}': mode 'search' cannot use a fixed {key}")
     return _duration(value, f"analysis '{name}': {key}")
+
+
+def confirm_centers(
+    search_results: Mapping[str, Mapping[str, Any]],
+    specs: Sequence[Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Analysis specs with the centres found by a search frozen (``mode: fixed``).
+
+    Search on one data set, then measure another with these specs so that the centre is not
+    re-selected from the data being measured (confirmatory analysis). Without ``specs`` only the
+    coincidence and heralded-g2 specs are rebuilt from the results; other given specs pass
+    unchanged.
+    """
+    if specs is None:
+        specs = []
+        for name, r in search_results.items():
+            spec: dict[str, Any] = {"name": name, "type": r["type"], "window": r.get("window_s")}
+            if r["type"] == "coincidences":
+                spec["channels"] = list(r["channels"])
+            elif r["type"] == "heralded_g2":
+                spec.update(herald=r["herald"], a=r["a"], b=r["b"])
+            else:
+                continue
+            specs.append(spec)
+    out = []
+    for spec in specs:
+        spec = dict(spec)
+        name = str(spec.get("name", spec.get("type", "analysis")))
+        kind = spec.get("type")
+        if kind in ("coincidences", "heralded_g2"):
+            r = search_results.get(name)
+            if r is None:
+                raise CorrelationError(f"analysis '{name}': no search result to take a centre from")
+            keys = (
+                [("center", "center_s", "peak_found")]
+                if kind == "coincidences"
+                else [
+                    ("center_a", "center_a_s", "peak_found_a"),
+                    ("center_b", "center_b_s", "peak_found_b"),
+                ]
+            )
+            for key, value, found in keys:
+                if r.get(found) is False:
+                    raise CorrelationError(
+                        f"analysis '{name}': the search found no peak for {key}; a frozen centre "
+                        "would be arbitrary"
+                    )
+                spec[key] = float(r[value])
+            spec["mode"] = "fixed"
+            spec["confirmed_from"] = {
+                "search_s": r.get("search_s"),
+                "center_mode": r.get("center_mode"),
+            }
+            spec.pop("search", None)
+        out.append(spec)
+    return out
 
 
 def analyse_tags(
@@ -350,8 +419,11 @@ def analyse_tags(
     synchronized. Without a common clock the CW singles estimator is used and the result carries
     ``timing`` and ``timing_note`` saying why.
 
-    Optional keys: ``center`` (coincidences), ``center_a`` / ``center_b`` (heralded g2) and
-    ``search`` (half range of the automatic peak search). A numeric centre disables the search.
+    Optional keys: ``center`` (coincidences), ``center_a`` / ``center_b`` (heralded g2),
+    ``search`` (half range of the automatic peak search) and ``mode``: ``search`` (centres
+    found in these data) or ``fixed`` (explicit centres, e.g. from ``confirm_centers``, for a
+    confirmatory measurement). Without ``mode`` a numeric centre is fixed and ``auto`` searches.
+    Results record ``center_mode`` and ``search_s`` (None when nothing was searched).
     """
     out: dict[str, dict[str, Any]] = {}
     for spec in specs:
@@ -411,6 +483,8 @@ def analyse_tags(
                 raise CorrelationError(f"analysis '{name}': unknown type {kind!r}")
         except KeyError as exc:
             raise CorrelationError(f"analysis '{name}': missing key {exc}") from exc
+        if "confirmed_from" in spec:
+            result["confirmed_from"] = dict(spec["confirmed_from"])
         out[name] = result
     return out
 
@@ -473,6 +547,12 @@ def read_tags(path: Path | str) -> tuple[dict[str, np.ndarray], float | None]:
     return record.channels, record.duration
 
 
+def _plain(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        value = value.item()
+    return None if isinstance(value, float) and not math.isfinite(value) else value
+
+
 def write_tags(
     path: Path | str,
     channels: Mapping[str, np.ndarray],
@@ -480,9 +560,12 @@ def write_tags(
     repetition_rates: Mapping[str, float] | Sequence[float] = (),
     meta: Mapping[str, Any] | None = None,
     clock_ids: Mapping[str, str] | None = None,
+    analyses: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
     """Write a version-2 tag file; the pulse clock and run metadata travel with the arrays.
-    A clock map is written as given, an empty one included (no channel has a valid clock)."""
+    A clock map is written as given, an empty one included (no channel has a valid clock).
+    ``analyses`` (results of ``analyse_tags``) stores their centres, centre mode, search ranges
+    and windows in ``meta["analyses"]``."""
     path = Path(path)
     if path.suffix.lower() != ".npz":
         raise CorrelationError("time tags are written as .npz")
@@ -496,6 +579,22 @@ def write_tags(
         info["clock"] = {name: float(max(repetition_rates)) for name in channels}
     if clock_ids is not None:
         info["clock_ids"] = {str(k): str(v) for k, v in clock_ids.items()}
+    if analyses is not None:
+        keep = (
+            "type",
+            "window_s",
+            "center_mode",
+            "center_s",
+            "center_a_s",
+            "center_b_s",
+            "search_s",
+            "peak_found",
+            "peak_found_a",
+            "peak_found_b",
+        )
+        info["analyses"] = {
+            str(n): {k: _plain(a[k]) for k in keep if k in a} for n, a in analyses.items()
+        }
     payload = {k: np.asarray(v) for k, v in channels.items()}
     fd, tmp = tempfile.mkstemp(suffix=".npz", dir=path.parent or ".")
     os.close(fd)

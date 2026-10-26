@@ -245,3 +245,38 @@ These are the approximations a user must know. Details and validation numbers ar
     The window is centred as the coincidence windows are, and the photon that heralds is assumed
     to arrive at the window centre; against the exact Gaussian-state triple integral this is within
     0.5% of the correction for a Gaussian spectrum at W between 0.3 and 5 coherence times.
+
+## Detector response (Fock backend)
+
+- `dark` is the probability of at least one dark click on the detector in one window.
+- Threshold: a click when a photon is detected or a dark click occurs, `P(click | n) = 1 - (1 -
+  eta)^n (1 - dark)`.
+- Pseudo-PNR with N wires: every wire fires dark independently with `q = 1 - (1 - dark)^(1/N)`, so
+  the detector-level dark probability is `dark`. The count is the number of wires holding a detected
+  photon or a dark click: k photon wires read `k + Binomial(N - k, q)`. A dark click on a wire that
+  already holds a photon adds nothing. N = 1 is the threshold detector.
+- Ideal PNR: one independent dark click adds one count (`n -> n + 1` with probability `dark`), so the
+  output runs to `n_max + 1`. This is a model choice, not a per-mode dark process.
+
+## Gaussian engine
+
+- `gain_scale` is the pump-power multiplier: a float for every pair source, or `{source id: factor}`
+  (other sources 1). It multiplies the squared squeezing parameter of the source and the classical
+  leakage of the laser that pumps it (any non-Fock classical source whose light reaches the pair
+  source's input). The rate engine's leakage of a detector is split over lasers in proportion to each
+  laser's own detected light (sources add incoherently). Dark counts, Fock-source flux and lasers
+  that pump no pair source stay fixed. A laser pumping several sources needs one common factor.
+- Per-window statistics need one common window (pulse period, or 1/dnu for CW). Sources with
+  different windows are refused; `gaussian_window_groups` lists the groups and `sources=` simulates
+  one group (the other sources' pairs are left out, their classical light is kept).
+- PNR `grid_change` is the largest change of a retained bin when the Fourier contour doubles. It is
+  convergence evidence, not a rigorous error bound. The probability outside the cutoff is reported
+  as `tail` and is not renormalised away.
+
+## Coincidence centres (time-tag analysis)
+
+- `mode: search` finds the centre in the analysed data (`center: auto`); `mode: fixed` uses the
+  given centre. Results record `center_mode`, the centres and `search_s` (None when not searched).
+  A searched centre is a statistical choice made on the same data; for a confirmatory measurement
+  freeze it with `confirm_centers` and apply it to independent data. Saved tag files store the
+  centres, modes and search ranges of the analyses they were saved with (`meta["analyses"]`).

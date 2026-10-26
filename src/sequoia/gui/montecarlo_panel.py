@@ -4,6 +4,7 @@ from typing import Any
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -18,7 +19,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sequoia.analysis.correlation import CorrelationError, analyse_tags, write_tags
+from sequoia.analysis.correlation import (
+    CorrelationError,
+    analyse_tags,
+    confirm_centers,
+    write_tags,
+)
 from sequoia.engines.cache import RunCache
 from sequoia.engines.montecarlo import (
     Comparison,
@@ -39,6 +45,7 @@ class McOutcome:
     analyses: dict[str, dict[str, Any]]
     comparisons: list[Comparison] = field(default_factory=list)
     note: str = ""
+    confirmatory: bool = False
 
 
 class MonteCarloTab(RunGuard, QWidget):
@@ -70,6 +77,12 @@ class MonteCarloTab(RunGuard, QWidget):
             "K >= 1: thermal statistics of K equally weighted modes (negative binomial). "
             "Values between 0 and 1 are refused."
         )
+        self.freeze = QCheckBox("freeze centres from last search")
+        self.freeze.setToolTip(
+            "Measure with the coincidence centres found by the last run that searched for them, "
+            "instead of searching again in the new data (confirmatory analysis)."
+        )
+        self.last_search: dict[str, dict[str, Any]] | None = None
         self.run_button = QPushButton("Run Monte Carlo")
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setEnabled(False)
@@ -98,6 +111,7 @@ class MonteCarloTab(RunGuard, QWidget):
             self.seed,
             QLabel("Pairs per pulse, K"),
             self.schmidt,
+            self.freeze,
             self.run_button,
             self.cancel_button,
             self.export_button,
@@ -133,9 +147,15 @@ class MonteCarloTab(RunGuard, QWidget):
         self.duration.valueChanged.connect(self.refresh_stale)
         self.seed.valueChanged.connect(self.refresh_stale)
         self.schmidt.valueChanged.connect(self.refresh_stale)
+        self.freeze.toggled.connect(self.refresh_stale)
 
     def config_key(self):
-        return (self.duration.value(), self.seed.value(), self.schmidt.value())
+        return (
+            self.duration.value(),
+            self.seed.value(),
+            self.schmidt.value(),
+            self.freeze.isChecked(),
+        )
 
     def set_outcome(self, outcome) -> None:
         if self.track_revision(outcome) and self.outcome is not None:
@@ -144,6 +164,7 @@ class MonteCarloTab(RunGuard, QWidget):
     def reset(self) -> None:
         self.invalidate()
         self.outcome = None
+        self.last_search = None
         self.note = ""
         if self.on_issues is not None:
             self.on_issues([])
@@ -172,6 +193,19 @@ class MonteCarloTab(RunGuard, QWidget):
             )
             return
         schmidt = k if k >= 1.0 else None
+        specs = setup.analyses
+        confirmatory = self.freeze.isChecked()
+        if confirmatory:
+            if self.last_search is None:
+                self.status.setText(
+                    "no searched centres to freeze: run once without 'freeze centres' first"
+                )
+                return
+            try:
+                specs = confirm_centers(self.last_search, setup.analyses)
+            except CorrelationError as exc:
+                self.status.setText(f"cannot freeze centres: {exc}")
+                return
         self.begin_run()
 
         def job(should_cancel, progress):
@@ -186,11 +220,11 @@ class MonteCarloTab(RunGuard, QWidget):
                 progress=progress,
                 schmidt_number=schmidt,
             )
-            analyses = analyse_tags(
-                tags.channels, tags.duration, setup.analyses, tags.clock, tags.clock_ids
-            )
+            analyses = analyse_tags(tags.channels, tags.duration, specs, tags.clock, tags.clock_ids)
             rates = simulate_rates(setup, library, cache=cache, should_cancel=should_cancel)
-            return McOutcome(tags, analyses, compare_with_rates(tags, analyses, rates))
+            return McOutcome(
+                tags, analyses, compare_with_rates(tags, analyses, rates), confirmatory=confirmatory
+            )
 
         self.run_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
@@ -214,6 +248,8 @@ class MonteCarloTab(RunGuard, QWidget):
             self._end("")
             return
         self.outcome = outcome
+        if any(a.get("center_mode") == "search" for a in outcome.analyses.values()):
+            self.last_search = outcome.analyses
         rows = []
         for c in outcome.comparisons:
             rows.append(
@@ -247,6 +283,20 @@ class MonteCarloTab(RunGuard, QWidget):
                         _NumItem(""),
                     ]
                 )
+        for name, a in outcome.analyses.items():
+            for key in ("center_s", "center_a_s", "center_b_s"):
+                if key in a and "center_mode" in a:
+                    label = "centre" + key[6:-2].replace("_", " ")
+                    rows.append(
+                        [
+                            _NumItem(name),
+                            _NumItem(f"{label} ({a['center_mode']})"),
+                            _NumItem(eng(a[key], "s"), a[key]),
+                            _NumItem(""),
+                            _NumItem(""),
+                            _NumItem(""),
+                        ]
+                    )
         _fill(self.table, rows)
         names = [n for n, a in outcome.analyses.items() if "tau_s" in a]
         self.analysis.blockSignals(True)
@@ -255,6 +305,10 @@ class MonteCarloTab(RunGuard, QWidget):
         self.analysis.blockSignals(False)
         total = sum(outcome.tags.counts().values())
         text = f"{total} events in {eng(outcome.tags.duration, 's')}"
+        if outcome.confirmatory:
+            text += "; fixed centres (confirmatory)"
+        elif any(a.get("center_mode") == "search" for a in outcome.analyses.values()):
+            text += "; centres searched in these data"
         detectors = outcome.tags.truth.get("detectors", {})
         if any(d.get("survival", 1.0) < 0.99 for d in detectors.values()):
             text += (
@@ -291,7 +345,13 @@ class MonteCarloTab(RunGuard, QWidget):
         tags = self.outcome.tags
         try:
             write_tags(
-                path, tags.channels, tags.duration, tags.clock, tags.metadata(), tags.clock_ids
+                path,
+                tags.channels,
+                tags.duration,
+                tags.clock,
+                tags.metadata(),
+                tags.clock_ids,
+                analyses=self.outcome.analyses,
             )
         except (OSError, ValueError, CorrelationError) as exc:
             QMessageBox.warning(self, "Cannot save time tags", f"{path}\n\n{exc}")
