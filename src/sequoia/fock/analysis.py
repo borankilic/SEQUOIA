@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from sequoia.engines.cache import check_cancel
 from sequoia.fock.circuit import FockError
 from sequoia.fock.engine import Distribution, State
 
@@ -81,6 +82,7 @@ def marginal(dist: Distribution | Mapping[State, float], modes) -> dict[State, f
 TAILS = ("unresolved", "condition", "error")
 MAX_SEQUENCE = 10_000_000
 MAX_SHOTS = 10**12
+SAMPLE_CHUNK = 1_000_000
 
 
 @dataclass
@@ -109,9 +111,11 @@ def sample(
     rng: np.random.Generator | None = None,
     tail: str = "unresolved",
     sequence: bool = True,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Samples:
     """``sequence=False`` draws only the histogram (one multinomial draw, any number of shots up
-    to MAX_SHOTS); the per-shot sequence is limited to MAX_SEQUENCE shots."""
+    to MAX_SHOTS); the per-shot sequence is limited to MAX_SEQUENCE shots and drawn in chunks of
+    SAMPLE_CHUNK, checking ``should_cancel`` between them (same draws as one call)."""
     probs = dist.probs if isinstance(dist, Distribution) else dist
     if tail not in TAILS:
         raise FockError(f"tail must be one of {TAILS}, got {tail!r}")
@@ -142,6 +146,7 @@ def sample(
             f"{missing:.3g} of the probability is not resolved (truncated input); sample with "
             "tail='unresolved' or tail='condition', or raise the truncation"
         )
+    check_cancel(should_cancel)
     rng = rng if rng is not None else np.random.default_rng(seed)
     if not sequence:
         weights = np.append(p, missing) if missing and tail == "unresolved" else p
@@ -157,13 +162,14 @@ def sample(
             missing if tail == "unresolved" else 0.0,
             float(total) if missing and tail == "condition" else None,
         )
-    if missing and tail == "unresolved":
-        weights = np.append(p, missing)
-        idx = rng.choice(len(weights), size=shots, p=weights / weights.sum())
-        sequence = [states[i] if i < len(states) else None for i in idx]
-    else:
-        idx = rng.choice(len(states), size=shots, p=p / total)
-        sequence = [states[i] for i in idx]
+    weights = np.append(p, missing) if missing and tail == "unresolved" else p
+    parts = []
+    for lo in range(0, shots, SAMPLE_CHUNK):
+        check_cancel(should_cancel)
+        size = min(SAMPLE_CHUNK, shots - lo)
+        parts.append(rng.choice(len(weights), size=size, p=weights / weights.sum()))
+    idx = np.concatenate(parts) if parts else np.zeros(0, dtype=np.int64)
+    sequence = [states[i] if i < len(states) else None for i in idx]
     counts = Counter(s for s in sequence if s is not None)
     unresolved = shots - sum(counts.values())
     return Samples(

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from sequoia.engines.cache import Cancelled
 from sequoia.fock.analysis import (
     Conditional,
     ExpectedCounts,
@@ -34,6 +35,10 @@ from sequoia.fock.inputs import InputMixture
 
 BACKENDS = ("native", "perceval")
 FORMAT_VERSION = 1
+CANCELLED_SAMPLING = (
+    "partial result: cancelled while drawing samples; the distribution is complete, no samples "
+    "were drawn"
+)
 
 
 @dataclass
@@ -241,6 +246,7 @@ class FockResult:
     resources: dict[str, Any]
     messages: list[str] = field(default_factory=list)
     counts: ExpectedCounts | None = None
+    status: str = "complete"
 
     @property
     def mass(self) -> float:
@@ -382,8 +388,15 @@ def run_experiment(
         messages.append(f"probability of losing at least one photon: {lost:.6g}")
     conditionals = {k: condition(detected, c) for k, c in exp.conditions.items()}
     samples = None
+    status = "complete"
     if exp.shots > 0:
-        samples = sample(detected, exp.shots, exp.seed, sequence=False)
+        try:
+            samples = sample(
+                detected, exp.shots, exp.seed, sequence=False, should_cancel=should_cancel
+            )
+        except Cancelled:
+            status = "partial"
+            messages.append(CANCELLED_SAMPLING)
     counts = None
     if exp.rate_hz is not None or exp.window_s is not None:
         duration = 1.0 if exp.duration_s is None else exp.duration_s
@@ -414,4 +427,5 @@ def run_experiment(
         res,
         messages,
         counts,
+        status,
     )

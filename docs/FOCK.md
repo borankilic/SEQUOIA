@@ -228,3 +228,41 @@ Cost is dominated by permanents: `~ 2^(n-1) n` per output pattern, patterns grow
 max_work=2e9)` raises `FockResourceError` with an estimate beforehand; 6 photons in 12 modes is
 interactive. Cancellation (`should_cancel`) is polled between permanent batches and raises
 `sequoia.engines.cache.Cancelled`. Probabilities below 1e-18 are dropped.
+
+### Preflight estimate
+
+`sequoia.fock.preflight.estimate_experiment(exp, shots=None, backend=None)` returns an `Estimate`
+without computing anything: modes, environment (loss) modes, photon sectors, input
+configurations (mixture branches, or brightness/indistinguishability branches; bounded by `3^N`
+above 20000), permanent work counted exactly as the native engine counts it, working memory,
+an upper bound on output patterns, and shots. `errors` are requests the run would refuse or
+that would exhaust memory: photons above `max_photons`, work per configuration above
+`max_work`, more than 4 GB of working memory, more than 2e6 output patterns, more than 1e12
+shots; each names a remedy (lower max pairs / photons / shots, reduce modes). `warnings` flag
+long runs and tables that only list the most probable rows. The Photon counts tab shows the
+estimate under the run controls (editor: live while editing; setup: after Import or Run) and
+refuses a run with errors before starting it ("not run: ...").
+
+Cancellation reaches sampling: `sample(..., should_cancel=...)` checks it before the multinomial
+draw and between per-shot chunks of `SAMPLE_CHUNK` (the draws equal one unchunked call). A run
+cancelled after its distribution is computed returns `status="partial"` with no samples and the
+message `CANCELLED_SAMPLING` (`FockResult.status`, `SetupResult.status`, `run.json`); the GUI
+labels it partial in the status line and the model card.
+
+## Code layout
+
+- `fock/setup_sources.py`: source discovery and the input plan (pair-number truncation,
+  windows, `list_inputs`); `fock/extract.py`: decomposition into editable elements;
+  `fock/records.py`: `run_record`, `write_run_bundle`; `fock/from_setup.py`:
+  `build_experiment_from_setup`, `run_setup_experiment`, `list_components`, and re-exports of the
+  above.
+- `fock/run.py`: run requests and immutable outcomes shared by the GUI (`SetupRequest` ->
+  `SetupOutcome` with the estimate, result, extraction, status and the table data
+  `SetupViews`, aggregated off the GUI thread with cancellation checks; `run_editor_experiment`).
+- `gui/fock_panel.py`: `FockTab` (run controls, lifecycle, files); `gui/fock_editor.py`: the
+  circuit editor; `gui/fock_setup.py`: the setup workspace (inventory); `gui/fock_results.py`:
+  result views; `gui/fock_common.py`: `ResultTable` (copy of selected cells with Ctrl/Cmd+C or the
+  context menu, header tooltips, empty-state text, the most probable 500 rows plus one row with
+  the count and probability of the rest, "show more"/"show all"), whole-number cell editors,
+  parsers and plots. Plots draw the most probable 40 states and give the rest's probability in
+  the title.
