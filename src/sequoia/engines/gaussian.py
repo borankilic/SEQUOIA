@@ -1,19 +1,21 @@
 import itertools
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from scipy import sparse
+from scipy import constants, sparse
 from scipy.sparse import csgraph
 
 from sequoia.analysis.metrics import ratio
-from sequoia.engines.cache import ResourceLimitError, RunCache, check_cancel
+from sequoia.engines.cache import ResourceLimitError, RunCache, check_cancel, record_warnings
 from sequoia.engines.classical import SimulationResult
 from sequoia.engines.rates import _Engine, _Source
 from sequoia.errors import Issue, SetupError
 from sequoia.library.store import Library
+from sequoia.light.gaussian import aperture_transmission
+from sequoia.light.state import combine
 from sequoia.setup.model import Setup
 
 SMALL_COMPONENT = 6
@@ -21,13 +23,17 @@ MAX_DENSE_SIDE = 2500
 MAX_MODES = 160
 SCHMIDT_CUTOFF = 1e-10
 MAX_DETECTORS = 6
-PNR_ALIAS_TOL = 1e-10
+PNR_GRID_TOL = 1e-10
 PNR_MAX_GRID = 4096
 PNR_MAX_POINTS = 150_000
 WINDOW_RTOL = 1e-9
 
 
 class IncompatibleWindowsError(SetupError):
+    pass
+
+
+class UnsupportedSourceError(SetupError):
     pass
 
 
@@ -78,7 +84,8 @@ class GaussianResult:
     analyses: dict[str, dict[str, Any]] = field(default_factory=dict)
     pnr: dict[tuple[str, ...], np.ndarray] = field(default_factory=dict)
     pnr_info: dict[tuple[str, ...], dict[str, Any]] = field(default_factory=dict)
-    gain_scale: float = 1.0
+    gain_scale: float | dict[str, float] = 1.0
+    source_scale: dict[str, float] = field(default_factory=dict)
 
     def probability(self, *names: str) -> float:
         """Probability that all the named channels click in the same window."""
@@ -335,32 +342,73 @@ class GaussianModel:
         channels: list[str],
         dark: np.ndarray,
         leakage: np.ndarray,
+        laser_leakage: dict[str, np.ndarray] | None = None,
+        pumps: dict[str, list[str]] | None = None,
     ):
         self.sources = sources
         self.forms = forms
         self.channels = channels
         self.dark = dark
         self.leakage = leakage
+        self.laser_leakage = laser_leakage
+        self.pumps = pumps if pumps is not None else {s.inst: [] for s in sources}
 
-    def background(self, gain_scale: float = 1.0) -> np.ndarray:
-        return self.dark + self.leakage * gain_scale
+    def factors(self, gain_scale: float | Mapping[str, float]) -> dict[str, float]:
+        """Pump multiplier of every pair source; a float applies to all of them."""
+        known = set(self.pumps) | {s.inst for s in self.sources}
+        if isinstance(gain_scale, Mapping):
+            unknown = set(gain_scale) - known
+            if unknown:
+                raise ValueError(
+                    f"unknown pair source(s) {sorted(unknown)} in gain_scale (have {sorted(known)})"
+                )
+            out = {k: float(gain_scale.get(k, 1.0)) for k in known}
+        else:
+            out = dict.fromkeys(known, float(gain_scale))
+        for k, v in out.items():
+            if not math.isfinite(v) or v < 0:
+                raise ValueError(f"pump multiplier of '{k}' must be finite and >= 0, got {v}")
+        return out
 
-    def mean_photons(self, d: int, gain_scale: float = 1.0) -> float:
+    def laser_factor(self, laser: str, factors: Mapping[str, float]) -> float:
+        values = {factors[s] for s, lasers in self.pumps.items() if laser in lasers}
+        if len(values) > 1:
+            pumped = sorted(s for s, lasers in self.pumps.items() if laser in lasers)
+            raise ValueError(
+                f"laser '{laser}' pumps {pumped} with different multipliers; its leakage cannot "
+                "follow both, give these sources the same multiplier"
+            )
+        return values.pop() if values else 1.0
+
+    def background(self, gain_scale: float | Mapping[str, float] = 1.0) -> np.ndarray:
+        if self.laser_leakage is None:
+            return self.dark + self.leakage * float(gain_scale)
+        factors = gain_scale if isinstance(gain_scale, Mapping) else self.factors(gain_scale)
+        total = self.dark + self.leakage
+        for laser, leak in self.laser_leakage.items():
+            total = total + leak * (self.laser_factor(laser, factors) - 1.0)
+        return total
+
+    @staticmethod
+    def _scale(gain_scale, inst: str) -> float:
+        return gain_scale[inst] if isinstance(gain_scale, Mapping) else gain_scale
+
+    def mean_photons(self, d: int, gain_scale: float | Mapping[str, float] = 1.0) -> float:
         """Mean detected photon number of detector ``d`` per window (pairs plus background)."""
         total = float(self.background(gain_scale)[d])
         for src in self.sources:
-            c = math.sqrt(src.pairs_per_window * gain_scale)
+            c = math.sqrt(src.pairs_per_window * self._scale(gain_scale, src.inst))
             for member in src.members:
                 for batch, k in zip(member.batches, self.forms[src.inst][id(member)], strict=True):
                     sig = _sigma_normal(batch.sigma, c)
                     total += member.weight * 0.5 * float(np.einsum("bij,bji->", k[d], sig))
         return total
 
-    def no_click(self, lam: np.ndarray, gain_scale: float = 1.0) -> complex:
+    def no_click(self, lam: np.ndarray, gain_scale: float | Mapping[str, float] = 1.0) -> complex:
         """P(no click) / generating function for per-detector weights ``lam`` = 1 - z."""
         total = 0.0 + 0j
         for src in self.sources:
-            c = math.sqrt(src.pairs_per_window * gain_scale)
+            c = math.sqrt(src.pairs_per_window * self._scale(gain_scale, src.inst))
             value = 0.0 + 0j
             for member in src.members:
                 log_g = 0.0 + 0j
@@ -386,11 +434,19 @@ class GaussianSetup:
 
     def evaluate(
         self,
-        gain_scale: float = 1.0,
+        gain_scale: float | Mapping[str, float] = 1.0,
         pnr: list[tuple[str, ...]] | None = None,
         pnr_cutoff: int = 12,
     ) -> GaussianResult:
+        """``gain_scale`` multiplies the pump power of every pair source (a float) or of the
+        named sources (``{source id: factor}``, others 1). It scales the pair gain of a source and
+        the classical leakage of the laser that pumps it; dark counts, Fock-source flux and lasers
+        that pump no pair source stay fixed."""
         names, model = self.channels, self.model
+        given = gain_scale
+        gain_scale = model.factors(gain_scale)
+        if model.laser_leakage is None:
+            gain_scale = float(given)
         n = len(names)
         no_click: dict[frozenset[int], float] = {}
         for size in range(n + 1):
@@ -420,12 +476,13 @@ class GaussianSetup:
                         "gaussian_pnr_unconverged",
                         ", ".join(group),
                         f"the photon-number distribution did not converge within a "
-                        f"{PNR_MAX_GRID}-point contour (alias bound {meta['alias_bound']:.2g}); "
-                        "reduce the pump multiplier or the mean photon number",
+                        f"{PNR_MAX_GRID}-point contour (grid change {meta['grid_change']:.2g}, "
+                        "a numerical convergence estimate, not an error bound); reduce the pump "
+                        "multiplier or the mean photon number",
                     )
                 )
         info = {
-            k: {**v, "pairs_per_window": v["pairs_per_window"] * gain_scale}
+            k: {**v, "pairs_per_window": v["pairs_per_window"] * model._scale(gain_scale, k)}
             for k, v in self.source_info.items()
         }
         result = GaussianResult(
@@ -435,7 +492,8 @@ class GaussianSetup:
             mean,
             info,
             list(self.issues),
-            gain_scale=gain_scale,
+            gain_scale=dict(given) if isinstance(given, Mapping) else given,
+            source_scale={k: model._scale(gain_scale, k) for k in model.pumps},
             pnr=pnr_out,
             pnr_info=pnr_info,
         )
@@ -451,10 +509,30 @@ def prepare_gaussian(
     cache: RunCache | None = None,
     should_cancel: Callable[[], bool] | None = None,
     max_memory_bytes: float | None = None,
+    fock_as_poisson: bool = False,
+    sources: Iterable[str] | None = None,
 ) -> GaussianSetup:
     engine = _Engine(setup, library, classical, should_cancel, cache, max_memory_bytes)
     engine.discover()
     engine.emit_sources()
+    pumps = _pump_lasers(engine)
+    if sources is not None:
+        chosen = set(sources)
+        known = {s.inst for s in engine.sources}
+        if chosen - known:
+            raise SetupError(
+                f"unknown pair source(s) {sorted(chosen - known)}; the setup has {sorted(known)}"
+            )
+        for src in engine.sources:
+            if src.inst not in chosen:
+                engine.issue(
+                    "warning",
+                    "gaussian_source_skipped",
+                    f"'{src.inst}'",
+                    "not selected for the Gaussian model: its photon pairs are left out; the "
+                    "classical light and dark counts at the detectors are kept",
+                )
+        engine.sources = [s for s in engine.sources if s.inst in chosen]
     engine.transfer_sources()
     engine.cancel_point()
     engine.background()
@@ -494,7 +572,8 @@ def prepare_gaussian(
         listing = ", ".join(f"'{s.inst}': {s.window:.6g} s" for s in sources)
         raise IncompatibleWindowsError(
             f"the pair sources have different time windows ({listing}); per-window statistics "
-            "of independent sources cannot be combined exactly. Give the sources the same "
+            "of independent sources cannot be combined exactly. Select the sources of one window "
+            "(sources=..., listed by gaussian_window_groups), give the sources the same "
             "repetition rate or bandwidth, or simulate them in separate setups"
         )
     window = windows[0] if windows else 1.0
@@ -506,9 +585,26 @@ def prepare_gaussian(
             "no pair source reaches a tagged detector; statistics are per 1 s of background "
             "light only",
         )
+    fock = {d: engine.det_data[d].get("fock_hz", 0.0) for d in dets}
+    if any(v > 0 for v in fock.values()):
+        names = ", ".join(f"'{n}'" for n in engine.fock_sources())
+        if not fock_as_poisson:
+            raise UnsupportedSourceError(
+                f"Fock-state source {names} reaches the detectors; this engine would replace "
+                "its number statistics by Poisson light. Use the Photon counts tab, or pass "
+                "fock_as_poisson=True to accept the approximation explicitly"
+            )
+        engine.issue(
+            "warning",
+            "fock_as_poisson",
+            names,
+            "approximation: the Fock-state light is simulated as Poisson background at its "
+            "mean flux (no antibunching, no two-photon interference)",
+        )
     dark = np.array([engine.det_data[d]["dark_hz"] * window for d in dets])
-    leakage = np.array([engine.det_data[d]["leakage_hz"] * window for d in dets])
-    model = GaussianModel(sources, forms, names, dark, leakage)
+    leakage = np.array([(engine.det_data[d]["leakage_hz"] + fock[d]) * window for d in dets])
+    laser_leakage = {k: v * window for k, v in _leakage_by_laser(engine, dets).items()}
+    model = GaussianModel(sources, forms, names, dark, leakage, laser_leakage, pumps)
     info = {
         s.inst: {
             "pairs_per_window": s.pairs_per_window,
@@ -524,6 +620,83 @@ def prepare_gaussian(
     )
 
 
+def _pump_lasers(engine: _Engine) -> dict[str, list[str]]:
+    fock = set(engine.fock_sources())
+    out = {}
+    for src in engine.sources:
+        lasers: set[str] = set()
+        for state in engine.classical.links.values():
+            if state.dst.split(".")[0] == src.inst:
+                lasers |= {b.source for b in state.end_beams if b.source not in fock}
+        out[src.inst] = sorted(lasers)
+    return out
+
+
+def _leakage_by_laser(engine: _Engine, dets: list[str]) -> dict[str, np.ndarray]:
+    """Classical leakage rate (Hz) of each laser at each detector: the rate engine's total split
+    in proportion to each laser's own detected light (lasers add incoherently)."""
+    fock = set(engine.fock_sources())
+    out: dict[str, np.ndarray] = {}
+    for n, det_id in enumerate(dets):
+        det = engine.detectors[det_id]
+        radius_of = getattr(engine.net.components[det_id], "aperture_radius", None)
+        radius = radius_of() if radius_of is not None else None
+        raw: dict[str, float] = {}
+        for port in det.ports:
+            for state in engine.classical.links.values():
+                if state.dst != f"{det_id}.{port}":
+                    continue
+                by_laser: dict[str, list] = {}
+                for beam in state.end_beams:
+                    if beam.source not in fock:
+                        by_laser.setdefault(beam.source, []).append(beam)
+                for laser, beams in by_laser.items():
+                    light = combine(beams, engine.classical.sources)
+                    with record_warnings():
+                        eff = np.asarray(det.model.efficiency(light.wavelengths), dtype=complex)
+                    energy = constants.h * constants.c / light.wavelengths
+                    rate = np.einsum("nab,nba->n", eff, light.coherency).real / energy
+                    collected = 1.0 if radius is None else aperture_transmission(radius, light.mode)
+                    raw[laser] = raw.get(laser, 0.0) + float(np.sum(rate)) * collected
+        total = sum(raw.values())
+        if total <= 0:
+            continue
+        leak = engine.det_data[det_id]["leakage_hz"]
+        for laser, value in raw.items():
+            out.setdefault(laser, np.zeros(len(dets)))[n] = leak * value / total
+    return out
+
+
+def gaussian_window_groups(
+    setup: Setup,
+    library: Library,
+    *,
+    classical: SimulationResult | None = None,
+    cache: RunCache | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> list[tuple[float, list[str]]]:
+    """Pair sources grouped by their statistics window (one pulse period, or 1/dnu for CW).
+
+    Only the emission stage runs (no pair propagation). The sources of one group can be
+    simulated together with ``prepare_gaussian(..., sources=ids)``.
+    """
+    engine = _Engine(setup, library, classical, should_cancel, cache)
+    engine.emit_sources()
+    groups: list[tuple[float, list[str]]] = []
+    for src in engine.sources:
+        if src.exchange:
+            continue
+        ps = src.emission.source
+        window = 1.0 / ps.repetition_rate if src.pulsed else 1.0 / ps.dnu
+        for w, ids in groups:
+            if abs(window - w) <= WINDOW_RTOL * w:
+                ids.append(src.inst)
+                break
+        else:
+            groups.append((window, [src.inst]))
+    return sorted(groups)
+
+
 def simulate_gaussian(
     setup: Setup,
     library: Library,
@@ -531,10 +704,12 @@ def simulate_gaussian(
     classical: SimulationResult | None = None,
     cache: RunCache | None = None,
     should_cancel: Callable[[], bool] | None = None,
-    gain_scale: float = 1.0,
+    gain_scale: float | Mapping[str, float] = 1.0,
     pnr: list[tuple[str, ...]] | None = None,
     pnr_cutoff: int = 12,
     max_memory_bytes: float | None = None,
+    fock_as_poisson: bool = False,
+    sources: Iterable[str] | None = None,
 ) -> GaussianResult:
     """Exact multimode photon-number statistics of the pair sources at the detectors.
 
@@ -543,7 +718,9 @@ def simulate_gaussian(
     frequency pair). The detectors' efficiency and path operators of the rate engine act as
     loss and linear optics; threshold-click probabilities and photon-number distributions follow
     from the Gaussian generating function. ``gain_scale`` multiplies the pump power (the
-    squeezing parameter squared); 1 reproduces the rate engine's pair rate at low gain.
+    squeezing parameter squared) of all sources or, as ``{source id: factor}``, of each source;
+    1 reproduces the rate engine's pair rate at low gain (see ``GaussianSetup.evaluate``).
+    ``sources`` restricts the model to those pair sources (one window group).
     Statistics are per window: one pulse, or 1/dnu for continuous sources. Dark counts and
     classical leakage are added as Poisson noise; timing jitter and dead time are not modelled.
     """
@@ -554,6 +731,8 @@ def simulate_gaussian(
         cache=cache,
         should_cancel=should_cancel,
         max_memory_bytes=max_memory_bytes,
+        fock_as_poisson=fock_as_poisson,
+        sources=sources,
     )
     return prepared.evaluate(gain_scale, pnr, pnr_cutoff)
 
@@ -581,7 +760,7 @@ def _pnr(model, names, group, gain_scale, cutoff, should_cancel=None):
         while True:
             doubled = contour([2 * length], [d])
             diff = float(np.max(np.abs(doubled[:size] - previous[:size])))
-            if diff < PNR_ALIAS_TOL:
+            if diff < PNR_GRID_TOL:
                 break
             if 2 * length >= PNR_MAX_GRID:
                 converged = False
@@ -607,7 +786,8 @@ def _pnr(model, names, group, gain_scale, cutoff, should_cancel=None):
         "retained": retained,
         "tail": max(1.0 - retained, 0.0),
         "grid": tuple(int(n) for n in lengths),
-        "alias_bound": float(max(bounds)) if bounds else 0.0,
+        # largest change of a retained bin when the contour doubles: convergence evidence only
+        "grid_change": float(max(bounds)) if bounds else 0.0,
         "converged": converged,
     }
     return kept, meta

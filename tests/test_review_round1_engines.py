@@ -240,9 +240,10 @@ def test_monte_carlo_clock_is_per_channel():
 
     tags = simulate_timetags(setup_from_dict(hbt(0.02, pulsed=True)), LIB, 0.01, seed=3)
     assert set(tags.clock) >= {"tagger.ch1"}
-    assert all(v == pytest.approx(50e6) for v in tags.clock.values())
+    assert all(v == pytest.approx(50e6) for v in tags.clock.values() if v)
+    assert tags.clock["tagger.ch1"] == pytest.approx(50e6)
     cw = simulate_timetags(setup_from_dict(hbt(0.02)), LIB, 0.01, seed=3)
-    assert not cw.clock
+    assert cw.clock and all(v == 0.0 for v in cw.clock.values())
 
 
 def test_detector_response_matches_the_wire_rule():

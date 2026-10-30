@@ -75,7 +75,23 @@ class LaserParams(Params):
 
 def _launch_mode(p, wavelength: float, what: str) -> GaussianMode:
     m2 = p.m_squared.si
-    if p.waist_radius is not None:
+    if p.waist_radius is not None and p.divergence is not None:
+        # far-field half-angle divergence: theta = M^2 lambda / (pi w0)
+        w0 = p.waist_radius.si
+        implied = math.pi * w0 * p.divergence.si / wavelength
+        if implied < 1.0 - 1e-6:
+            raise SetupError(
+                f"{what}: waist_radius {w0 * 1e3:.4g} mm and divergence "
+                f"{p.divergence.si * 1e3:.4g} mrad imply M^2 = {implied:.3g} < 1 at "
+                f"{wavelength * 1e9:.1f} nm, which no beam can have; increase one of them"
+            )
+        if m2 != 1.0 and abs(implied - m2) > 0.01 * m2:
+            raise SetupError(
+                f"{what}: waist_radius, divergence and m_squared disagree (waist and "
+                f"divergence imply M^2 = {implied:.3g}, m_squared is {m2:.3g}); set only two"
+            )
+        m2 = max(implied, 1.0)
+    elif p.waist_radius is not None:
         w0 = p.waist_radius.si
     elif p.divergence is not None:
         w0 = m2 * wavelength / (math.pi * p.divergence.si)
@@ -215,6 +231,7 @@ class FockSource(Component):
             coherency=np.outer(jones, jones.conj()),
             repetition_rate=p.repetition_rate.si,
             pulse_width=p.pulse_width.si,
+            statistics="fock",
         )
         ctx.sources[ctx.instance_id] = source
         mode = _launch_mode(p, wavelength, "a Fock source")

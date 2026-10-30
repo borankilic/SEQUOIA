@@ -30,6 +30,11 @@ class Issue:
     code: str
     subject: str
     message: str
+    engine: str | None = None
+    run_id: str | None = None
+
+    def for_run(self, engine: str, run_id: str | None) -> "Issue":
+        return Issue(self.severity, self.code, self.subject, self.message, engine, run_id)
 
     def __str__(self) -> str:
         return f"{self.subject}: {self.message}"

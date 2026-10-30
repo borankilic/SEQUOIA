@@ -1,9 +1,9 @@
-from dataclasses import dataclass, field
-
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
@@ -14,30 +14,30 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sequoia.engines.gaussian import GaussianResult, prepare_gaussian
+from sequoia.engines.gaussian import gaussian_window_groups
 from sequoia.gui.analysis_tabs import style_plot
 from sequoia.gui.jobs import JobRunner
-from sequoia.gui.results import _fill, _make_table, _NumItem, eng, plain
-from sequoia.gui.runguard import RunGuard
+from sequoia.gui.results import _fill, _make_table, _NumItem, car_text, eng, plain
+from sequoia.gui.runguard import RunGuard, RunRecords
+from sequoia.runs import SWEEP_POINTS, GaussianOutcome, new_run_id, run_gaussian
 
-SWEEP_POINTS = 13
-
-
-@dataclass
-class GaussianOutcome:
-    result: GaussianResult
-    scales: np.ndarray = field(default_factory=lambda: np.array([]))
-    pairs: np.ndarray = field(default_factory=lambda: np.array([]))
-    car: np.ndarray = field(default_factory=lambda: np.array([]))
-    g2: np.ndarray = field(default_factory=lambda: np.array([]))
+__all__ = ["SWEEP_POINTS", "GaussianOutcome", "GaussianTab"]
+SCALE_TEXT = (
+    "Pump x (and the per-source factor) scales the pair gain of a source and the classical "
+    "leakage of the laser that pumps it. Fixed: detector dark counts, lasers that pump no "
+    "simulated source, Fock-source flux."
+)
 
 
-class GaussianTab(RunGuard, QWidget):
-    """Exact multimode photon statistics, and CAR / heralded g2 against pump power."""
+class GaussianTab(RunGuard, RunRecords, QWidget):
+    """Multimode Gaussian photon statistics per statistics window, and CAR / heralded g2
+    against pump power."""
 
     def __init__(self, provider, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._guard_init()
+        self._records_init()
+        self._run_id = None
         self.provider = provider
         self.runner = JobRunner(self)
         self.outcome: GaussianOutcome | None = None
@@ -49,11 +49,26 @@ class GaussianTab(RunGuard, QWidget):
         self.scale.setValue(1.0)
         self.scale.setPrefix("pump x ")
         self.scale.setToolTip(
-            "Multiplies the pump power: pair gain and classical leakage scale with it, "
-            "detector dark counts stay fixed."
+            "Multiplies the pump power of every pair source (times its own factor in the "
+            "table): the pair gain and the leakage of its pump laser scale, dark counts and "
+            "lasers that pump no simulated source stay fixed."
         )
         self.sweep = QCheckBox("sweep pump power")
         self.sweep.setChecked(True)
+        self.groups: list[tuple[float, list[str]]] = []
+        self.groups_label = QLabel("pair sources: not listed yet")
+        self.group_box = QComboBox()
+        self.group_box.setToolTip(
+            "Sources with different time windows cannot be combined in one per-window model; "
+            "the selected group is simulated and the other pair sources are left out."
+        )
+        self.group_box.setVisible(False)
+        self.list_button = QPushButton("List sources")
+        self.factor_table = _make_table(["Source", "Window", "Pump factor"])
+        self.factor_table.setMaximumHeight(120)
+        self.factors: dict[str, QDoubleSpinBox] = {}
+        self.scope_label = QLabel(SCALE_TEXT)
+        self.scope_label.setWordWrap(True)
         self.run_button = QPushButton("Run Gaussian engine")
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setEnabled(False)
@@ -62,35 +77,136 @@ class GaussianTab(RunGuard, QWidget):
         self.progress.setVisible(False)
         self.status = QLabel("")
         self.status.setStyleSheet("color: palette(placeholder-text);")
-        self.table = _make_table(["Item", "Quantity", "Value"])
+        self.table = _make_table(["Item", "Quantity [unit] (denominator)", "Value"])
         self.plot = pg.PlotWidget()
-        style_plot(self.plot, "pairs per window (low-gain)", "CAR / heralded g2")
+        style_plot(
+            self.plot, "mean pairs per statistics window", "CAR (true / accidental, same window)"
+        )
         self.plot.setLogMode(x=True, y=True)
+        self.plot.setTitle("Coincidence-to-accidental ratio")
         self.car_curve = self.plot.plot(
             pen=pg.mkPen("#1f77b4", width=2), symbol="o", symbolSize=5, name="CAR"
         )
-        self.g2_curve = self.plot.plot(
+        self.g2_plot = pg.PlotWidget()
+        style_plot(self.g2_plot, "mean pairs per statistics window", "heralded g2(0)")
+        self.g2_plot.setLogMode(x=True, y=False)
+        self.g2_plot.setTitle("Heralded g2(0): 0 = single photon, 1 = Poissonian")
+        for level, label in ((0.5, "single-photon limit 0.5"), (1.0, "Poissonian 1")):
+            self.g2_plot.addItem(
+                pg.InfiniteLine(
+                    level,
+                    angle=0,
+                    pen=pg.mkPen("#888888", width=1, style=Qt.PenStyle.DashLine),
+                    label=label,
+                    labelOpts={"position": 0.15, "color": "#888888"},
+                )
+            )
+        self.g2_curve = self.g2_plot.plot(
             pen=pg.mkPen("#d62728", width=2), symbol="s", symbolSize=5, name="heralded g2(0)"
         )
-        self.plot.addLegend()
         bar = QHBoxLayout()
         bar.setContentsMargins(6, 4, 6, 4)
-        for w in (self.scale, self.sweep, self.run_button, self.cancel_button, self.progress):
+        for w in (
+            self.scale,
+            self.sweep,
+            self.run_button,
+            self.cancel_button,
+            *self.run_buttons(),
+            self.progress,
+        ):
             bar.addWidget(w)
         bar.addWidget(self.status, 1)
+        source_bar = QHBoxLayout()
+        source_bar.setContentsMargins(6, 0, 6, 0)
+        source_bar.addWidget(self.list_button)
+        source_bar.addWidget(self.groups_label, 1)
+        source_bar.addWidget(self.group_box)
+        left = QWidget()
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.addWidget(self.factor_table)
+        ll.addWidget(self.scope_label)
+        ll.addWidget(self.table, 1)
         split = QSplitter()
-        split.addWidget(self.table)
-        split.addWidget(self.plot)
+        plots = QSplitter(Qt.Orientation.Vertical)
+        plots.addWidget(self.plot)
+        plots.addWidget(self.g2_plot)
+        split.addWidget(left)
+        split.addWidget(plots)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(bar)
+        layout.addLayout(source_bar)
+        layout.addWidget(self.model_card)
         layout.addWidget(split, 1)
+        self.list_button.clicked.connect(self.list_sources)
+        self.group_box.currentIndexChanged.connect(self.refresh_stale)
         self.run_button.clicked.connect(self.run)
         self.cancel_button.clicked.connect(self.runner.cancel)
         self.runner.progress.connect(self._progress)
         self.runner.done.connect(self._done)
         self.runner.failed.connect(self._failed)
         self.runner.cancelled.connect(lambda: self._end("cancelled"))
+        self.scale.valueChanged.connect(self.refresh_stale)
+        self.sweep.toggled.connect(self.refresh_stale)
+
+    def config_key(self):
+        return (
+            self.scale.value(),
+            self.sweep.isChecked(),
+            self.selected_sources(),
+            tuple((k, w.value()) for k, w in self.factors.items() if w.value() != 1.0),
+        )
+
+    def selected_sources(self) -> tuple[str, ...] | None:
+        ids = self.group_box.currentData() if len(self.groups) > 1 else None
+        return tuple(ids) if ids else None
+
+    def show_groups(self, groups: list[tuple[float, list[str]]]) -> None:
+        previous = self.selected_sources()
+        self.groups = groups
+        self.groups_label.setText(
+            "pair-source windows: "
+            + ("; ".join(f"{eng(w, 's')}: {', '.join(ids)}" for w, ids in groups) or "none")
+            + (" - differ, choose one group" if len(groups) > 1 else "")
+        )
+        self.group_box.blockSignals(True)
+        self.group_box.clear()
+        self.group_box.addItem("choose a source group", None)
+        for w, ids in groups:
+            self.group_box.addItem(f"{eng(w, 's')}: {', '.join(ids)}", list(ids))
+            if previous == tuple(ids):
+                self.group_box.setCurrentIndex(self.group_box.count() - 1)
+        self.group_box.blockSignals(False)
+        self.group_box.setVisible(len(groups) > 1)
+        old = {k: w.value() for k, w in self.factors.items()}
+        self.factors = {}
+        rows = [(w, sid) for w, ids in groups for sid in ids]
+        self.factor_table.setRowCount(len(rows))
+        for r, (w, sid) in enumerate(rows):
+            self.factor_table.setItem(r, 0, _NumItem(sid))
+            self.factor_table.setItem(r, 1, _NumItem(eng(w, "s"), w))
+            spin = QDoubleSpinBox()
+            spin.setRange(0.0, 1e6)
+            spin.setDecimals(4)
+            spin.setValue(old.get(sid, 1.0))
+            spin.valueChanged.connect(self.refresh_stale)
+            self.factor_table.setCellWidget(r, 2, spin)
+            self.factors[sid] = spin
+        self.refresh_stale()
+
+    def list_sources(self) -> None:
+        setup, library = self.provider()
+        if setup is None or self.runner.busy:
+            return
+
+        def job(should_cancel, progress):
+            progress(0, 0)
+            groups = gaussian_window_groups(setup, library, should_cancel=should_cancel)
+            return GaussianOutcome(None, groups=groups)
+
+        self.begin_run()
+        self._start(job, "listing pair sources...")
 
     def set_outcome(self, outcome) -> None:
         if self.track_revision(outcome) and self.outcome is not None:
@@ -100,6 +216,9 @@ class GaussianTab(RunGuard, QWidget):
         self.invalidate()
         self.outcome = None
         self.note = ""
+        self.clear_record()
+        self.show_groups([])
+        self.groups_label.setText("pair sources: not listed yet")
         if self.on_issues is not None:
             self.on_issues([])
         _fill(self.table, [])
@@ -119,39 +238,33 @@ class GaussianTab(RunGuard, QWidget):
             return
         scale = self.scale.value()
         sweep = self.sweep.isChecked()
-        self.begin_run()
+        chosen = self.selected_sources()
+        factors = {k: w.value() for k, w in self.factors.items()}
+        run_id = self._run_id = new_run_id("gaussian")
 
         def job(should_cancel, progress):
-            progress(0, 0)
-            prepared = prepare_gaussian(setup, library, should_cancel=should_cancel)
-            result = prepared.evaluate(scale)
-            outcome = GaussianOutcome(result)
-            if not sweep or not prepared.source_info:
-                return outcome
-            mu = next(iter(prepared.source_info.values()))["pairs_per_window"]
-            grid = scale * np.logspace(-1, 3, SWEEP_POINTS)
-            rows = []
-            for i, s in enumerate(grid):
-                progress(i, len(grid))
-                if should_cancel():
-                    break
-                r = prepared.evaluate(float(s))
-                rows.append((s, r))
-            names = [n for n, a in result.analyses.items() if a["type"] == "coincidences"]
-            hnames = [n for n, a in result.analyses.items() if a["type"] == "heralded_g2"]
-            outcome.scales = np.array([s for s, _ in rows])
-            outcome.pairs = outcome.scales * mu
-            if names:
-                outcome.car = np.array([r.analyses[names[0]]["car"] for _, r in rows])
-            if hnames:
-                outcome.g2 = np.array([r.analyses[hnames[0]]["g2_heralded"] for _, r in rows])
-            return outcome
+            return run_gaussian(
+                setup,
+                library,
+                pump_scale=scale,
+                sweep=sweep,
+                sources=chosen,
+                factors=factors,
+                should_cancel=should_cancel,
+                progress=progress,
+                run_id=run_id,
+            )
 
+        self.begin_run()
+        self._start(job, "running...")
+
+    def _start(self, job, text: str) -> None:
         self.run_button.setEnabled(False)
+        self.list_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
-        self.status.setText("running...")
+        self.status.setText(text)
         self.runner.start(job)
 
     def _progress(self, done: int, total: int) -> None:
@@ -160,6 +273,7 @@ class GaussianTab(RunGuard, QWidget):
 
     def _end(self, text: str) -> None:
         self.run_button.setEnabled(True)
+        self.list_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.progress.setVisible(False)
         self.status.setText(text)
@@ -168,28 +282,89 @@ class GaussianTab(RunGuard, QWidget):
         if not self.run_is_current():
             self._end("")
             return
-        self.outcome = outcome
+        if outcome.groups or outcome.result is None:
+            self.show_groups(outcome.groups)
         r = outcome.result
+        if r is None:
+            self._end(
+                "not run: the pair sources have different time windows; choose one source group "
+                "and run again"
+                if len(outcome.groups) > 1
+                else f"{len(outcome.groups)} pair-source window group(s) listed"
+            )
+            return
+        issues = (
+            list(outcome.record.issues)
+            if outcome.record is not None
+            else [i.for_run("gaussian", self._run_id) for i in r.issues]
+        )
+        if not r.channels:
+            blocker = next((i for i in r.issues if i.code == "gaussian_no_detectors"), None)
+            self.accept_run()
+            self.outcome = None
+            self.clear_record()
+            _fill(self.table, [])
+            self.car_curve.setData([], [])
+            self.g2_curve.setData([], [])
+            if self.on_issues is not None:
+                self.on_issues(issues)
+            self._end(
+                "not computed: "
+                + (blocker.message if blocker else "no tagged detector in the setup")
+            )
+            return
+        self.outcome = outcome
+        self.set_record(outcome.record, outcome.card)
+        w = eng(r.window, "s")
         rows = []
         for ch in r.channels:
             p = r.probability(ch)
             rows += [
-                [_NumItem(ch), _NumItem("P(click)"), _NumItem(plain(p), p)],
-                [_NumItem(ch), _NumItem("mean photons"), _NumItem(plain(r.mean_photons[ch]))],
-                [_NumItem(ch), _NumItem("rate"), _NumItem(eng(p / r.window, "Hz"), p / r.window)],
+                [
+                    _NumItem(ch),
+                    _NumItem(f"P(click) (probability per {w} statistics window)"),
+                    _NumItem(plain(p), p),
+                ],
+                [
+                    _NumItem(ch),
+                    _NumItem("mean detected photons per statistics window"),
+                    _NumItem(plain(r.mean_photons[ch])),
+                ],
+                [
+                    _NumItem(ch),
+                    _NumItem("click rate [Hz] (P(click) / window, no dead time)"),
+                    _NumItem(eng(p / r.window, "Hz"), p / r.window),
+                ],
             ]
         for name, a in r.analyses.items():
             if a["type"] == "coincidences":
-                rows.append([_NumItem(name), _NumItem("CAR"), _NumItem(plain(a["car"]))])
                 rows.append(
                     [
                         _NumItem(name),
-                        _NumItem("true coincidences"),
+                        _NumItem("CAR (true / accidental, same statistics window)"),
+                        _NumItem(car_text(a["car"])),
+                    ]
+                )
+                rows.append(
+                    [
+                        _NumItem(name),
+                        _NumItem(
+                            f"coincidences minus accidentals [Hz] (both click in one {w} window)"
+                        ),
                         _NumItem(eng(a["true_hz"], "Hz"), a["true_hz"]),
                     ]
                 )
             elif a["type"] == "heralded_g2":
-                rows.append([_NumItem(name), _NumItem("g2(0)"), _NumItem(plain(a["g2_heralded"]))])
+                g2 = a["g2_heralded"]
+                rows.append(
+                    [
+                        _NumItem(name),
+                        _NumItem("heralded g2(0) (per statistics window)"),
+                        _NumItem(
+                            plain(g2) if np.isfinite(g2) else "undefined: no heralded coincidences"
+                        ),
+                    ]
+                )
         _fill(self.table, rows)
         good = np.isfinite(outcome.car) & (outcome.car > 0)
         if len(outcome.pairs) and good.any():
@@ -203,11 +378,17 @@ class GaussianTab(RunGuard, QWidget):
             self.g2_curve.setData([], [])
         modes = sum(v["modes"] for v in r.sources.values())
         note = f"window {eng(r.window, 's')}, {modes} Schmidt modes"
+        note += "; sources: " + (", ".join(r.sources) or "none")
+        skipped = [i.subject for i in r.issues if i.code == "gaussian_source_skipped"]
+        if skipped:
+            note += " (left out: " + ", ".join(skipped) + ")"
+        if len(set(r.source_scale.values())) > 1:
+            note += "; pump x " + ", ".join(f"{k} {v:g}" for k, v in r.source_scale.items())
         warnings = [i for i in r.issues if i.severity in ("warning", "error")]
         if warnings:
             note += f"; {len(warnings)} note(s): " + "; ".join(str(i) for i in warnings[:2])
         self.note = note
         if self.on_issues is not None:
-            self.on_issues(r.issues)
+            self.on_issues(issues)
         self.status.setToolTip("\n".join(str(i) for i in r.issues))
-        self._end(note)
+        self._end(self.stale_text(note) if self.accept_run() else note)

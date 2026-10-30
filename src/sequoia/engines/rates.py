@@ -8,6 +8,7 @@ from pydantic import TypeAdapter, ValidationError
 from scipy import constants, sparse
 from scipy.special import gammainc
 
+from sequoia.analysis.metrics import pair_state_observables, swap_qubits
 from sequoia.components.base import Component, Context, PortDirection, PortKind
 from sequoia.components.detectors import DetectorConfigWarning
 from sequoia.data import Duration, ExtrapolationWarning
@@ -35,7 +36,7 @@ from sequoia.library.store import Library
 from sequoia.light.detection import DetectorModel, TaggerModel
 from sequoia.light.gaussian import aperture_transmission, overlap
 from sequoia.light.pairs import PairEmission
-from sequoia.light.state import Beam
+from sequoia.light.state import Beam, combine
 from sequoia.setup.model import Setup
 
 C_LIGHT = constants.c
@@ -50,6 +51,11 @@ STRONG = 1e-6
 ALIAS_STRENGTH = 1e-3
 DEAD_TIME_LOSS_WARNING = 0.1
 MIN_PAIR_FRACTION = 1e-6
+PAIR_FRAME = (
+    "Jones (H, V) basis of each link's own right-handed (H, V, k) beam frame at the link end "
+    "(docs/conventions.md: H in the table plane, reflections apply i*diag(1, -1)); first qubit "
+    "= photon on link a"
+)
 GRAM_SPACE: str | None = None
 MAX_SIMILARITY_MEMBERS = 16
 __all__ = ["Cancelled", "ResourceLimitError", "RunCache"]
@@ -69,6 +75,7 @@ class RateResult:
     sources: dict[str, dict[str, Any]] = field(default_factory=dict)
     pairs: dict[tuple[str, str], dict[str, float]] = field(default_factory=dict)
     links: dict[str, dict[str, Any]] = field(default_factory=dict)
+    pair_states: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -108,6 +115,9 @@ class _Source:
     h_union: dict[str, np.ndarray] = field(default_factory=dict)
     rho_union: np.ndarray | None = None
     gram: Any = None
+    link_h: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    link_modes: dict[tuple[str, str], Any] = field(default_factory=dict)
+    pair_sigma: np.ndarray | None = None
 
     @property
     def rate(self) -> float:
@@ -546,6 +556,24 @@ class _Engine:
             entry["wavelength_m"] = entry.get("wavelength_m", {})
             entry["wavelength_m"][role] = C_LIGHT / src.nu0[role]
 
+    def record_link_transfer(self, src: _Source, role: str, ends) -> None:
+        nu = src.grid[role] * src.dnu
+        nu0 = src.nu0[role]
+        for link_id, beams in ends.items():
+            beams = [b for b in beams if len(b.jones) == len(nu)]
+            if not beams:
+                continue
+            t = np.zeros((len(nu), 2, 2), dtype=complex)
+            for b in beams:
+                phase = np.exp(2j * np.pi * ((nu - nu0) * b.gpl + nu0 * b.opl) / C_LIGHT)
+                t += b.jones * phase[:, None, None]
+            entry = src.link_h.setdefault(link_id, {})
+            entry[role] = t
+            for r in ROLES:
+                entry.setdefault(r, np.zeros((len(src.grid[r]), 2, 2), dtype=complex))
+            strengths = [float(np.max(np.abs(b.jones) ** 2)) for b in beams]
+            src.link_modes[(link_id, role)] = beams[int(np.argmax(strengths))].mode
+
     def transfer_sources(self) -> None:
         for src in self.sources:
             self.cancel_point()
@@ -589,6 +617,7 @@ class _Engine:
                 self.collect_warnings(caught)
                 arrivals[role] = arrived
                 self.record_link_photons(src, role, ends, states)
+                self.record_link_transfer(src, role, ends)
             for det_id, det in self.detectors.items():
                 src.h[det_id] = {}
                 radius_of = getattr(self.net.components[det_id], "aperture_radius", None)
@@ -696,9 +725,10 @@ class _Engine:
         den = math.sqrt(abs(overlap(p, p)) * abs(overlap(q, q)))
         return complex(np.conj(overlap(p, q)) / den) if den > 0 else 0.0
 
-    def mode_weight(self, src: _Source, a: str, b: str) -> complex:
-        sa, ia = src.modes.get((a, "signal")), src.modes.get((a, "idler"))
-        sb, ib = src.modes.get((b, "signal")), src.modes.get((b, "idler"))
+    def mode_weight(self, src: _Source, a: str, b: str, link: bool = False) -> complex:
+        modes = src.link_modes if link else src.modes
+        sa, ia = modes.get((a, "signal")), modes.get((a, "idler"))
+        sb, ib = modes.get((b, "signal")), modes.get((b, "idler"))
         if sa is None or ia is None or sb is None or ib is None:
             return 1.0
         return self.mode_overlap(sa, ia) * np.conj(self.mode_overlap(sb, ib))
@@ -720,10 +750,26 @@ class _Engine:
                     )
                     return
 
+    def fock_sources(self) -> list[str]:
+        return [k for k, s in self.classical.sources.items() if s.statistics == "fock"]
+
+    def port_fock_light(self, inst_id: str, port: str):
+        fock = set(self.fock_sources())
+        if not fock:
+            return None, set()
+        for state in self.classical.links.values():
+            if state.dst == f"{inst_id}.{port}":
+                beams = [b for b in state.end_beams if b.source in fock]
+                if beams:
+                    return combine(beams, self.classical.sources), {b.source for b in beams}
+        return None, set()
+
     def background(self) -> None:
+        fock_seen: set[str] = set()
         for det_id, det in self.detectors.items():
             model = det.model
             leak = 0.0
+            fock_hz = 0.0
             radius_of = getattr(self.net.components[det_id], "aperture_radius", None)
             radius = radius_of() if radius_of is not None else None
             for port in det.ports:
@@ -738,6 +784,18 @@ class _Engine:
                 rate = np.einsum("nab,nba->n", eff, light.coherency).real / energy
                 collected = 1.0 if radius is None else aperture_transmission(radius, light.mode)
                 leak += float(np.sum(rate)) * collected
+                fock_light, fock_ids = self.port_fock_light(det_id, port)
+                if fock_light is not None:
+                    f_eff = np.asarray(model.efficiency(fock_light.wavelengths), dtype=complex)
+                    f_energy = constants.h * C_LIGHT / fock_light.wavelengths
+                    f_rate = np.einsum("nab,nba->n", f_eff, fock_light.coherency).real / f_energy
+                    f_col = (
+                        1.0 if radius is None else aperture_transmission(radius, fock_light.mode)
+                    )
+                    fock_hz += float(np.sum(f_rate)) * f_col
+                    fock_seen |= fock_ids
+            fock_hz = min(fock_hz, leak)
+            classical_leak = leak - fock_hz
             pair = {s.inst: sum(s.singles[det_id].values()) for s in self.sources}
             pair_total = sum(pair.values())
             dark = model.dark_count_rate
@@ -760,7 +818,8 @@ class _Engine:
                 "incident_pair_hz": pair_total,
                 "incident_background_hz": incident_bg,
                 "dark_hz": dark,
-                "leakage_hz": leak,
+                "leakage_hz": classical_leak,
+                "fock_hz": fock_hz,
                 "afterpulse_hz": after,
                 "dead_time_s": dead,
                 "dead_time_detector_s": model.dead_time,
@@ -769,15 +828,28 @@ class _Engine:
                 "survival": survival,
                 "pair_by_source": pair,
             }
-            self.saturation_issues(det_id, incident, leak, survival, dead, model.dead_time)
-            if incident > 0 and leak > LEAKAGE_FRACTION * incident:
+            self.saturation_issues(
+                det_id, incident, classical_leak, survival, dead, model.dead_time
+            )
+            if incident > 0 and classical_leak > LEAKAGE_FRACTION * incident:
                 self.issue(
                     "warning",
                     "pump_leakage",
                     f"'{det_id}'",
-                    f"classical light reaching the detector produces {leak:.4g} counts/s, "
-                    f"{100 * leak / incident:.1f}% of its singles",
+                    f"classical light reaching the detector produces {classical_leak:.4g} "
+                    f"counts/s, {100 * classical_leak / incident:.1f}% of its singles",
                 )
+        if fock_seen:
+            names = ", ".join(f"'{n}'" for n in sorted(fock_seen))
+            self.issue(
+                "warning",
+                "fock_source_mean_flux",
+                names,
+                f"Fock-state source {names}: this engine carries only its mean photon flux "
+                "(photons per pulse x repetition rate) and counts it as detector singles without "
+                "number statistics (no antibunching, no two-photon interference); use the "
+                "Photon counts tab for its photon-number statistics",
+            )
 
     def source_diagnostics(self) -> None:
         if not self.detectors:
@@ -846,8 +918,17 @@ class _Engine:
                 blocks += self.member_blocks(src, amp, a, b)
         return blocks
 
-    def member_blocks(self, src: _Source, amp: np.ndarray, a: str, b: str) -> list[np.ndarray]:
-        ha, hb = src.h[a], src.h[b]
+    def member_blocks(
+        self,
+        src: _Source,
+        amp: np.ndarray,
+        a: str,
+        b: str,
+        link: bool = False,
+        coherent: bool = True,
+    ) -> list[np.ndarray]:
+        h = src.link_h if link else src.h
+        ha, hb = h[a], h[b]
         idx = src.idx
         ps = src.emission.source
         n_s = np.asarray(ps.n_signal, dtype=np.int64)
@@ -865,7 +946,7 @@ class _Engine:
         m = len(n_sum)
         mg = np.broadcast_to(np.arange(m)[None, :], n_a2.shape)
         scale = src.scale
-        kappa = self.mode_weight(src, a, b) if use1 and use2 else 1.0
+        kappa = self.mode_weight(src, a, b, link) if use1 and use2 else 1.0
         parts = []
         if use1:
             parts.append((n_s[js], None, scale * phi1[:, :, js, :]))
@@ -873,9 +954,9 @@ class _Engine:
             parts.append((n_a2[support], mg[support], scale * kappa * phi2[:, :, support]))
         lo = min(int(p.min()) for p, _, _ in parts)
         hi = max(int(p.max()) for p, _, _ in parts)
-        split = hi - lo + 1 > MAX_UNION
+        split = hi - lo + 1 > MAX_UNION or not coherent
         groups = [[p] for p in parts] if split else [parts]
-        if split and len(parts) == 2:
+        if split and coherent and len(parts) == 2:
             (p1, _, _), (p2, _, _) = parts
             if p1.min() <= p2.max() and p2.min() <= p1.max():
                 self.issue(
@@ -1273,7 +1354,15 @@ class _Engine:
         self.window_flag(name, n, window, name)
         acc = n["accidental"]
         true = n["true"]
+        visibility, distinguishable = self.two_photon_visibility(a, b)
+        extra = {}
+        if visibility is not None:
+            extra = {
+                "two_photon_visibility": visibility,
+                "distinguishable_rate_hz": distinguishable,
+            }
         return {
+            **extra,
             "type": "coincidences",
             "channels": [a.name, b.name],
             "window_s": window,
@@ -1837,12 +1926,142 @@ class _Engine:
             np.add.at(x, (idx, slice(None), k * ns + jg), amp[k].transpose(1, 2, 0))
         return x
 
+    def two_photon_visibility(self, a: _Channel, b: _Channel) -> tuple[float | None, float]:
+        # V = 1 - C / C_dist, C_dist = the same pairs with the two photon assignments added
+        # incoherently (fully distinguishable photons); None when only one assignment exists
+        coherent, incoherent, both = 0.0, 0.0, False
+        for src in self.sources:
+            for amp in src.members:
+                if not np.any(amp):
+                    continue
+                ha, hb = src.h[a.detector], src.h[b.detector]
+                both |= bool(
+                    np.any(ha["signal"])
+                    and np.any(hb["idler"])
+                    and np.any(ha["idler"])
+                    and np.any(hb["signal"])
+                )
+                coherent += src.rate * sum(
+                    float(np.sum(np.abs(blk) ** 2))
+                    for blk in self.member_blocks(src, amp, a.detector, b.detector)
+                )
+                incoherent += src.rate * sum(
+                    float(np.sum(np.abs(blk) ** 2))
+                    for blk in self.member_blocks(src, amp, a.detector, b.detector, coherent=False)
+                )
+        if not both or incoherent <= 0.0:
+            return None, incoherent
+        survival = self.survival(a) * self.survival(b)
+        return 1.0 - coherent / incoherent, incoherent * survival
+
     def pair_rate(self, a: _Channel, b: _Channel) -> float:
         total = 0.0
         for src in self.sources:
             blocks = self.amplitude_blocks(src, a.detector, b.detector)
             total += src.rate * sum(float(np.sum(np.abs(blk) ** 2)) for blk in blocks)
         return total * self.survival(a) * self.survival(b)
+
+    def pair_rho(self, src: _Source, a: str, b: str) -> np.ndarray:
+        ha, hb = src.link_h[a], src.link_h[b]
+        direct = bool(np.any(ha["signal"]) and np.any(hb["idler"]))
+        swapped = bool(np.any(ha["idler"]) and np.any(hb["signal"]))
+        rho = np.zeros((4, 4), dtype=complex)
+        if direct and swapped:
+            for amp in src.members:
+                if np.any(amp):
+                    for blk in self.member_blocks(src, amp, a, b, link=True):
+                        v = blk.reshape(4, -1)
+                        rho += v @ v.conj().T
+            return rho
+        if not (direct or swapped):
+            return rho
+        check_memory(
+            3 * 256.0 * src.idx.size,
+            self.max_bytes,
+            f"the two-photon polarization states of pair source '{src.inst}'",
+            "use a coarser frequency lattice or fewer samples in the pair source",
+        )
+        if src.pair_sigma is None:
+            f = src.members.reshape(len(src.members), 4, *src.idx.shape)
+            src.pair_sigma = np.einsum("kajm,kbjm->jmab", f, f.conj(), optimize=True)
+        if direct:
+            k = np.einsum("jps,jmqi->jmpqsi", ha["signal"], hb["idler"][src.idx])
+        else:
+            k = np.einsum("jmpi,jqs->jmpqsi", ha["idler"][src.idx], hb["signal"])
+        k = k.reshape(*src.idx.shape, 4, 4)
+        rho = (k @ src.pair_sigma @ np.conj(np.swapaxes(k, -1, -2))).sum(axis=(0, 1))
+        return src.scale**2 * rho
+
+    def pair_states(self) -> dict[tuple[str, str], dict[str, Any]]:
+        acc: dict[tuple[str, str], dict[str, Any]] = {}
+        leaving: dict[str, list[str]] = {}
+        for link in self.setup.links:
+            leaving.setdefault(link.src.split(".")[0], []).append(link.id)
+        dst = {link.id: link.dst.split(".")[0] for link in self.setup.links}
+        below: dict[str, set[str]] = {}
+
+        def downstream(link_id: str) -> set[str]:
+            if link_id not in below:
+                below[link_id] = set()
+                for nxt in leaving.get(dst[link_id], []):
+                    below[link_id] |= {nxt} | downstream(nxt)
+            return below[link_id]
+
+        for src in self.sources:
+            carried = {}
+            for link_id in src.link_h:
+                flux = self.link_photons.get(link_id, {}).get("by_source", {}).get(src.inst, {})
+                roles = [r for r in ROLES if flux.get(r, 0.0) > MIN_PAIR_FRACTION * src.rate]
+                if roles:
+                    top = max(flux[r] for r in roles)
+                    carried[link_id] = [r for r in roles if flux[r] >= 0.01 * top]
+            if len(carried) > MAX_PAIR_CHANNELS:
+                self.issue(
+                    "warning",
+                    "pair_states_truncated",
+                    f"'{src.inst}'",
+                    f"the photons of this source reach {len(carried)} links; two-photon "
+                    f"polarization states are only built for up to {MAX_PAIR_CHANNELS}",
+                )
+                continue
+            names = list(carried)
+            for i, a in enumerate(names):
+                for b in names[i + 1 :]:
+                    if b in downstream(a) or a in downstream(b):
+                        continue
+                    self.cancel_point()
+                    rho = self.pair_rho(src, a, b)
+                    rate = src.rate * float(np.real(np.trace(rho)))
+                    if rate <= MIN_PAIR_FRACTION * src.rate:
+                        continue
+                    entry = acc.setdefault(
+                        (a, b), {"sum": np.zeros((4, 4), dtype=complex), "by_source": {}}
+                    )
+                    entry["sum"] += src.rate * rho
+                    entry["by_source"][src.inst] = (rate, carried[a], carried[b])
+        out: dict[tuple[str, str], dict[str, Any]] = {}
+        for (a, b), entry in acc.items():
+            rate = float(np.real(np.trace(entry["sum"])))
+            rho = entry["sum"] / rate
+            rho = (rho + rho.conj().T) / 2
+            main = max(entry["by_source"], key=lambda k: entry["by_source"][k][0])
+            _, roles_a, roles_b = entry["by_source"][main]
+            for x, y, r, ra, rb in ((a, b, rho, roles_a, roles_b), (b, a, None, roles_b, roles_a)):
+                r = swap_qubits(rho) if r is None else r
+                out[(x, y)] = {
+                    "rho": r,
+                    "rate_hz": rate,
+                    "source": main,
+                    "by_source_hz": {k: v[0] for k, v in entry["by_source"].items()},
+                    "photon_a": f"{main} {' or '.join(ra)} on {x}",
+                    "photon_b": f"{main} {' or '.join(rb)} on {y}",
+                    "basis": "HH,HV,VH,VV",
+                    "frame": PAIR_FRAME,
+                    "normalisation": "conditioned on one photon of the pair on each link "
+                    "(rate_hz = pairs/s with that outcome)",
+                    **pair_state_observables(r),
+                }
+        return out
 
 
 MAX_PAIR_CHANNELS = 24
@@ -1930,15 +2149,31 @@ def simulate_rates(
             "warning",
             "no_pair_source",
             "setup",
-            "no component emitted photon pairs; only classical leakage and dark counts are "
+            "no component emitted photon pairs; only the mean flux of the Fock-state sources, "
+            "classical leakage and dark counts are reported"
+            if engine.fock_sources()
+            else "no component emitted photon pairs; only classical leakage and dark counts are "
             "reported",
         )
     links = {}
     for link_id, entry in engine.link_photons.items():
         total = sum(sum(roles.values()) for roles in entry["by_source"].values())
         links[link_id] = {"photons_hz": total, **entry}
+    try:
+        pair_states = engine.pair_states()
+    except ResourceLimitError as exc:
+        engine.issue("error", "memory_limit", "setup", f"{exc}; the pair states were skipped")
+        pair_states = {}
     issues = list(engine.classical.issues)
     issues += [i for i in engine.issues if i not in issues]
     return RateResult(
-        engine.classical, channels, analyses, issues, engine.det_data, sources, pairs, links
+        engine.classical,
+        channels,
+        analyses,
+        issues,
+        engine.det_data,
+        sources,
+        pairs,
+        links,
+        pair_states,
     )

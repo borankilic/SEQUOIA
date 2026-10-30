@@ -595,7 +595,7 @@ def paint_icon(
     size = min(rect.width(), rect.height())
     if size <= 0:
         return
-    s = size * 0.42
+    s = size * 0.47
     px = min(2.4, max(1.0, size / 34.0))
     painter.save()
     try:

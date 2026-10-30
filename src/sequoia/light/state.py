@@ -15,6 +15,7 @@ class SourceLight:
     coherency: np.ndarray
     repetition_rate: float | None = None
     pulse_width: float | None = None
+    statistics: str = "classical"
 
 
 @dataclass(frozen=True)

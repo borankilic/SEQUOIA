@@ -17,7 +17,15 @@ def resolve_library(library_path: str, setup_path: str) -> Path:
     return path
 
 
-def _run(setup_path: str, library_path: str) -> int:
+def _export(record, directory: str | None) -> None:
+    if directory:
+        from sequoia.runs import write_bundle
+
+        write_bundle(record, directory)
+        print(f"\nexported run {record.run_id} to {directory}")
+
+
+def _run(setup_path: str, library_path: str, export: str | None = None) -> int:
     import sequoia.components.builtin  # noqa: F401
     from sequoia.engines.cache import RunCache
     from sequoia.engines.classical import simulate
@@ -25,6 +33,7 @@ def _run(setup_path: str, library_path: str) -> int:
     from sequoia.engines.report import format_rates_report, format_report
     from sequoia.errors import SequoiaError
     from sequoia.library.store import Library
+    from sequoia.measurement import resolve_setup
     from sequoia.setup.io import load_setup
 
     try:
@@ -39,10 +48,11 @@ def _run(setup_path: str, library_path: str) -> int:
             return 1
         library = Library(library_root)
         cache = RunCache()
-        result = simulate(setup, library, cache=cache)
+        run = resolve_setup(setup, library)
+        result = simulate(run, library, cache=cache)
         rates = (
-            simulate_rates(setup, library, classical=result, cache=cache)
-            if has_rate_devices(setup, library, cache, result.network)
+            simulate_rates(run, library, classical=result, cache=cache)
+            if has_rate_devices(run, library, cache, result.network)
             else None
         )
     except SequoiaError as exc:
@@ -52,25 +62,39 @@ def _run(setup_path: str, library_path: str) -> int:
     if rates is not None:
         print()
         print(format_rates_report(rates))
+    if export:
+        from sequoia.engines.outcome import SimulationOutcome
+        from sequoia.runs import new_run_id, record_from_outcome
+
+        run_id = new_run_id("rates")
+        issues = rates.issues if rates is not None else result.issues
+        outcome = SimulationOutcome(
+            0, [i.for_run("rates", run_id) for i in issues], result, rates, run_id=run_id
+        )
+        try:
+            _export(record_from_outcome(outcome, setup, library), export)
+        except (OSError, SequoiaError) as exc:
+            print(f"error: cannot export the run: {exc}", file=sys.stderr)
+            return 1
     return 0
 
 
 def _run_mc(
     setup_path: str,
     library_path: str,
-    duration: float,
+    duration: float | None,
     seed: int | None,
     tags_path: str | None,
     schmidt: float | None = None,
+    export: str | None = None,
 ) -> int:
     import sequoia.components.builtin  # noqa: F401
-    from sequoia.analysis.correlation import analyse_tags, write_tags
-    from sequoia.engines.cache import RunCache
-    from sequoia.engines.montecarlo import compare_with_rates, simulate_timetags
-    from sequoia.engines.rates import simulate_rates
+    from sequoia.analysis.correlation import write_tags
     from sequoia.engines.report import format_mc_report
     from sequoia.errors import SequoiaError
     from sequoia.library.store import Library
+    from sequoia.measurement import acquisition_duration
+    from sequoia.runs import run_montecarlo, write_bundle
     from sequoia.setup.io import load_setup
 
     try:
@@ -80,28 +104,39 @@ def _run_mc(
             print(f"error: library folder {library_path!r} not found", file=sys.stderr)
             return 1
         library = Library(library_root)
-        cache = RunCache()
-        tags = simulate_timetags(
-            setup, library, duration, seed=seed, cache=cache, schmidt_number=schmidt
-        )
-        analyses = analyse_tags(tags.channels, tags.duration, setup.analyses, tags.clock)
-        rates = simulate_rates(setup, library, cache=cache)
-        comparisons = compare_with_rates(tags, analyses, rates)
+        span = duration if duration is not None else acquisition_duration(setup, 10.0)
+        out = run_montecarlo(setup, library, duration_s=span, seed=seed, schmidt_number=schmidt)
+        tags = out.tags
         if tags_path:
-            write_tags(tags_path, tags.channels, tags.duration, tags.clock, tags.metadata())
+            write_tags(
+                tags_path,
+                tags.channels,
+                tags.duration,
+                tags.clock,
+                tags.metadata(),
+                tags.clock_ids,
+            )
+        if export:
+            write_bundle(out.record, export)
     except (SequoiaError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(format_mc_report(tags, analyses, comparisons))
+    print(format_mc_report(tags, out.analyses, out.comparisons))
+    if export:
+        print(f"\nexported run {out.record.run_id} to {export}")
     return 0
 
 
-def _run_gaussian(setup_path: str, library_path: str, gain_scale: float) -> int:
+def _run_gaussian(
+    setup_path: str, library_path: str, gain_scale: float, export: str | None = None
+) -> int:
     import sequoia.components.builtin  # noqa: F401
     from sequoia.engines.gaussian import simulate_gaussian
     from sequoia.engines.report import format_gaussian_report
     from sequoia.errors import SequoiaError
     from sequoia.library.store import Library
+    from sequoia.measurement import resolve_setup
+    from sequoia.runs import run_gaussian, write_bundle
     from sequoia.setup.io import load_setup
 
     try:
@@ -110,12 +145,48 @@ def _run_gaussian(setup_path: str, library_path: str, gain_scale: float) -> int:
         if not library_root.is_dir():
             print(f"error: library folder {library_path!r} not found", file=sys.stderr)
             return 1
-        result = simulate_gaussian(setup, Library(library_root), gain_scale=gain_scale)
-    except (SequoiaError, ValueError) as exc:
+        library = Library(library_root)
+        if export:
+            out = run_gaussian(setup, library, pump_scale=gain_scale)
+            if out.record is None:
+                simulate_gaussian(resolve_setup(setup, library), library)
+                print("error: the Gaussian run produced no result to export", file=sys.stderr)
+                return 1
+            result = out.result
+            write_bundle(out.record, export)
+        else:
+            result = simulate_gaussian(
+                resolve_setup(setup, library), library, gain_scale=gain_scale
+            )
+    except (SequoiaError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(format_gaussian_report(result))
+    if export:
+        print(f"\nexported run {out.record.run_id} to {export}")
     return 0
+
+
+def _rerun(directory: str) -> int:
+    import sequoia.components.builtin  # noqa: F401
+    from sequoia.errors import SequoiaError
+    from sequoia.runs import _short, rerun_bundle
+
+    try:
+        res = rerun_bundle(directory)
+    except (SequoiaError, ValueError, OSError, KeyError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    c = res.comparison
+    print(f"reran {res.original.get('run_id')} ({res.record.engine}) as {res.record.run_id}")
+    for d in c.input_differences:
+        print(f"input differs: {d}")
+    changed = [row for row in c.rows if row[3] != 0.0]
+    print(f"{len(c.rows)} stored outputs, {len(changed)} differ")
+    for key, a, b, d in changed[:40]:
+        print(f"  {key}: stored {_short(a)}, rerun {_short(b)}, difference {_short(d)}")
+    print("reproduced" if c.matches else "NOT reproduced")
+    return 0 if c.matches else 2
 
 
 def _run_chsh(args) -> int:
@@ -164,6 +235,7 @@ def _analyze_tags(
     from sequoia.analysis.correlation import analyse_tags, read_tag_record
     from sequoia.engines.report import format_mc_report
     from sequoia.errors import SequoiaError
+    from sequoia.measurement import analyse_measured_tags, effective_analyses
     from sequoia.setup.io import load_setup
 
     try:
@@ -179,16 +251,21 @@ def _analyze_tags(
         if rep_rate:
             clock = {name: rep_rate for name in channels}
         elif cw:
-            clock = {}
+            clock = {name: 0.0 for name in channels}
         else:
             clock = record.repetition_rates
-            if not clock:
+            if clock is None:
+                clock = {}
                 print(
                     "note: the file records no pulse clock, so accidentals use the CW singles "
                     "product; pass --rep-rate HZ for pulsed data or --cw to silence this",
                     file=sys.stderr,
                 )
-        analyses = analyse_tags(channels, span, setup.analyses, clock)
+        ids = record.clock_ids if not (rep_rate or cw) else None
+        if rep_rate or cw:
+            analyses = analyse_tags(channels, span, effective_analyses(setup), clock, ids)
+        else:
+            analyses = analyse_measured_tags(setup, channels, span, clock, ids)
     except (SequoiaError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -227,17 +304,44 @@ def main() -> None:
             default=None,
             help="effective Schmidt number K for thermal pulse statistics (mc)",
         )
-        parser.add_argument("--duration", type=float, default=10.0, help="seconds (mc)")
+        parser.add_argument(
+            "--duration",
+            type=float,
+            default=None,
+            help="acquisition duration in seconds (mc; default: the measurement's, else 10)",
+        )
         parser.add_argument("--seed", type=int, default=None)
         parser.add_argument("--tags", default=None, help="write the time tags to this .npz (mc)")
+        parser.add_argument(
+            "--export-run",
+            default=None,
+            metavar="DIR",
+            help="write a run bundle (run.json, setup, library parts, data) that reruns alone",
+        )
         args = parser.parse_args(argv[1:])
         if args.engine == "gaussian":
-            sys.exit(_run_gaussian(args.setup, args.library, args.gain_scale))
+            sys.exit(_run_gaussian(args.setup, args.library, args.gain_scale, args.export_run))
         if args.engine == "mc":
             sys.exit(
-                _run_mc(args.setup, args.library, args.duration, args.seed, args.tags, args.schmidt)
+                _run_mc(
+                    args.setup,
+                    args.library,
+                    args.duration,
+                    args.seed,
+                    args.tags,
+                    args.schmidt,
+                    args.export_run,
+                )
             )
-        sys.exit(_run(args.setup, args.library))
+        sys.exit(_run(args.setup, args.library, args.export_run))
+    if argv and argv[0] == "rerun":
+        parser = argparse.ArgumentParser(
+            prog="sequoia rerun",
+            description="rerun an exported run bundle from its own files and compare outputs",
+        )
+        parser.add_argument("bundle")
+        args = parser.parse_args(argv[1:])
+        sys.exit(_rerun(args.bundle))
     if argv and argv[0] == "chsh":
         parser = argparse.ArgumentParser(
             prog="sequoia chsh", description="CHSH S from four analyser settings (rate engine)"
@@ -252,8 +356,10 @@ def main() -> None:
         parser.add_argument(
             "--outcomes", default="tt,tr,rt,rr", help="four coincidence analysis names"
         )
-        parser.add_argument("--quantity", choices=("true_hz", "total_hz"), default="true_hz")
-        parser.add_argument("--time", type=float, default=10.0, help="integration time per setting")
+        parser.add_argument("--quantity", choices=("total_hz", "true_hz"), default="total_hz")
+        parser.add_argument(
+            "--time", type=float, default=10.0, help="integration time per setting pair (s)"
+        )
         args = parser.parse_args(argv[1:])
         sys.exit(_run_chsh(args))
     if argv and argv[0] == "fock":

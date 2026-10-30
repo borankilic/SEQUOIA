@@ -17,13 +17,30 @@ def _binomial_thinning(n_max: int, eta: float) -> np.ndarray:
     return m
 
 
-def _with_dark(matrix: np.ndarray, dark: float, saturate_at: int) -> np.ndarray:
+def _with_dark(matrix: np.ndarray, dark: float) -> np.ndarray:
+    # ideal PNR: one independent dark click adds one count, so the output grows by one column
     if dark <= 0.0:
         return matrix
-    out = (1.0 - dark) * matrix
-    for k in range(matrix.shape[1]):
-        out[:, min(k + 1, saturate_at)] += dark * matrix[:, k]
+    out = np.zeros((matrix.shape[0], matrix.shape[1] + 1))
+    out[:, :-1] = (1.0 - dark) * matrix
+    out[:, 1:] += dark * matrix
     return out
+
+
+def _wire_dark(matrix: np.ndarray, dark: float) -> np.ndarray:
+    # ``dark`` is P(at least one dark click on the detector); each wire fires dark independently
+    # with q = 1 - (1 - dark)**(1/N), so k photon wires read j clicks with Binomial(N-k, q) extra
+    if dark <= 0.0:
+        return matrix
+    nw = matrix.shape[1] - 1
+    q = 1.0 - (1.0 - dark) ** (1.0 / nw)
+    spread = np.zeros((nw + 1, nw + 1))
+    for k in range(nw + 1):
+        for extra in range(nw - k + 1):
+            spread[k, k + extra] = (
+                math.comb(nw - k, extra) * q**extra * (1.0 - q) ** (nw - k - extra)
+            )
+    return matrix @ spread
 
 
 @dataclass(frozen=True)
@@ -40,6 +57,8 @@ class Detector:
     kind = "detector"
 
     def response_matrix(self, n_max: int) -> np.ndarray:
+        """D(k|n) for n = 0..n_max photons; the columns are the detector's possible outputs,
+        which need not stop at n_max (a dark click on n_max photons reads n_max + 1)."""
         raise NotImplementedError
 
     def to_dict(self) -> dict:
@@ -52,7 +71,7 @@ class IdealPNR(Detector):
 
     def response_matrix(self, n_max: int) -> np.ndarray:
         m = _binomial_thinning(n_max, self.efficiency)
-        return _with_dark(m, self.dark, n_max)
+        return _with_dark(m, self.dark)
 
 
 @dataclass(frozen=True)
@@ -72,7 +91,9 @@ class Threshold(Detector):
 class PseudoPNR(Detector):
     """Multiplexed threshold detector: each photon goes to wire w with probability weights[w]
     (equal by default); a wire clicks when it holds at least one detected photon. A photon is
-    detected with probability ``efficiency * wire_efficiencies[w]``."""
+    detected with probability ``efficiency * wire_efficiencies[w]``. ``dark`` is the probability
+    of at least one dark click on the detector in the window, split into independent per-wire
+    dark clicks of probability ``1 - (1 - dark)**(1/wires)``."""
 
     wires: int = 4
     weights: tuple[float, ...] | None = None
@@ -115,9 +136,7 @@ class PseudoPNR(Detector):
                 m[n, k] = exact[clicks == k].sum()
         m = np.clip(m, 0.0, 1.0)
         m /= m.sum(axis=1, keepdims=True)
-        keep = min(n_max, nw) + 1
-        m = m[:, :keep]
-        return _with_dark(m, self.dark, keep - 1)
+        return _wire_dark(m, self.dark)
 
     def to_dict(self) -> dict:
         d = Detector.to_dict(self)

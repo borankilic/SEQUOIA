@@ -64,6 +64,7 @@ class SimulationController(QObject):
     failed = Signal(str)
     cancelled = Signal()
     busy_changed = Signal(bool)
+    document_edited = Signal()
 
     def __init__(
         self,
@@ -79,6 +80,8 @@ class SimulationController(QObject):
         self.cache = RunCache()
         self._cache_library: Library | None = None
         self.last_outcome: SimulationOutcome | None = None
+        self.last_setup = None
+        self.last_library = None
         self.last_traceback = ""
         self._revision = 0
         self._running = False
@@ -135,8 +138,12 @@ class SimulationController(QObject):
         self.cache = RunCache()
         self._cache_library = None
 
+    def document_key(self) -> tuple:
+        return self.document.key()
+
     def _on_changed(self) -> None:
         self._revision += 1
+        self.document_edited.emit()
         for run in self._active:
             run.cancel.set()
         if self.auto_run:
@@ -182,6 +189,7 @@ class SimulationController(QObject):
             self.cancelled.emit()
         else:
             self.last_outcome = outcome
+            self.last_setup, self.last_library = run.setup, run.library
             self.finished.emit(outcome)
         self._update_busy()
 

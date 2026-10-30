@@ -27,6 +27,7 @@ from sequoia.gui.document import SetupDocument
 from sequoia.gui.inspector import InspectorPanel
 from sequoia.gui.library_manager import LibraryManager
 from sequoia.gui.palette import Palette
+from sequoia.gui.recipes import ALL_TOOLS, TASKS
 from sequoia.gui.results import ResultsDock, eng, ids_for_issue
 from sequoia.gui.simulation import SimulationController, SimulationOutcome
 from sequoia.library.store import Library
@@ -94,6 +95,8 @@ class MainWindow(QMainWindow):
         self._default_state = self.saveState()
         self._default_geometry = self.saveGeometry()
         self._restore_settings()
+        self.results.task_changed.connect(self._on_task_changed)
+        self.show_task(str(self.settings.value("results/task", ALL_TOOLS)), reveal=False)
         self._update_recent_menu()
         self.controller.start()
         if setup_path is not None:
@@ -191,6 +194,7 @@ class MainWindow(QMainWindow):
         )
         self.act_save = self._action("Save", self.save, S.StandardKey.Save)
         self.act_save_as = self._action("Save As...", self.save_as, S.StandardKey.SaveAs)
+        self.act_export_run = self._action("Export Simulation Run...", self.export_run)
         self.act_quit = self._action("Quit", self.close, S.StandardKey.Quit)
         self.act_quit.setMenuRole(QAction.MenuRole.QuitRole)
 
@@ -253,6 +257,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.act_save)
         file_menu.addAction(self.act_save_as)
+        file_menu.addAction(self.act_export_run)
         file_menu.addSeparator()
         file_menu.addAction(self.act_start)
         file_menu.addSeparator()
@@ -294,6 +299,19 @@ class MainWindow(QMainWindow):
         view.addSeparator()
         for dock in (self.palette_dock, self.inspector_dock, self.results_dock):
             view.addAction(dock.toggleViewAction())
+        view.addSeparator()
+        self.task_menu = view.addMenu("Task")
+        self.task_actions: dict[str, QAction] = {}
+        tasks = QActionGroup(self)
+        tasks.setExclusive(True)
+        for name in TASKS:
+            if name == ALL_TOOLS:
+                self.task_menu.addSeparator()
+            action = QAction(name.replace("&", "&&"), self, checkable=True)
+            action.triggered.connect(lambda _c=False, n=name: self.show_task(n))
+            tasks.addAction(action)
+            self.task_menu.addAction(action)
+            self.task_actions[name] = action
         view.addSeparator()
         view.addAction(self.act_reset_layout)
 
@@ -456,22 +474,33 @@ class MainWindow(QMainWindow):
         parts = self.document.fiber_parts_by_kind().get(self._new_fiber_kind) or []
         self.document.new_fiber_ref = parts[0] if parts else None
 
-    def show_sweeps(self) -> None:
+    def show_task(self, name: str, reveal: bool = True) -> None:
+        if reveal:
+            self.results_dock.show()
+        self.results.show_task(name)
+
+    def _on_task_changed(self, name: str) -> None:
+        self.settings.setValue("results/task", name)
+        action = self.task_actions.get(name)
+        if action is not None:
+            action.setChecked(True)
+
+    def show_tool(self, widget) -> None:
         self.results_dock.show()
-        self.results.tabs.setCurrentWidget(self.results.sweeps)
+        self.results.show_tool(widget)
+
+    def show_sweeps(self) -> None:
+        self.show_tool(self.results.sweeps)
         self.results.sweeps.reload_candidates()
 
     def show_montecarlo(self) -> None:
-        self.results_dock.show()
-        self.results.tabs.setCurrentWidget(self.results.montecarlo)
+        self.show_tool(self.results.montecarlo)
 
     def show_gaussian(self) -> None:
-        self.results_dock.show()
-        self.results.tabs.setCurrentWidget(self.results.gaussian)
+        self.show_tool(self.results.gaussian)
 
     def show_fock(self) -> None:
-        self.results_dock.show()
-        self.results.tabs.setCurrentWidget(self.results.fock)
+        self.show_tool(self.results.fock)
 
     def show_optimizer(self) -> None:
         self.show_sweeps()
@@ -685,6 +714,32 @@ class MainWindow(QMainWindow):
         if self.document.path is None or self._is_bundled_example(self.document.path):
             return self.save_as()
         return self._save_to(None)
+
+    def export_run(self, directory: str | None = None) -> bool:
+        from sequoia.runs import record_from_outcome, write_bundle
+
+        c = self.controller
+        if c.last_outcome is None or c.last_setup is None:
+            self._show_message("No simulation result to export yet")
+            return False
+        if directory is None:
+            from PySide6.QtWidgets import QFileDialog
+
+            directory = QFileDialog.getExistingDirectory(self, "Export simulation run to folder")
+            if not directory:
+                return False
+        try:
+            record = record_from_outcome(c.last_outcome, c.last_setup, c.last_library)
+            path = write_bundle(record, directory)
+        except (OSError, ValueError) as exc:
+            self.show_error("Cannot export the run", str(exc))
+            return False
+        stale = c.last_setup is not self.document.setup
+        self._show_message(
+            f"Exported run {record.run_id} to {path}"
+            + (" (it predates later edits)" if stale else "")
+        )
+        return True
 
     def save_as(self) -> bool:
         path = self.ask_save_path()

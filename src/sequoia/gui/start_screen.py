@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sequoia.gui.recipes import START_CHOICES
 from sequoia.setup.io import load_setup
 from sequoia.setup.model import Setup
 
@@ -224,6 +225,7 @@ class StartScreen(QWidget):
     open_requested = Signal()
     path_requested = Signal(str)
     template_requested = Signal(str)
+    recipe_requested = Signal(str, str)
 
     def __init__(
         self,
@@ -239,8 +241,10 @@ class StartScreen(QWidget):
 
             self.settings = make_settings()
         root = templates_root if templates_root is not None else default_templates_root()
+        self.templates_root = Path(root)
         self.templates = discover_templates(root)
         self.cards: list[TemplateCard] = []
+        self.choices: dict[str, QPushButton] = {}
         self._build()
         self.resize(1200, 720)
         self.setStyleSheet(STYLE)
@@ -288,6 +292,35 @@ class StartScreen(QWidget):
         main = QWidget()
         main_layout = QVBoxLayout(main)
         main_layout.setContentsMargins(28, 28, 28, 0)
+        task_heading = QLabel("What do you want to do?")
+        task_heading.setObjectName("heading")
+        task_hint = QLabel(
+            "Opens a matching template as a new untitled project and shows the results for "
+            "that task; View > Task switches later, and 'All tools' lists every engine."
+        )
+        task_hint.setObjectName("muted")
+        task_hint.setWordWrap(True)
+        choices = QWidget(main)
+        choice_grid = QGridLayout(choices)
+        choice_grid.setContentsMargins(0, 8, 0, 18)
+        choice_grid.setSpacing(10)
+        shown = 0
+        for choice in START_CHOICES:
+            path = ""
+            if choice.template is not None:
+                found = self.templates_root / f"{choice.template}.yaml"
+                if not found.is_file():
+                    continue
+                path = str(found)
+            button = QPushButton(f"{choice.label}\n{choice.detail}", choices)
+            button.setObjectName("choice")
+            button.setToolTip(f"Task: {choice.task}")
+            button.clicked.connect(
+                lambda _c=False, p=path, t=choice.task: self.recipe_requested.emit(p, t)
+            )
+            self.choices[choice.label] = button
+            choice_grid.addWidget(button, shown // COLUMNS, shown % COLUMNS)
+            shown += 1
         heading = QLabel("Start from a template")
         heading.setObjectName("heading")
         hint = QLabel(
@@ -312,6 +345,9 @@ class StartScreen(QWidget):
         if not self.templates:
             grid.addWidget(QLabel("No templates found."), 0, 0)
         scroll.setWidget(holder)
+        main_layout.addWidget(task_heading)
+        main_layout.addWidget(task_hint)
+        main_layout.addWidget(choices)
         main_layout.addWidget(heading)
         main_layout.addWidget(hint)
         main_layout.addWidget(scroll, 1)
@@ -359,6 +395,7 @@ QFrame#card:hover { border: 1px solid #3a7ca5; }
 QPushButton { padding: 9px 14px; border-radius: 6px; border: 1px solid palette(mid);
   background: palette(button); text-align: left; }
 QPushButton:hover { border-color: #3a7ca5; }
+QPushButton#choice { padding: 8px 12px; }
 QPushButton#primary { background: #2f6f9f; color: white; border: 1px solid #2f6f9f;
   font-weight: 600; }
 QPushButton#primary:hover { background: #3a7ca5; }

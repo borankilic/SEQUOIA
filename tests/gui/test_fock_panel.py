@@ -13,6 +13,7 @@ WAIT = 30000
 @pytest.fixture
 def tab(qtbot):
     t = FockTab()
+    t.confirm_replace = lambda _t: "discard"
     qtbot.addWidget(t)
     t.show()
     yield t
@@ -77,8 +78,10 @@ def test_resource_limit_message(tab, qtbot):
     for r in range(3):
         tab.input_table.item(r, 1).setText("4")
     tab.max_photons.setValue(3)
-    run_and_wait(tab, qtbot)
-    assert tab.status.text().startswith("failed")
+    assert "will not run" in tab.estimate_label.text()
+    tab.run()
+    assert not tab.runner.busy
+    assert tab.status.text().startswith("not run")
     assert "photons exceed" in tab.message_label.text()
 
 

@@ -5,6 +5,8 @@ description: >
   (link 'delay_arm'; 0.3 mm of path = 1 ps), and the two photons meet on a 50:50 fiber beam splitter.
   The dip in the coincidences between the two output detectors is centred at the delay that
   compensates the crystal walk-off (about +2.2 ps of extra signal path), not at equal path length.
+  The template starts at the dip (delay_arm 100.66 mm, two-photon visibility about 0.996); sweep
+  delay_arm from 99 mm to 102 mm to see the whole dip.
   The crystal is held at 27.4 degC, where the signal and idler spectra are centred symmetrically
   about the degenerate wavelength; at 25 degC the spectra are offset by 0.11 nm and the
   dip visibility drops to about 0.95.
@@ -31,7 +33,7 @@ links:
   - {id: s_lp, kind: free_space, from: collect_lens.out, to: lp.in, length: 50 mm}
   - {id: s_bp, kind: free_space, from: lp.out, to: bp.in, length: 25 mm}
   - {id: s_pbs, kind: free_space, from: bp.out, to: pbs.in, length: 25 mm}
-  - {id: delay_arm, kind: free_space, from: pbs.out_t, to: cpl_signal.in, length: 100 mm}
+  - {id: delay_arm, kind: free_space, from: pbs.out_t, to: cpl_signal.in, length: 100.66 mm}
   - {id: s_idler_a, kind: free_space, from: pbs.out_r, to: hwp_idler.in, length: 50 mm}
   - {id: s_idler_b, kind: free_space, from: hwp_idler.out, to: cpl_idler.in, length: 50 mm}
   - {id: f_signal, kind: fiber, from: cpl_signal.out, to: fbs.in_a, fiber: fiber/smf_810, length: 1 m}

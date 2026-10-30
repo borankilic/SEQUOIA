@@ -383,3 +383,141 @@ def chsh_from_state(rho, angles=None):
     a, ap, b, bp = np.deg2rad(CHSH_ANGLES_DEG) if angles is None else angles
     e = correlation_from_angles
     return chsh_s(e(rho, a, b), e(rho, a, bp), e(rho, ap, b), e(rho, ap, bp))
+
+
+def swap_qubits(rho):
+    r = _as_density(rho)
+    return r.reshape(2, 2, 2, 2).transpose(1, 0, 3, 2).reshape(4, 4)
+
+
+def reduced_states(rho):
+    r = _as_density(rho).reshape(2, 2, 2, 2)
+    return np.einsum("ijkj->ik", r), np.einsum("jijk->ik", r)
+
+
+def stokes_of(rho):
+    # same convention as Beam.stokes: S3 = -2 Im rho_HV, so R = (H - iV)/sqrt2 has S3 = -1
+    r = np.asarray(rho, dtype=complex)
+    return np.array(
+        [(r[0, 0] + r[1, 1]).real, (r[0, 0] - r[1, 1]).real, 2 * r[0, 1].real, -2 * r[0, 1].imag]
+    )
+
+
+def conditional_state(rho, ket_a):
+    """State of qubit b after qubit a passes the analyser |ket_a>, and the probability p."""
+    k = np.asarray(ket_a, dtype=complex)
+    k = k / np.linalg.norm(k)
+    r = _as_density(rho).reshape(2, 2, 2, 2)
+    m = np.einsum("i,ijkl,k->jl", k.conj(), r, k)
+    p = float(np.real(np.trace(m)))
+    if p <= 1e-12 * float(np.real(np.trace(_as_density(rho)))):
+        return np.full((2, 2), complex(np.nan, np.nan)), max(p, 0.0)
+    return m / p, p
+
+
+def pair_state_observables(rho):
+    r = _as_density(rho)
+    ra, rb = reduced_states(r)
+    conditional = {}
+    for label, ket in KETS.items():
+        m, p = conditional_state(r, ket)
+        conditional[label] = {"probability": p, "rho_b": m, "stokes_b": stokes_of(m)}
+    return {
+        "purity": purity(r),
+        "concurrence": concurrence(r),
+        "bell_fidelity": {name: fidelity(r, psi) for name, psi in BELL.items()},
+        "reduced_a": ra,
+        "reduced_b": rb,
+        "stokes_a": stokes_of(ra),
+        "stokes_b": stokes_of(rb),
+        "conditional": conditional,
+    }
+
+
+def key_metrics(analyses: dict) -> list[dict]:
+    """One row per headline figure of merit in the rate engine's analyses."""
+    rows: list[dict] = []
+
+    def add(metric, value, name, definition, unit=""):
+        if value is None:
+            return
+        rows.append(
+            {
+                "metric": metric,
+                "value": value,
+                "unit": unit,
+                "analysis": name,
+                "definition": definition,
+            }
+        )
+
+    pairs = {}
+    for name, a in analyses.items():
+        kind = a.get("type")
+        if kind == "coincidences":
+            w = a.get("window_s", float("nan"))
+            add(
+                "CAR",
+                a.get("car"),
+                name,
+                f"true / accidental coincidences in a {w * 1e9:.3g} ns window",
+            )
+            add(
+                "heralding efficiency",
+                a.get("heralding_b_given_a"),
+                name,
+                f"true coincidences / singles of {a['channels'][0]}",
+            )
+            add(
+                "heralding efficiency",
+                a.get("heralding_a_given_b"),
+                name,
+                f"true coincidences / singles of {a['channels'][1]}",
+            )
+            add(
+                "two-photon interference visibility",
+                a.get("two_photon_visibility"),
+                name,
+                "1 - C / C_distinguishable (HOM-type; 1 = perfect dip, 0 = no interference)",
+            )
+            pairs[tuple(a["channels"])] = (name, a.get("true_hz"))
+        elif kind == "heralded_g2":
+            add(
+                "heralded g2(0)",
+                a.get("g2_heralded"),
+                name,
+                "N_hab N_h / (N_ha N_hb); 0 for an ideal single photon, < 0.5 single-photon regime",
+            )
+        elif kind in ("g2", "histogram"):
+            add(
+                "unheralded g2(0)",
+                a.get("g2_at_center"),
+                name,
+                "normalised coincidences at zero delay; 1 + 1/K for K Schmidt modes, 2 thermal",
+            )
+    firsts = sorted({a for a, _ in pairs})
+    seconds = sorted({b for _, b in pairs})
+    for a1, a2 in [(x, y) for i, x in enumerate(firsts) for y in firsts[i + 1 :]]:
+        for b1, b2 in [(x, y) for i, x in enumerate(seconds) for y in seconds[i + 1 :]]:
+            keys = [(a1, b1), (a1, b2), (a2, b1), (a2, b2)]
+            if not all(k in pairs for k in keys):
+                continue
+            c = [pairs[k][1] or 0.0 for k in keys]
+            total = sum(c)
+            if total <= 0:
+                continue
+            e = (c[0] - c[1] - c[2] + c[3]) / total
+            names = "/".join(pairs[k][0] for k in keys)
+            add(
+                "correlation E",
+                e,
+                names,
+                "(C++ - C+- - C-+ + C--) / sum at the current analyser settings",
+            )
+            add(
+                "correlation visibility |E|",
+                abs(e),
+                names,
+                "fringe visibility at these settings; maximise over angles (CHSH tab) for V",
+            )
+    return rows

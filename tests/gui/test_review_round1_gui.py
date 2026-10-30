@@ -157,8 +157,11 @@ def test_engine_issues_reach_the_diagnostics_table(window, qtbot):
         "Gaussian", [Issue("warning", "gaussian_truncated", "'crystal'", "dropped 1% of pairs")]
     )
     assert r.diagnostics.rowCount() == before + 1
-    texts = [r.diagnostics.item(i, 3).text() for i in range(r.diagnostics.rowCount())]
-    assert any(t.startswith("[Gaussian]") for t in texts)
+    rows = [
+        (r.diagnostics.item(i, 1).text(), r.diagnostics.item(i, 5).text())
+        for i in range(r.diagnostics.rowCount())
+    ]
+    assert ("Gaussian", "dropped 1% of pairs") in rows
     r.set_engine_issues("Gaussian", [])
     assert r.diagnostics.rowCount() == before
 

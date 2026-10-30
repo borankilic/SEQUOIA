@@ -27,6 +27,7 @@ from sequoia.components.base import get_component, registered_types
 from sequoia.errors import PartError, SequoiaError
 from sequoia.gui.inspector.fields import ModelForm
 from sequoia.gui.palette import part_label
+from sequoia.library.calibration import OFFSETS
 from sequoia.library.editing import (
     HEADER_FIELDS,
     build_part,
@@ -120,6 +121,19 @@ class LibraryManager(QDialog):
         attach_row.addWidget(self.attach_add)
         attach_row.addWidget(self.attach_remove)
         attach_row.addStretch(1)
+        self.calibration = QTreeWidget()
+        self.calibration.setHeaderLabels(
+            ["Parameter", "Source", "Value", "Date", "Status", "Record"]
+        )
+        self.calibration.setRootIsDecorated(False)
+        self.calibration.setMaximumHeight(130)
+        self.calibration.setToolTip(
+            "Calibration records from calibration.yaml in the part folder (read-only). A record "
+            "replaces the nominal value when it ranks higher: measured > vendor nominal > model."
+        )
+        self.fingerprint = QLabel("")
+        self.fingerprint.setStyleSheet("color: palette(placeholder-text);")
+        self.fingerprint.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.params_holder = QWidget()
         self.params_layout = QVBoxLayout(self.params_holder)
         self.params_layout.setContentsMargins(0, 0, 0, 0)
@@ -142,6 +156,9 @@ class LibraryManager(QDialog):
         cv.addWidget(QLabel("Attachments (datasheets, raw files)"))
         cv.addWidget(self.attach_list)
         cv.addLayout(attach_row)
+        cv.addWidget(QLabel("Calibration records (read-only; edit calibration.yaml)"))
+        cv.addWidget(self.calibration)
+        cv.addWidget(self.fingerprint)
         cv.addStretch(1)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -285,6 +302,8 @@ class LibraryManager(QDialog):
             w.setText("")
         self.description.setPlainText("")
         self.attach_list.clear()
+        self.calibration.clear()
+        self.fingerprint.setText("")
         self.title.setText("Select a part or create a new one")
         self.type_label.setText("")
         self.status.setText("")
@@ -345,7 +364,8 @@ class LibraryManager(QDialog):
 
     def open_ref(self, ref: str) -> bool:
         try:
-            part = self.library.load_part(ref)
+            part = self.library.load_part(ref, calibrated=False)
+            applied = self.library.load_part(ref).calibrated
         except SequoiaError as exc:
             self._clear_editor()
             self.status.setText(str(exc))
@@ -359,6 +379,7 @@ class LibraryManager(QDialog):
         self.is_new = False
         self.dirty = False
         self._show_header(part)
+        self._fill_calibration(part, applied)
         self._rebuild_form(part.type)
         self.title.setText(ref)
         self.type_label.setText(part.type)
@@ -377,6 +398,48 @@ class LibraryManager(QDialog):
         self.description.setPlainText((part.description if part else "") or "")
         self.description.blockSignals(False)
         self._fill_attachments()
+
+    def _fill_calibration(self, part: Part, applied: dict[str, str]) -> None:
+        self.calibration.clear()
+        for record in part.calibration:
+            if applied.get(record.parameter) == record.id:
+                status = "in use (replaces the nominal value)"
+            elif record.parameter in OFFSETS:
+                status = "uncertainty propagation only"
+            elif record.parameter in applied:
+                status = "superseded by a higher-ranked or newer record"
+            else:
+                status = "not used: the nominal value ranks as high or higher"
+            item = QTreeWidgetItem(
+                [
+                    record.parameter,
+                    record.source,
+                    record.summary(),
+                    str(record.date or ""),
+                    status,
+                    record.id,
+                ]
+            )
+            details = [
+                f"{label}: {value}"
+                for label, value in (
+                    ("conditions", record.conditions),
+                    ("local id / serial", record.local_id),
+                    ("measured by", record.measured_by),
+                    ("method", record.method),
+                    ("validity", record.validity),
+                    ("note", record.note),
+                )
+                if value
+            ]
+            for column in range(6):
+                item.setToolTip(column, "\n".join(details) or "no further details")
+            self.calibration.addTopLevelItem(item)
+        if not part.calibration:
+            self.calibration.addTopLevelItem(
+                QTreeWidgetItem(["", "", "no calibration records: nominal values only"])
+            )
+        self.fingerprint.setText(f"fingerprint {(part.fingerprint or '')[:16]}")
 
     def _fill_attachments(self) -> None:
         self.attach_list.clear()

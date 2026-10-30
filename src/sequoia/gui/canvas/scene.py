@@ -65,6 +65,7 @@ class CanvasScene(QGraphicsScene):
         self.zoom = 1.0
         self._gesture = 0
         self._nudge_at = 0.0
+        self.pending_probe: str | None = None
         self._renames: dict[str, str] = {}
         self._last_fiber: str | None = None
         self.choose_fiber = self._menu_choose_fiber
@@ -291,13 +292,65 @@ class CanvasScene(QGraphicsScene):
         self.highlights.clear()
         self.update()
 
-    def add_part(self, part_ref: str, cell_position) -> str | None:
+    def add_part(
+        self, part_ref: str, cell_position, scene_pos: QPointF | None = None
+    ) -> str | None:
+        if part_ref.split("/", 1)[0] == "probes":
+            return self.attach_probe(part_ref, scene_pos)
         position = [self.snap_cells(cell_position[0]), self.snap_cells(cell_position[1])]
         try:
             new_id = self.document.add_instance(part_ref, position)
         except ValueError as exc:
             self.status_message.emit(str(exc))
             return None
+        self.select(new_id)
+        return new_id
+
+    def _link_near(self, scene_pos: QPointF) -> str | None:
+        radius = 10.0 / max(self.zoom, 0.05)
+        area = QRectF(scene_pos.x() - radius, scene_pos.y() - radius, 2 * radius, 2 * radius)
+        for item in self.items(area):
+            while item is not None and not isinstance(item, LinkItem):
+                item = item.parentItem()
+            if item is not None:
+                return item.link_id
+        return None
+
+    def _probe_target(self, scene_pos: QPointF | None) -> str | None:
+        if scene_pos is not None:
+            return self._link_near(scene_pos)
+        selected = self.selected_ids()
+        links = [i for i in selected if i in self.link_items]
+        if len(links) == 1:
+            return links[0]
+        instances = [i for i in selected if i in self.component_items]
+        if len(instances) == 1:
+            outgoing = [
+                link.id
+                for link in self.document.setup.links
+                if link.kind != "cable" and link.src.split(".")[0] == instances[0]
+            ]
+            if outgoing:
+                return outgoing[0]
+        return None
+
+    def attach_probe(self, part_ref: str, scene_pos: QPointF | None = None) -> str | None:
+        link_id = self._probe_target(scene_pos)
+        if link_id is None:
+            self.pending_probe = part_ref
+            name = part_ref.rsplit("/", 1)[-1].replace("_", " ")
+            self.status_message.emit(
+                f"Click a link to attach the {name} (probes measure the light on a link; "
+                "Esc cancels)"
+            )
+            return None
+        self.pending_probe = None
+        try:
+            new_id = self.document.add_probe(part_ref, link_id)
+        except ValueError as exc:
+            self.status_message.emit(str(exc))
+            return None
+        self.status_message.emit(f"Attached {new_id} to link {link_id}")
         self.select(new_id)
         return new_id
 
@@ -567,6 +620,11 @@ class CanvasScene(QGraphicsScene):
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key_Escape and self.pending_probe is not None:
+            self.pending_probe = None
+            self.status_message.emit("Probe placement cancelled")
+            event.accept()
+            return
         if self.focusItem() is not None or self.link_editor is not None:
             super().keyPressEvent(event)
             return
@@ -662,6 +720,15 @@ class CanvasScene(QGraphicsScene):
 
     def mousePressEvent(self, event) -> None:
         self._gesture += 1
+        if self.pending_probe is not None and event.button() == Qt.LeftButton:
+            ref = self.pending_probe
+            if self._link_near(event.scenePos()) is None:
+                self.pending_probe = None
+                self.status_message.emit("Probe placement cancelled: no link there")
+            else:
+                self.attach_probe(ref, event.scenePos())
+            event.accept()
+            return
         if event.button() == Qt.LeftButton and self.link_editor is None:
             hit = self._port_hit(event.scenePos())
             if hit is not None:

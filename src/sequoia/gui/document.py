@@ -1,6 +1,7 @@
 import copy
 import math
 import re
+import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -161,8 +162,12 @@ def check_unique_ids(setup: Setup) -> None:
         raise ValueError(f"'{sorted(both)[0]}' is used by both an instance and a probe")
 
 
-def check_analysis(spec: Any, index: int | None = None) -> None:
-    """Raise ``ValueError`` when an analysis spec cannot be run (type, channels, numbers)."""
+def check_analysis(
+    spec: Any, index: int | None = None, *, default_window: Any = None, labels=()
+) -> None:
+    """Raise ``ValueError`` when an analysis spec cannot be run (type, channels, numbers).
+    ``default_window`` (the measurement's coincidence window) stands in for a missing window;
+    ``labels`` are detector ids the measurement maps to channels."""
     where = "analysis" if index is None else f"analysis #{index + 1}"
     if not isinstance(spec, dict):
         raise ValueError(f"{where} must be a mapping")
@@ -196,6 +201,8 @@ def check_analysis(spec: Any, index: int | None = None) -> None:
         return seconds
 
     def channel(key: str, value: Any) -> str:
+        if isinstance(value, str) and value in labels:
+            return value
         if not isinstance(value, str) or not _ENDPOINT.match(value):
             raise ValueError(f"{where}: {key} must be a channel such as 'tagger.ch1'")
         return value
@@ -210,7 +217,9 @@ def check_analysis(spec: Any, index: int | None = None) -> None:
     if len(set(chans)) != len(chans):
         raise ValueError(f"{where}: the channels must all differ")
     if kind in ("coincidences", "heralded_g2"):
-        if duration("window") <= 0:
+        if spec.get("window") is None and default_window is not None:
+            pass
+        elif duration("window") <= 0:
             raise ValueError(f"{where}: window must be positive")
     else:
         if duration("range") <= 0:
@@ -223,13 +232,33 @@ def check_analysis(spec: Any, index: int | None = None) -> None:
         duration("center", required=False)
 
 
-def check_analyses(analyses: list) -> None:
+def check_analyses(analyses: list, measurement=None, labels=()) -> None:
     names: set[str] = set()
+    window = measurement.coincidence_window if measurement is not None else None
     for index, spec in enumerate(analyses):
-        check_analysis(spec, index)
+        check_analysis(spec, index, default_window=window, labels=labels)
         if spec["name"] in names:
             raise ValueError(f"analysis name '{spec['name']}' is used twice")
         names.add(spec["name"])
+
+
+def _rename_measurement(m: dict, old: str, new: str) -> None:
+    prefix = f"{old}."
+
+    def ref(v: Any) -> Any:
+        if v == old:
+            return new
+        if isinstance(v, str) and v.startswith(prefix):
+            return new + v[len(old) :]
+        return v
+
+    m["channels"] = {ref(k): ref(v) for k, v in (m.get("channels") or {}).items()}
+    clock = m.get("pulse_clock")
+    if isinstance(clock, dict) and clock.get("source") == old:
+        clock["source"] = new
+    for cond in m.get("conditions") or []:
+        cond["herald"] = [ref(v) for v in cond.get("herald", [])]
+        cond["veto"] = [ref(v) for v in cond.get("veto", [])]
 
 
 class SetupDocument(QObject):
@@ -248,6 +277,9 @@ class SetupDocument(QObject):
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
+        self.uid = uuid.uuid4().hex
+        self.revision = 0
+        self.changed.connect(self._bump_revision)
         self.library = library
         self._setup = setup if setup is not None else Setup()
         self.path = Path(path) if path is not None else None
@@ -279,6 +311,12 @@ class SetupDocument(QObject):
         self.undo_stack.setClean()
         if moved:
             self.path_changed.emit()
+
+    def _bump_revision(self) -> None:
+        self.revision += 1
+
+    def key(self) -> tuple:
+        return (self.uid, self.revision, id(self.library))
 
     @property
     def setup(self) -> Setup:
@@ -851,15 +889,22 @@ class SetupDocument(QObject):
                     link[end] = f"{new_id}.{link[end][len(prefix) :]}"
         for spec in raw["analyses"]:
             for key, value in list(spec.items()):
-                if isinstance(value, str) and value.startswith(prefix):
+                if value == old_id and key in ("herald", "a", "b"):
+                    spec[key] = new_id
+                elif isinstance(value, str) and value.startswith(prefix):
                     spec[key] = f"{new_id}.{value[len(prefix) :]}"
                 elif isinstance(value, list):
                     spec[key] = [
-                        f"{new_id}.{v[len(prefix) :]}"
+                        new_id
+                        if v == old_id and key == "channels"
+                        else f"{new_id}.{v[len(prefix) :]}"
                         if isinstance(v, str) and v.startswith(prefix)
                         else v
                         for v in value
                     ]
+        m = raw.get("measurement")
+        if m:
+            _rename_measurement(m, old_id, new_id)
         self._renames.append((old_id, new_id))
         try:
             self._commit(f"Rename {old_id} to {new_id}", raw)
@@ -890,8 +935,36 @@ class SetupDocument(QObject):
     def fiber_parts(self) -> list[str]:
         return sorted(info.ref for info in self.library.index() if info.type == FIBER_TYPE)
 
+    def measurement_labels(self) -> set[str]:
+        from sequoia.measurement import channel_map
+
+        return set(channel_map(self._setup))
+
     def set_analyses(self, analyses: list[dict[str, Any]]) -> None:
-        check_analyses(list(analyses))
+        check_analyses(list(analyses), self._setup.measurement, self.measurement_labels())
         raw = self._raw()
         raw["analyses"] = copy.deepcopy(list(analyses))
         self._commit("Edit analyses", raw)
+
+    def set_measurement(self, measurement: Any) -> None:
+        """Replace the measurement definition (a ``Measurement``, its mapping, or None). The
+        edit bumps the document key, so results computed before it become outdated."""
+        from sequoia.measurement import Measurement
+
+        if isinstance(measurement, Measurement):
+            data = measurement.model_dump(mode="json", exclude_defaults=True)
+        else:
+            data = copy.deepcopy(measurement)
+        from sequoia.measurement import channel_map
+
+        parsed = None
+        if data is not None:
+            try:
+                parsed = Measurement.model_validate(data)
+            except ValidationError as exc:
+                raise ValueError(_validation_message(exc)) from exc
+        trial = self._setup.model_copy(update={"measurement": parsed})
+        check_analyses(list(trial.analyses), parsed, set(channel_map(trial)))
+        raw = self._raw()
+        raw["measurement"] = data
+        self._commit("Edit measurement", raw)

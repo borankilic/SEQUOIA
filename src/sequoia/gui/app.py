@@ -83,10 +83,12 @@ def show_start_screen(
     screen = StartScreen(templates_root, settings)
     screen.windows = []
 
-    def launch(setup: str | None = None, untitled: bool = False) -> None:
+    def launch(setup: str | None = None, untitled: bool = False, task: str | None = None) -> None:
         window = create_window(argv, settings, setup, untitled)
         if window is None:
             return
+        if task is not None:
+            window.show_task(task)
         screen.windows.append(window)
         window.show()
         screen.close()
@@ -102,6 +104,9 @@ def show_start_screen(
     screen.open_requested.connect(ask_open)
     screen.path_requested.connect(lambda path: launch(path))
     screen.template_requested.connect(lambda path: launch(path, untitled=True))
+    screen.recipe_requested.connect(
+        lambda path, task: launch(path or None, untitled=bool(path), task=task)
+    )
     return screen
 
 

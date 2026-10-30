@@ -35,6 +35,7 @@ from sequoia.gui.inspector.fields import (
     error_message,
     make_editor,
 )
+from sequoia.gui.inspector.measurement import MeasurementEditor
 from sequoia.setup.model import CableLink, FiberLink, FiberPolarization, FreeSpaceLink
 from sequoia.setup.validate import FIBER_TYPE
 
@@ -558,6 +559,10 @@ class SetupForm(QWidget):
         layout.addWidget(_label("<b>Analyses</b>"))
         self.analyses = AnalysesEditor(document)
         layout.addWidget(self.analyses)
+        self.measurement = MeasurementEditor(document, self)
+        self.measurement_group = CollapsibleGroup("Measurement", self.measurement, self)
+        self.measurement_group.set_expanded(document.setup.measurement is not None)
+        layout.addWidget(self.measurement_group)
         self.summary = _label("", "muted")
         layout.addWidget(self.summary)
         layout.addStretch(1)
@@ -579,6 +584,10 @@ class SetupForm(QWidget):
         self.rows["grid_cell"].refresh(s.grid_cell.model_dump())
         if self.analyses.form is None:
             self.analyses.refresh()
+        self.measurement.refresh()
+        self.measurement_group.set_title(
+            "Measurement (defined)" if s.measurement is not None else "Measurement"
+        )
         self.summary.setText(
             f"{len(s.instances)} instances, {len(s.links)} links, {len(s.probes)} probes"
         )

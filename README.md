@@ -162,6 +162,16 @@ coincidences and CAR, heralded HBT, Hong-Ou-Mandel and a Bell test). A template 
 untitled project, so saving never overwrites the shipped file. Any YAML setup dropped into
 `templates/` (with a `name` and `description`) shows up in the gallery.
 
+The start screen also asks **What do you want to do?** (align a beam into a fiber, characterise a
+heralded source, diagnose a HOM dip, measure polarization correlations, plan a photon-number
+experiment, compare with measured data, build from scratch). Each choice opens a matching template
+and a results *task*. The results dock lists the tasks on its left: Build check, Beam & alignment,
+Source characterisation, Two-photon interference, Polarization correlations / CHSH, Photon-number /
+heralding and Compare & export. A task shows a short recipe (what to do, the default engine and
+its assumptions) and only the tools it needs. **All tools (advanced)** shows every engine tab as
+before. Switch with View > Task; the choice is remembered. Each tool's help strip states its model
+(what is included and omitted) and the approximations reported by its last run.
+
 Simulate a setup from the command line:
 
 ```bash
@@ -223,9 +233,14 @@ detector and tagger dead times event by event. What to expect:
   equally weighted modes. Thermal bunching of continuous sources on the coherence-time scale is
   not modelled (the rate engine includes it, so heralded g2 differs slightly). A single K is an
   effective description; exact multi-pair statistics are the job of the Gaussian engine.
-- Saved tag files (`.npz`, format 2) carry the per-channel pulse clock and the seed. Older files
-  and CSV files carry no clock: pass `--rep-rate HZ` (pulsed) or `--cw` to `analyze-tags`, otherwise
-  accidentals use the CW singles product and a note says so. The coincidence peak is searched
+- Saved tag files (`.npz`, format 2) carry the per-channel pulse clock (0 for CW-only channels),
+  the source each clock comes from, and the seed. A channel reached by several sources, or by
+  pulsed and CW light, has no single clock and is left out of the map; an empty map is kept as
+  such. Coincidences between channels without one common clock (missing, mixed, unequal, or equal
+  rates from different sources, which need not be synchronized) use the CW singles product and
+  carry `timing` and `timing_note` saying why. Older files and CSV files carry no clock: pass
+  `--rep-rate HZ` (pulsed) or `--cw` to `analyze-tags`, otherwise accidentals use the CW singles
+  product and a note says so. The coincidence peak is searched
   within +-50 ns, widened to 1 us and 20 us when nothing stands out; set `search`, `center`,
   `center_a`, `center_b` in an analysis entry to override.
 - Zero true coincidences and zero accidentals give a CAR of NaN (undefined), not infinity.
@@ -261,9 +276,19 @@ pair gain and classical (pump) leakage scale with it, detector dark counts do no
 
 `sequoia chsh setups/bell_test.yaml --a settings:hwp_a.angle --b settings:hwp_b.angle
 --a-values 0,22.5 --b-values 11.25,33.75 [--time 10]` runs the four analyser settings through the
-rate engine, builds E(a, b) from the four coincidence analyses (`tt, tr, rt, rr`) and prints S with
-a Poisson uncertainty for the integration time. The values are those of the analyser parameters
-(a half-wave plate angle is half the polarizer angle); `--quantity total_hz` keeps accidentals.
+rate engine, builds E(a, b) from the four coincidence analyses (`tt, tr, rt, rr`) and prints a
+**forecast** of S with the anticipated counting spread for `--time` seconds *per setting pair*
+(four pairs). The values are those of the analyser parameters (a half-wave plate angle is half the
+polarizer angle). The default uses raw coincidences (`--quantity total_hz`); `true_hz` subtracts
+accidentals, and the variance of the subtraction (two sideband windows) is included. Raw and
+accidental-subtracted S are both printed. The assessment uses |S| (either output labelling) at
+three sigma and is undefined when no coincidences are predicted; the duration must be finite and
+positive. Coincidences are post-selected on two detections (fair-sampling assumption); a forecast
+is not a measured rejection of local models. In the GUI the **CHSH** tab does the same: pick the analyser
+parameter of each arm (settings are parameter values, e.g. half-wave plate angles, not analysis
+angles), two settings per arm and the four coincidence analyses; it lists the predicted raw counts
+and E for all four setting pairs, S raw and accidental-subtracted, and exports the acquisition
+plan.
 From Python: `sequoia.analysis.chsh.run_chsh`. The Monte Carlo comparison marks rows compared with
 an analytic model (heralded triples) as `(model)`, since a large z there can be a model difference.
 `sequoia.engines.gaussian.detector_response` pushes a Gaussian photon-number distribution through
@@ -276,8 +301,8 @@ setup: it finds the photon inputs itself (`FockSource` parts with N photons per 
 or entangled-pair sources with thermal pair-number statistics from the pump power), pushes them
 through the drawn beam splitters, wave plates, phase shifters, PBS, fibers and filters (path
 length contributes `2 pi OPL / lambda`) and reads the setup's own SPAD/SNSPD detectors. It gives
-output-state probabilities, expected counts per window and per second (Poisson sigma over a
-duration), click patterns, marginals, heralded distributions and samples; *Import from setup*
+output-state probabilities, expected counts per window and per second (binomial sigma for a
+fixed number of windows over a duration), click patterns, marginals, heralded distributions and samples; *Import from setup*
 lists the components and inputs, *Extract to circuit editor* turns the drawn circuit into
 editable circuit elements. `sequoia fock FILE [--input 1,1,0] [--shots N] [--backend
 native|perceval]` runs the circuit engine headless; Perceval GUI circuits (version 2 JSON) import
@@ -331,6 +356,17 @@ coincidence rate there counts the losses twice. When given it replaces the compu
 
 Things to know before trusting a number: [docs/conventions.md](docs/conventions.md) (quantum-layer
 approximations) and [docs/M3_REPORT.md](docs/M3_REPORT.md) (physics model, validation, limitations).
+
+## Measured data, fits and calibration
+
+The **Compare** tab (and `sequoia.analysis.measured` / `sequoia.analysis.fitting`) imports a
+measured curve with an explicit column mapping and units, fits a polarization fringe,
+coincidence peak, HOM dip or loss-budget scale with standard errors, residuals, chi2 and an
+identifiability check, or compares the data with a sweep of the drawn setup. Parts can carry
+`calibration.yaml` records (measured values with uncertainty, date, method and serial) kept
+apart from the nominal values; `sequoia.library.calibration` reports which values in a setup are
+still placeholders and propagates calibration uncertainties to a result. See
+[docs/GUIDE.md](docs/GUIDE.md#comparing-with-measured-data).
 
 ## Test
 

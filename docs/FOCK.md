@@ -33,10 +33,18 @@ enter as an explicit Fock input, a coherent superposition, or a statistical mixt
   multiplexing; `P(k|n) = C(N,k) k! S(n,k) / N^n`, so 2 photons give 2 clicks with probability
   `(N-1)/N`; `PseudoPNR.layered(layers, R)` gives unequal wire weights). `efficiency` is a
   per-photon detection probability and lives **only** on the detector model; the circuit must not
-  also carry a `Loss(kind="detector")` on that mode (error). `dark` is an independent dark click
-  that adds one count (saturating). The compiler puts SEQUOIA detector efficiency here, not in the
+  also carry a `Loss(kind="detector")` on that mode (error). `dark` is the probability of at
+  least one dark click on the detector in the window. Threshold and ideal PNR add one count with
+  that probability; pseudo-PNR splits it into independent per-wire dark clicks of probability
+  `q = 1 - (1 - dark)^(1/N)` (N wires), so k wires holding a detected photon read
+  `k + Binomial(N - k, q)`. The compiler puts SEQUOIA detector efficiency here, not in the
   circuit, unless it is polarization dependent (then its square root is part of the transfer and
   listed in `efficiency_in_circuit`).
+  The input cutoff `n_max` of `response_matrix(n_max)` only sets the rows; the columns are the
+  detector's own outputs: ideal PNR reads up to `n_max + 1` with a dark click, pseudo-PNR always
+  has `wires + 1` outputs (dark clicks only on wires that hold no photon), threshold two. So dark
+  counts survive on vacuum, one photon plus a dark click reads 2 on a PNR, and vacuum on a
+  pseudo-PNR can read several dark clicks.
 - Conditioning: `condition(dist, {mode: value | (op, value)})` returns `success_probability`, the
   unnormalized `joint` and the normalized `probs` separately.
 
@@ -79,14 +87,27 @@ pattern counts, so many photons spread over many tag classes hit `Limits.max_wor
 ## Counts
 
 Probabilities are per detection window. `expected_counts(dist | conditional, rate_hz, window_s,
-duration_s)`: windows per second is `rate_hz` (repetition rate), else `1/window_s`; per second =
-probability x windows per second; total over `duration_s` with Poisson `sigma = sqrt(N)`. For a
+duration_s, acquisition)`: windows per second is `rate_hz` (repetition rate), else `1/window_s`;
+per second = probability x windows per second; total over `duration_s`, i.e. `N = windows per
+second x duration` windows. `sigma` is the predicted spread of the count. The default acquisition
+`fixed_windows` treats the N windows as independent trials, so counts are multinomial: `Var N_i =
+N p_i (1 - p_i)`, `Cov(N_i, N_j) = -N p_i p_j` (`ExpectedCounts.covariance`, `sigma_sum` for a
+sum of outcomes); `acquisition="poisson"` is the rare-event approximation `Var N_i = N p_i`. For a
 `Conditional` the unnormalised joint is used, giving the accepted-event rate. `outcome_table(dist,
-detectors, top, n_windows)` lists states by probability with expected counts `N p` and binomial
-`sigma = sqrt(N p (1 - p))`. An `Experiment` takes `input_mixture`, `rate_hz`, `window_s`,
-`duration_s` (document keys `input_mixture` and `counts: {rate_hz, window_s, duration_s}`);
-`run_experiment` then fills `FockResult.counts` (default duration 1 s). Old documents load as
-before.
+detectors, top, n_windows, acquisition)` uses the same rule. An `Experiment` takes
+`input_mixture`, `rate_hz`, `window_s`, `duration_s`, `acquisition` (document keys
+`input_mixture` and `counts: {rate_hz, window_s, duration_s, acquisition}`); `run_experiment` then
+fills `FockResult.counts`. Rates and windows must be finite and positive; a duration must be finite
+and `>= 0` (zero gives zero counts); a missing duration (None) means 1 s. Invalid values are
+errors in the API, the document loader and the GUI alike. Old documents load as before.
+
+Sampling (`sample(dist, shots, seed, tail=...)`): probability the calculation did not resolve
+(`1 - mass`, the truncated input weight) is never silently renormalised away. The default
+`tail="unresolved"` draws it as an explicit outcome (`Samples.unresolved`,
+`unresolved_probability`; shown in the CLI and GUI); `tail="condition"` samples conditioned on the
+resolved sector and records `conditioned_on`; `tail="error"` refuses. `sequence=False` (used by
+`run_experiment` and the setup runs) draws only the histogram with one multinomial draw, so up
+to 10^12 shots cost no memory per shot; the per-shot sequence is limited to 10^7 shots.
 
 ## SEQUOIA setups
 
@@ -138,12 +159,40 @@ probabilities, photons arriving per detector and per mode, expected counts, samp
   `Threshold(efficiency, dark = 1 - exp(-dark_rate * window))` on the summed H+V photons
   (`detectors_mode="pnr"` gives ideal PNR). Dead time, jitter and afterpulsing are not modelled.
   Counts per second are `probability * windows per second`.
+  Each detector's potential click rate times its dead time is checked
+  (`SetupResult.dead_time_load`); above 0.1 the result carries a message and the GUI a
+  "regime not modelled" line, since the numbers are potential clicks before dead time, not
+  recorded counts.
+- **Other engines**: a FockSource's light is marked `statistics="fock"`. The rate engine counts
+  only its mean flux (`det_data[...]["fock_hz"]`, separate from classical `leakage_hz`) and says
+  so (`fock_source_mean_flux`) instead of reporting pump leakage. The Gaussian and Monte Carlo
+  engines refuse such setups (`UnsupportedSourceError`) unless `fock_as_poisson=True`, which
+  records the Poisson approximation as a `fock_as_poisson` warning.
 
 Approximations: one wavelength per photon species (path phase `2 pi OPL / lambda`); perfect
 spatial overlap at recombination; no timing, jitter or dead time; equal-weight Schmidt modes;
 pairs in one Schmidt mode are fully bunched, different modes are mutually distinguishable;
 the same thermal pair-number law is used for collinear (same-port) sources; a pump power
 change only rescales `mu`.
+
+### Run records
+
+`run_record(result)` is a machine-readable record of a setup run (engine and versions, detector
+models and dead times, window, windows per second, duration, acquisition model, inputs,
+normalization and omitted weight, probabilities, expected counts and sigmas, samples, notes;
+non-finite numbers as null). `write_run_bundle(result, folder)` (GUI: Export run...) writes it
+as `run.json` with `setup.yaml` as run, the library parts it uses under `library/`, the
+photon-number `experiment.yaml` and `summary.txt`, so the run can be repeated without the
+author's library.
+
+### Sweeps
+
+`run_sweep(..., fock={...})` (GUI: Sweeps tab, "photon-number observables") evaluates
+`fock_metrics` at every point with the given detector mode, pair truncation and duration (the
+GUI takes them from the Photon counts tab): `fock:P(d1=n1,d2=n2)` per detector state,
+`fock:P_click(d)`, `fock:resolved_mass`, `fock:omitted_weight`, all per detection window. A state
+missing at a point has probability 0 there. Link-length and delay axes are refused: the model has
+no temporal structure, so such a scan would only change a path phase.
 
 ### Listing and extracting the circuit
 
@@ -183,3 +232,41 @@ Cost is dominated by permanents: `~ 2^(n-1) n` per output pattern, patterns grow
 max_work=2e9)` raises `FockResourceError` with an estimate beforehand; 6 photons in 12 modes is
 interactive. Cancellation (`should_cancel`) is polled between permanent batches and raises
 `sequoia.engines.cache.Cancelled`. Probabilities below 1e-18 are dropped.
+
+### Preflight estimate
+
+`sequoia.fock.preflight.estimate_experiment(exp, shots=None, backend=None)` returns an `Estimate`
+without computing anything: modes, environment (loss) modes, photon sectors, input
+configurations (mixture branches, or brightness/indistinguishability branches; bounded by `3^N`
+above 20000), permanent work counted exactly as the native engine counts it, working memory,
+an upper bound on output patterns, and shots. `errors` are requests the run would refuse or
+that would exhaust memory: photons above `max_photons`, work per configuration above
+`max_work`, more than 4 GB of working memory, more than 2e6 output patterns, more than 1e12
+shots; each names a remedy (lower max pairs / photons / shots, reduce modes). `warnings` flag
+long runs and tables that only list the most probable rows. The Photon counts tab shows the
+estimate under the run controls (editor: live while editing; setup: after Import or Run) and
+refuses a run with errors before starting it ("not run: ...").
+
+Cancellation reaches sampling: `sample(..., should_cancel=...)` checks it before the multinomial
+draw and between per-shot chunks of `SAMPLE_CHUNK` (the draws equal one unchunked call). A run
+cancelled after its distribution is computed returns `status="partial"` with no samples and the
+message `CANCELLED_SAMPLING` (`FockResult.status`, `SetupResult.status`, `run.json`); the GUI
+labels it partial in the status line and the model card.
+
+## Code layout
+
+- `fock/setup_sources.py`: source discovery and the input plan (pair-number truncation,
+  windows, `list_inputs`); `fock/extract.py`: decomposition into editable elements;
+  `fock/records.py`: `run_record`, `write_run_bundle`; `fock/from_setup.py`:
+  `build_experiment_from_setup`, `run_setup_experiment`, `list_components`, and re-exports of the
+  above.
+- `fock/run.py`: run requests and immutable outcomes shared by the GUI (`SetupRequest` ->
+  `SetupOutcome` with the estimate, result, extraction, status and the table data
+  `SetupViews`, aggregated off the GUI thread with cancellation checks; `run_editor_experiment`).
+- `gui/fock_panel.py`: `FockTab` (run controls, lifecycle, files); `gui/fock_editor.py`: the
+  circuit editor; `gui/fock_setup.py`: the setup workspace (inventory); `gui/fock_results.py`:
+  result views; `gui/fock_common.py`: `ResultTable` (copy of selected cells with Ctrl/Cmd+C or the
+  context menu, header tooltips, empty-state text, the most probable 500 rows plus one row with
+  the count and probability of the rest, "show more"/"show all"), whole-number cell editors,
+  parsers and plots. Plots draw the most probable 40 states and give the rest's probability in
+  the title.
